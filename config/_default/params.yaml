@@ -20,7 +20,7 @@ marketing:
     google_analytics: ''
     google_tag_manager: ''
     microsoft_clarity: ''
-    baidu_tongji: ''
+    baidu_tongji: '5ab422a90f1624e3f9683bc36378931a'
     plausible: ''
     fathom: ''
     pirsch: ''
@@ -38,11 +38,11 @@ header:
     logo:
       text: ""
       # Logo filename in `assets/media/` folder
-      filename: "logo.svg"
+      filename: "icon.png"
     button:
       enable: true
-      text: "Get Started"
-      url: "https://hugoblox.com/templates/details/docs/"
+      text: "Go back to Madsys"
+      url: "http://localhost:1313/"
     show_search: true
     show_theme_chooser: true
 
@@ -64,7 +64,7 @@ locale:
 # Site features
 features:
   math:
-    enable: false
+    enable: true
   privacy_pack:
     enable: false
   repository:
