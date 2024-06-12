@@ -1,0 +1,52 @@
+{{/* Table Shortcode for Hugo Blox Builder. */}}
+{{/* Load a CSV table from page dir falling back to remote URL */}}
+{{/* Defaults to expecting a comma-separated CSV with a header row. */}}
+
+{{/*
+    Docs: https://docs.hugoblox.com/content/writing-markdown-latex/#csv-table
+
+    Parameters
+    ----------
+    src :
+        Path or url to the csv table. Path is relative to the folder where the shortcode is called.
+    delimiter : default ","
+        Field delimiter.
+    header : default "true"
+        If "true", the first row is rendered as the header.
+    caption : optional
+        Caption for the table.
+*/}}
+
+{{ $src := .Get "path" }}
+{{ $delimiter := .Get "delimiter" | default "," }}
+{{ $useHeaderRow := (eq (lower (.Get "header")) "true") | default true }}
+{{ $caption := .Get "caption" }}
+
+{{ $is_remote := strings.HasPrefix $src "http" }}
+{{ $rows := transform.Unmarshal (dict "delimiter" $delimiter) (.Page.Resources.Get $src).Content }}
+
+<table class="table-auto w-full">
+  {{ if $useHeaderRow }}
+    {{ $headerRow := index $rows 0 }}
+    {{ $rows = after 1 $rows }}
+    <thead>
+      <tr> {{ range $headerRow }} <th class="border-b dark:border-slate-600 font-medium p-4 pt-0 pb-3 text-slate-400 dark:text-slate-200 text-left">{{ . | markdownify | emojify }}</th> {{ end }} </tr>
+    </thead>
+  {{ end }}
+  <tbody>
+  {{ range $rows }}
+    <tr>
+      {{ range . }}
+        {{ if (findRE "^\\d+$" .) }}
+          <td data-table-dtype="number" class="border-b border-slate-100 dark:border-slate-700 p-4 text-slate-500 dark:text-slate-400">{{ . }}</td>
+        {{ else }}
+          <td data-table-dtype="text" class="border-b border-slate-100 dark:border-slate-700 p-4 text-slate-500 dark:text-slate-400">{{ . | markdownify | emojify }}</td>
+        {{ end }}
+      {{ end }}
+    </tr>
+  {{ end }}
+  </tbody>
+  {{ if $caption }}
+    <caption class="table-caption">{{ $caption | markdownify | emojify }}</caption>
+  {{ end }}
+</table>

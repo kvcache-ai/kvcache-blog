@@ -1,0 +1,57 @@
+{{ $page := .page }}
+{{ $author_page := .author_page }}
+{{ $site_type := site.Params.marketing.seo.site_type | default "Person" }}
+{{- $has_profile := not (eq nil $author_page.Params.superuser) -}}
+
+{{/* Check an author profile exists. */}}
+{{ if $has_profile }}
+  {{/* If it's a personal site and primary page author is superuser, link to the homepage rather than their profile page. */}}
+  {{ $profile_url := $author_page.RelPermalink }}
+  {{ if and (eq $site_type "Person") (eq $author_page.Params.superuser true) }}
+    {{ $profile_url = site.BaseURL }}
+  {{ end }}
+  {{ $avatar := ($author_page.Resources.ByType "image").GetMatch "*avatar*" }}
+  {{ $avatar_shape := site.Params.features.avatar.shape | default "circle" }}
+
+<div class="flex pt-12 pb-4">
+  {{ if $avatar }}
+  {{ $authorImage := $avatar.Fill "192x192 Center" }}
+  <img
+    class="mr-4 h-24 w-24 {{if ne $avatar_shape "square"}}rounded-full{{end}}"
+    width="96"
+    height="96"
+    alt="{{$author_page.Title}}"
+  src="{{ $authorImage.RelPermalink }}"
+  loading="lazy"
+  />
+  {{ end }}
+  <div class="place-self-center">
+    <div class="text-[0.6rem] uppercase leading-3 text-neutral-500 dark:text-neutral-400">
+      {{ i18n "authors" }}
+    </div>
+    <div class="font-semibold leading-6 text-neutral-800 dark:text-neutral-300">
+      {{if $profile_url}}<a href="{{$profile_url}}" class="no-underline">{{end}}
+      {{$author_page.Title}}
+      {{if $profile_url}}</a>{{end}}
+    </div>
+
+    {{ with $author_page.Params.role }}
+    <div class="text-sm font-bold text-neutral-700 dark:text-neutral-300">
+    {{. | markdownify | emojify}}
+    </div>
+    {{end}}
+
+
+    {{ with $author_page.Params.bio }}
+    <div class="text-sm text-neutral-700 dark:text-neutral-300">{{ . | markdownify | emojify }}</div>
+    {{ end }}
+
+    <div class="text-2xl sm:text-lg pt-1">
+
+      {{ partial "social_links" $author_page }}
+
+    </div>
+  </div>
+</div>
+
+{{end}}{{/* End Check for Author Profile */}}

@@ -1,0 +1,199 @@
+<header id="site-header" class="header">
+  <nav class="navbar px-3 flex justify-left">
+    <div class="order-0 h-100">
+      <!-- Brand -->
+      <a class="navbar-brand" href="{{ site.Home.RelPermalink }}" title="{{ site.Title }}">
+        {{- $logo_filename := site.Params.header.navbar.logo.filename -}}
+        {{ with $logo_filename }}
+          {{- $logo:= resources.Get (path.Join "media" $logo_filename) -}}
+          {{ with $logo }}
+            {{ $logoExt := path.Ext . }}
+            {{ if eq $logoExt `.svg` }}
+              {{- $logo.Content | safeHTML -}}
+            {{else}}
+              {{ $logo_img := ($logo.Process "Resize x36 webp") }}
+              <img
+                fetchpriority="high"
+                decoding="async"
+                class=""
+                width="{{ $logo_img.Width }}"
+                height="{{ $logo_img.Height }}"
+                src="{{ $logo_img.RelPermalink }}"
+                alt="{{ site.Title }}" />
+            {{end}}
+          {{ else }}
+            {{ warnf "Logo `%s` not found in `assets/media/` folder" $logo_filename }}
+          {{end}}
+        {{ end }}
+        {{ with site.Params.header.navbar.logo.text }}{{.}}{{end}}
+      </a>
+    </div>
+    <!-- Mobile menu -->
+    <input id="nav-toggle" type="checkbox" class="hidden" />
+    <label
+      for="nav-toggle"
+      class="order-3 cursor-pointer flex items-center lg:hidden text-dark dark:text-white lg:order-1">
+      <svg id="show-button" class="h-6 fill-current block" viewBox="0 0 20 20">
+        <title>Open Menu</title>
+        <path d="M0 3h20v2H0V3z m0 6h20v2H0V9z m0 6h20v2H0V0z"></path>
+      </svg>
+      <svg id="hide-button" class="h-6 fill-current hidden" viewBox="0 0 20 20">
+        <title>Close Menu</title>
+        <polygon
+          points="11 9 22 9 22 11 11 11 11 22 9 22 9 11 -2 11 -2 9 9 9 9 -2 11 -2"
+          transform="rotate(45 10 10)"></polygon>
+      </svg>
+    </label>
+    <!-- /Mobile menu -->
+
+    <!-- Main menu -->
+    {{ $align_menu := site.Params.header.navbar.align | default "center" }}
+    <ul
+      id="nav-menu"
+      class="navbar-nav order-3 hidden lg:flex w-full pb-6 lg:order-1 lg:w-auto lg:space-x-2 lg:pb-0 xl:space-x-8 justify-left
+      {{ if in (slice "l" "left") $align_menu }}mr-auto ml-6{{ else if (in (slice "r" "right") $align_menu) }}ml-auto mr-6{{end}}">
+      {{ $currentPage := . }}
+      {{ range site.Menus.main }}
+      {{ $menuURL := .URL | absLangURL }}
+      {{ $pageURL:= $currentPage.Permalink | absLangURL }}
+      {{ $active := eq $menuURL $pageURL }}
+      {{ if .HasChildren }}
+      <li class="nav-item nav-dropdown group relative">
+            <span
+              class="nav-link {{ range .Children }}
+                {{ $childURL := .URL | absLangURL }}
+                {{ $active := eq $childURL $pageURL }}
+                {{ if $active }}active{{ end }}
+              {{ end }} inline-flex items-center">
+              {{ .Name }}
+              <svg class="h-4 w-4 fill-current inline-block" viewBox="0 0 20 20">
+                <path
+                  d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
+              </svg>
+            </span>
+        <ul
+          class="nav-dropdown-list lg:group-hover:visible lg:group-hover:opacity-100">
+          {{ range .Children }}
+          {{ $childURL := .URL | absLangURL }}
+          {{ $active := eq $childURL $pageURL }}
+          {{ $url := "" }}
+          {{- if findRE `^#` .URL -}}
+            {{- if not $.IsHome -}}
+              {{- $url = site.Home.RelPermalink -}}
+            {{- end }}
+            {{- $url = .URL -}}
+          {{- else -}}
+            {{- $url = .URL | relLangURL -}}
+          {{- end -}}
+          <li class="nav-dropdown-item">
+            <a
+              class="nav-dropdown-link {{ if $active }}active{{- end -}}"
+              {{ if findRE `^http` .URL }}
+              target="_blank" rel="noopener"
+              {{ end }}
+              href="{{$url}}">
+              {{ .Name }}
+            </a>
+          </li>
+          {{ end }}
+        </ul>
+      </li>
+      {{ else }}
+      {{ $url := "" }}
+      {{- if findRE `^#` .URL -}}
+        {{- if not $.IsHome -}}
+          {{- $url = site.Home.RelPermalink -}}
+        {{- end }}
+        {{- $url = .URL -}}
+        {{- else -}}
+        {{- $url = .URL | relLangURL -}}
+      {{- end -}}
+      <li class="nav-item">
+        <a
+          class="nav-link {{ if $active }}active{{- end -}}"
+          {{ if findRE `^http` .URL }}
+          target="_blank" rel="noopener"
+          {{ end }}
+          href="{{$url}}"
+        >{{ .Name }}</a
+        >
+      </li>
+      {{ end }}
+      {{ end }}
+      {{ if site.Params.header.navbar.button.enable }}
+      <li class="mt-4 inline-block lg:hidden">
+        <a
+          class=""
+          href="{{ site.Params.header.navbar.button.url | relLangURL }}">
+          {{ site.Params.header.navbar.button.text }}
+        </a>
+      </li>
+      {{ end }}
+    </ul>
+
+    <div class="order-1 ml-auto flex items-center md:order-2 lg:ml-0">
+
+      {{/* Show site search? */}}
+      {{ $show_search := site.Params.header.navbar.show_search | default false }}
+      {{ with $show_search }}
+      <button
+        aria-label="search"
+        class="text-black hover:text-primary  inline-block px-3 text-xl dark:text-white"
+        id="search_toggle">
+        <svg xmlns="http://www.w3.org/2000/svg" height="16" width="16" viewBox="0 0 512 512" fill="currentColor"><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352a144 144 0 1 0 0-288 144 144 0 1 0 0 288z"/></svg>
+      </button>
+      {{ end }}
+
+      {{ $show_theme_chooser := site.Params.header.navbar.show_theme_chooser | default true }}
+      {{ if $show_theme_chooser }}
+      <div class="px-3 text-black hover:text-primary-700 dark:text-white dark:hover:text-primary-300
+            [&.active]:font-bold [&.active]:text-black/90 dark:[&.active]:text-white">
+        <button class="theme-toggle mt-1" accesskey="t" title="appearance">
+          <svg id="moon" xmlns="http://www.w3.org/2000/svg" width="24" height="18" viewBox="0 0 24 24"
+               fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+               stroke-linejoin="round" class="dark:hidden">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+          </svg>
+          <svg id="sun" xmlns="http://www.w3.org/2000/svg" width="24" height="18" viewBox="0 0 24 24"
+               fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+               stroke-linejoin="round" class=" dark:block [&:not(dark)]:hidden">
+            <circle cx="12" cy="12" r="5"></circle>
+            <line x1="12" y1="1" x2="12" y2="3"></line>
+            <line x1="12" y1="21" x2="12" y2="23"></line>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+            <line x1="1" y1="12" x2="3" y2="12"></line>
+            <line x1="21" y1="12" x2="23" y2="12"></line>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+          </svg>
+        </button>
+      </div>
+      {{ end }}
+
+      {{ $show_translations := site.Params.header.navbar.show_translations | default true }}
+      {{ if .IsTranslated | and $show_translations }}
+      <div class="pl-1 mr-5 text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200
+            [&.active]:font-bold [&.active]:text-black/90 dark:[&.active]:text-white">
+        {{- partial "components/language-chooser.html" (dict "page" .) -}}
+      </div>
+      {{ end }}
+
+      <!-- CTA button -->
+      {{ if site.Params.header.navbar.button.enable }}
+      <a
+        href="{{ site.Params.header.navbar.button.url | relLangURL }}"
+        class="inline-block rounded border px-5 py-2 font-semibold transition
+        md:ml-4 px-4 py-1.5 text-sm
+        border-black  hover:bg-black dark:hover:bg-white dark:hover:text-black hover:text-white dark:border-white dark:text-white dark:hover:bg-white
+        hidden lg:inline-block">
+        {{ site.Params.header.navbar.button.text }}
+      </a>
+      {{ end }}
+    </div>
+  </nav>
+</header>
+
+{{ if $show_search }}
+<div id="search" class="hidden p-3"></div>
+{{ end }}

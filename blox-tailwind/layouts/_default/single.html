@@ -1,0 +1,167 @@
+{{ define "main" }}
+
+{{ $pub_type_csl := "" }}
+{{ $pub_type_display := "" }}
+{{ if .Params.publication_types }}
+  {{ if reflect.IsSlice .Params.publication_types }}
+    {{ $pub_type_csl = index .Params.publication_types 0 }}
+    {{ $pub_type_display = i18n (printf "pub_%s" (strings.Replace $pub_type_csl "-" "_")) | default (strings.Title $pub_type_csl) }}
+  {{ end }}
+{{ end }}
+
+<div class="mx-auto flex max-w-screen-xl">
+  {{ partial "components/sidebar.html" (dict "context" . "no_sidebar" true) }}
+  {{ partial "components/toc.html" . }}
+  <article class="w-full break-words flex min-h-[calc(100vh-var(--navbar-height))] min-w-0 justify-center pb-8 pr-[calc(env(safe-area-inset-right)-1.5rem)]">
+    <main class="w-full min-w-0 max-w-6xl px-6 pt-4 md:px-12">
+
+      {{ if .Params.show_breadcrumb }}
+      <div class="mb-4">
+        {{ partial "components/breadcrumb.html" . }}
+      </div>
+      {{ end }}
+
+      <h1 class="mt-2 text-4xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
+        {{- .Title -}}
+      </h1>
+
+      <div class="mt-4 mb-16">
+      <div class="text-gray-500 dark:text-gray-300 text-sm flex items-center flex-wrap gap-y-2">
+        {{- if .Date | and (not .Params.hide_date) -}}
+        <span class="mr-1">{{- .Date | time.Format (site.Params.locale.date_format | default ":date_long") -}}</span>
+        {{- if .Params.authors }}<span class="mx-1">·</span>{{ end -}}
+        {{- end -}}
+
+        {{ $taxonomy := "authors" }}
+        {{ range $i, $author_obj := (.GetTerms $taxonomy) }}
+          {{ $author_page := $author_obj.Page }}
+          {{ $avatar := ($author_page.Resources.ByType "image").GetMatch "*avatar*" }}
+          {{- if and $i (not $avatar) }}<span class="mr-1">,</span>{{ end -}}
+          {{ with $author_page.Params.website }}
+          <a href="{{.}}" target="_blank" rel="noreferrer">
+          {{ end }}
+          <div class="group inline-flex items-center text-current gap-x-1.5 mx-1">
+            {{ with $avatar }}
+            {{ $avatar = $avatar.Process "Fill 50x50 Center webp" }}
+            <img src="{{ $avatar.RelPermalink }}" alt="{{ $author_page.Title }}" class="inline-block h-4 w-4 rounded-full border border-current" loading="lazy" />
+            {{ end }}
+            <div {{if $author_page.Params.website}}class="group-hover:underline"{{end}}>{{ $author_page.Title }}</div>
+          </div>
+          {{ with $author_page.Params.website }}
+          </a>
+          {{ end }}
+        {{ end }}
+
+        {{ if ne .Params.reading_time false }}
+        <span class="mx-1">·</span>
+        <span class="mx-1">
+          {{ .ReadingTime }} {{ i18n "minute_read" }}
+        </span>
+        {{ end }}
+        </div>
+
+        <div class="mt-3">
+          {{ partial "page_links_div.html" . }}
+        </div>
+      </div>
+
+
+
+      {{ $featured := partial "functions/get_featured_image.html" . }}
+      {{/* Featured image layout */}}
+      {{ if and $featured (not .Params.image.preview_only) }}
+      {{/* Fit image within max size. */}}
+      {{ $image := $featured }}
+
+      {{/* Determine image placement. */}}
+      {{ $placement := .Params.image.placement | default 1 }}{{/* Default to full column width. */}}
+      {{/* Fit image to container's max width */}}
+      {{ $image_container := "" }}
+      {{ if eq $placement 2}}
+      {{ $image_container = "container" }}
+      {{ $image = $featured.Fit "1200x2500" }}
+      {{else if eq $placement 3}}
+      {{ $image_container = "container-fluid" }}
+      {{ $image := $featured.Fit "2560x2560" }}
+      {{else}}
+      {{ $image_container = "article-container" }}
+      {{ $image = $featured.Fit "720x2500" }}
+      {{end}}
+      {{ if ne $image.MediaType.SubType "gif" }}{{ $image = $image.Process "webp" }}{{ end }}
+      {{/* Featured image */}}
+      <div class="article-header {{$image_container}} featured-image-wrapper mt-4 mb-16" style="max-width: {{$image.Width}}px; max-height: {{$image.Height}}px;">
+        <div style="position: relative">
+          <img src="{{ $image.RelPermalink }}" width="{{ $image.Width }}" height="{{ $image.Height }}" alt="{{ with $.Params.image.alt_text }}{{.}}{{ end }}" class="featured-image">
+          {{ with $.Params.image.caption }}<span class="article-header-caption">{{ . | markdownify | emojify }}</span>{{ end }}
+        </div>
+      </div>
+      {{end}}
+
+      {{/* EVENT / PUBLICATION METADATA */}}
+      {{ if .Params.abstract | or (eq .Type "publication") | or (eq .Type "event") }}
+        <div class="max-w-prose grid grid-cols-1 md:grid-cols-[200px_auto] gap-4 my-6">
+
+        {{ if .Params.abstract }}
+          <div class="font-bold text-2xl">{{ i18n "abstract" }}</div>
+          <div>{{ .Params.abstract | markdownify }}</div>
+        {{ end }}
+
+        {{/* If the type is Uncategorized, hide the type. */}}
+        {{ if $pub_type_display }}
+          <div class="font-bold text-2xl">{{ i18n "publication_type" }}</div>
+          <div>
+            <a href="{{ range first 1 (.GetTerms "publication_types") }}{{.RelPermalink}}{{end}}">
+            {{ $pub_type_display }}
+            </a>
+          </div>
+        {{ end }}
+
+        {{ if .Params.publication }}
+          <div class="font-bold text-2xl">{{ i18n "publication" }}</div>
+          <div>{{ .Params.publication | markdownify }}</div>
+        {{ end }}
+
+        {{ if eq .Type "event" }}
+          <div class="font-bold text-2xl">{{ i18n "date" }}</div>
+          <div>
+            {{ partial "functions/get_event_dates" . }}
+          </div>
+        {{ end }}
+
+        {{ if .Params.event }}
+          <div class="font-bold text-2xl">{{ i18n "event" }}</div>
+          <div>
+            {{ with .Params.event_url }}<a href="{{ . }}" target="_blank" rel="noopener">{{ end }}
+            {{ .Params.event | markdownify }}
+            {{ if .Params.event_url }}</a>{{ end }}
+          </div>
+        {{ end }}
+
+        {{ if .Params.location }}
+          <div class="font-bold text-2xl">{{ i18n "location" }}</div>
+          <div>
+            <p>{{ .Params.location | markdownify }}</p>
+            {{ if .Params.address }}
+              <p>{{partial "functions/get_address" (dict "root" . "address" .Params.address) }}</p>
+            {{end}}
+          </div>
+        {{ end }}
+
+      </div>
+      {{ end }}
+
+      <div class="prose prose-slate lg:prose-xl dark:prose-invert">
+        {{ .Content }}
+      </div>
+
+      {{ partial "components/last-edited.html" . }}
+
+      <div class="container mx-auto prose prose-slate lg:prose-xl dark:prose-invert mt-5">
+        {{ .Scratch.Set "invert_pager" true }}
+        {{ partial "page_footer" . }}
+      </div>
+
+    </main>
+  </article>
+</div>
+{{ end }}
