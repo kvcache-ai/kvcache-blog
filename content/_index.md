@@ -11,12 +11,13 @@ sections:
   - block: hero
     content:
       title: KVCache.ai
-      text: Some detail
+      text: "A collaborative endeavor with leading industry partners such as Approaching.AI and Moonshot AI. The project focuses on developing effective and practical techniques that enrich both academic research and open-source development."
+      icon: icon.png
       primary_action:
-      #   text: Get Started
-      #   url: https://hugoblox.com/templates/details/docs/
-      #   icon: rocket-launch
-      # secondary_action:
+        text: Get Started
+        url: https://github.com/kvcache-ai
+        icon: rocket-launch
+      secondary_action:
         text: Read the docs
         url: /docs/
       announcement:
@@ -37,27 +38,29 @@ sections:
           filename: ""
           filters:
             brightness: 0.5
-  # - block: stats
-  #   content:
-  #     items:
-  #       - statistic: "1M+"
-  #         description: |
-  #           Websites built  
-  #           with Hugo Blox
-  #       - statistic: "10k+"
-  #         description: |
-  #           GitHub stars  
-  #           since 2016
-  #       - statistic: "3k+"
-  #         description: |
-  #           Discord community  
-  #           for support
-  #   design:
-  #     # Section background color (CSS class)
-  #     css_class: "bg-gray-100 dark:bg-gray-800"
-  #     # Reduce spacing
-  #     spacing:
-  #       padding: ["1rem", 0, "1rem", 0]
+
+
+  - block: collection
+    id: blogs
+    content:
+      title: Recent Blogs
+      filters:
+        folders: 
+          - blog
+    design:
+      view: card
+
+
+  - block: collection
+    id: githubs
+    content:
+      title: Some repo
+      filters:
+        folders: 
+          - repo
+    design:
+      view: card
+
   # - block: features
   #   id: features
   #   content:

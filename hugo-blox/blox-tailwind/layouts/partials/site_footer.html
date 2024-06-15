@@ -1,5 +1,5 @@
 <footer class="container mx-auto flex flex-col justify-items-center text-sm leading-6 mt-24 mb-4 text-slate-700 dark:text-slate-200">
-
+<!-- 
   {{ partial "functions/get_hook" (dict "hook" "footer-start" "context" .) }}
 
   {{/* Load footer block */}}
@@ -25,6 +25,6 @@
       {{ $i18n_published_with = replace $i18n_published_with "{/repo_link}" "</a>" | safeHTML }}
       {{ $i18n_published_with | replaceRE "{year}" now.Year | markdownify | emojify | safeHTML }}
     {{ end }}
-  </p>
+  </p> -->
 
 </footer>

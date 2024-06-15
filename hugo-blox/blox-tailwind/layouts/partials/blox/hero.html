@@ -7,16 +7,23 @@
 {{ $block := .wcBlock }}
 <div class="relative isolate px-6 pt-14 lg:px-8">
 
-  <div class="mx-auto max-w-2xl {{if not ($block.design.no_padding | default false) }}py-32 sm:py-48 lg:py-56{{end}}">
+  <div class="mx-auto max-w-2xl {{if not ($block.design.no_padding | default false) }}py-28 sm:py-32 lg:py-48{{end}}">
 
-    {{ if $block.content.announcement.text }}
+    <!-- {{ if $block.content.announcement.text }}
     {{ $announcement := $block.content.announcement }}
     <div class="hidden sm:mb-8 sm:flex sm:justify-center">
       <div class="relative rounded-full px-3 py-1 text-sm leading-6 text-gray-600 dark:text-gray-300 ring-1 ring-gray-900/10 dark:ring-gray-300 hover:ring-gray-900/20 dark:hover:ring-gray-400">
         {{$announcement.text | markdownify}} {{if $announcement.link.text}}<a href="{{$announcement.link.url}}" class="font-semibold text-primary-600 dark:text-primary-300"><span class="absolute inset-0" aria-hidden="true"></span>{{$announcement.link.text}} <span aria-hidden="true">&rarr;</span></a>{{end}}
       </div>
     </div>
-    {{end}}
+    {{end}} -->
+    
+    <div class="flex justify-center">
+      {{ $image := resources.Get "media/icon.png" }}
+      <img src="{{ $image.Permalink }}" alt="KVCache.ai" class="mb-8">
+    </div>
+
+
 
     <div class="text-center">
       {{ with $block.content.title }}<h1 class="text-4xl font-bold tracking-tight text-gray-900 dark:text-gray-100 sm:text-6xl">{{ . | markdownify }}</h1>{{end}}

@@ -1,5 +1,5 @@
 ---
 title: Blog
-view: date-title-summary
+view: my-blog-view
 url: /blog/
 ---

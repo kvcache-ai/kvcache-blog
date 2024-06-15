@@ -4,7 +4,7 @@
 # This file is formatted using YAML syntax - learn more at https://learnxinyminutes.com/docs/yaml/
 
 title: "KVCache.ai" # Website name
-baseURL: 'https://example.com/' # Website URL
+baseURL: 'http://121.36.5.112:11113/' # Website URL
 
 ############################
 ## PAGE OPTIONS

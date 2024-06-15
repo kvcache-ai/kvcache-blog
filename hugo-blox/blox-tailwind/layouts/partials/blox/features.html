@@ -9,7 +9,7 @@
 {{ $text := $block.content.text | emojify | $page.RenderString }}
 
 <section>
-  <div class="py-8 px-4 mx-auto max-w-screen-xl sm:py-16 lg:px-6">
+  <div class="py-8 px-4 mx-auto max-w-screen-xl sm:py-8 lg:px-6">
     <div class="max-w-screen-md mb-8 lg:mb-16 flex flex-col justify-center mx-auto">
       {{ with $title }}
       <h2 class="mb-4 text-4xl tracking-tight font-extrabold text-gray-900 dark:text-white text-center">{{.}}</h2>
