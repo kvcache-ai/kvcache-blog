@@ -76,7 +76,7 @@ features:
       positive: 'Glad to hear it! [Any ideas for improvements?](https://github.com/<USERNAME>/<REPO>/issues/new).'
       negative: 'Sorry to hear that. [Please tell us how we can improve](https://github.com/<USERNAME>/<REPO>/issues/new).'
   comment:
-    provider: ''
+    provider: 'giscus'
     giscus:
       repo: 'BITcyman/blog-comment'
       repo_id: 'R_kgDOMJyGXw'
