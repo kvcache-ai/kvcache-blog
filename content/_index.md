@@ -43,23 +43,24 @@ sections:
   - block: collection
     id: blogs
     content:
-      title: Recent Blogs
+      title: ''
       filters:
         folders: 
           - blog
+          - repo
     design:
-      view: card
+      view: article-grid
 
 
   - block: collection
     id: githubs
     content:
-      title: Some repo
+      title: Github repo
       filters:
         folders: 
           - repo
     design:
-      view: card
+      view: article-grid
 
   # - block: features
   #   id: features
