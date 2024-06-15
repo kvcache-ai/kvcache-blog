@@ -47,7 +47,6 @@ sections:
       filters:
         folders: 
           - blog
-          - repo
     design:
       view: article-grid
 
