@@ -19,3 +19,14 @@ external_link: https://github.com/kvcache-ai/Lexllama
 doc_link: /docs/exllama
 
 ---
+
+
+
+ExLlamaV2 is an inference library for running local LLMs on modern consumer GPUs.
+
+
+## New in v0.1.0:
+
+- ExLlamaV2 now supports paged attention via [Flash Attention](https://github.com/Dao-AILab/flash-attention) 2.5.7+
+- New generator with dynamic batching, smart prompt caching, K/V cache deduplication and simplified API
+
