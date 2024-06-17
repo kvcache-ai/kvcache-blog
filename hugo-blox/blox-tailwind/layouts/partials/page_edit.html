@@ -10,9 +10,4 @@
   {{/* Attempt to get content dir from the LanguagePrefix URI, but defaultContentLanguageInSubdir can break this assumption. */}}
   {{ $content_dir = cond site.IsMultiLingual (cond (ne .Site.LanguagePrefix "") (printf "%s%s" $content_dir .Site.LanguagePrefix) $content_dir) $content_dir }}
 {{end}}
-<p class="edit-page">
-  <a href="{{site.Params.features.repository.url}}/edit/{{site.Params.features.repository.branch | default "main"}}/{{$content_dir}}/{{.File.Path}}">
-    📝 {{ i18n "edit_page" | default "Edit this page" }}
-  </a>
-</p>
 {{ end }}

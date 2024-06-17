@@ -2,7 +2,7 @@
 <section class="flex flex-row flex-wrap justify-center pt-4 text-xl">
   {{ range where site.Data.page_sharer.links "enable" true }}
 
-  {{/* Utilise `urlquery` over `htmlEscape` to encode sharing URL */}}
+  <!-- {{/* Utilise `urlquery` over `htmlEscape` to encode sharing URL */}}
   {{/* See https://github.com/HugoBlox/hugo-blox-builder/pull/2726 */}}
   {{ $link := replace .url "{url}" ($.Permalink | urlquery) }}
   {{ $link = replace $link "{title}" ($.Title | urlquery) }}
@@ -19,7 +19,7 @@
     id="share-link-{{.id}}"
   >
     {{ partial "functions/get_icon" (dict "name" .icon "attributes" "style=\"height: 1em;\"") }}
-  </a>
+  </a> -->
   {{ end }}
 </section>
 {{ end }}
