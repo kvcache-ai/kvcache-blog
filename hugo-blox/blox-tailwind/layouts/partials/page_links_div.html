@@ -5,8 +5,18 @@
 {{ if $has_attachments | or .Params.external_link }}
 <div class="">
   {{ with .Params.external_link }}
-  <a class="btn btn-outline-primary my-1" href="{{ . }}" target="_blank" rel="noopener">{{ i18n "open_project_site" }}</a>
+  <a class="hover:bg-green-700 font-bold py-2 px-4 rounded inline-block" href="{{ . }}" target="_blank" rel="noopener">
+    Get start
+  </a>
   {{ end }}
+  |
+  {{ with .Params.doc_link }}
+  <a class="hover:bg-green-700 font-bold py-2 px-4 rounded inline-block" href="{{ . }}" target="_blank" rel="noopener">
+    Read the docs
+  </a>
+  {{ end }}
+
+
   {{ partial "page_links" (dict "page" . "is_list" 0) }}
 </div>
 {{ end }}

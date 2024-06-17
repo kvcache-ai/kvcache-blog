@@ -1,7 +1,7 @@
 {{- $context := .context -}}
 
 {{- $no_sidebar := .no_sidebar | default true -}}
-{{- $pad_sidebar := true -}}
+{{- $pad_sidebar := false -}}
 {{- $sidebar_dynamic_class := cond $no_sidebar (cond $pad_sidebar "lg:hidden xl:block" "lg:hidden") "lg:sticky" -}}
 
 {{- $root_section := cond (eq site.Home.Type "docs") site.Home $context.FirstSection -}}
