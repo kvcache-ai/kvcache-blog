@@ -1,6 +1,6 @@
 ---
 title: pcinfer
-summary: pcinfer is balabalaba
+summary: pcinfer is balabalaba, balabalababalabalaba, balabalababalabalababalabalaba, balabalababalabalababalabalababalabalaba
 # date: 2024-06-12
 showData: false
 authors:

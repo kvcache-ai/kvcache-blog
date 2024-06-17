@@ -1,7 +1,10 @@
 ---
 
 title: Exllama
-summary: An inference library for running local LLMs on modern consumer GPUs.
+summary: An inference library for running local LLMs on modern consumer GPUs. 
+
+  ExLlamaV2 supports the same 4-bit GPTQ models as V1, but also a new "EXL2" format. EXL2 is based on the same optimization method as GPTQ and supports 2, 3, 4, 5, 6 and 8-bit quantization. The format allows for mixing quantization levels within a model to achieve any average bitrate between 2 and 8 bits per weight.
+
 date: 2024-06-15
 showData: false
 # authors:
