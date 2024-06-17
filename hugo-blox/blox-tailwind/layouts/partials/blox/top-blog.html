@@ -85,6 +85,15 @@
 {{ $query_blogs = where $query_blogs "Section" "in"  $blog_flolders }}
 {{ $query_blogs = where $query_blogs "Params.showathome" "==" true}}
 
+<!-- {{ $block.content.sort_by }} -->
+
+{{ $sort_by_blogs := $block.content.sort_by }}
+{{ $sort_by_blogs = partial "functions/get_sort_by_parameter" $sort_by_blogs }}
+{{ $sort_ascending := $block.content.sort_ascending | default (eq $block.content.order "asc") | default false }}
+{{ $sort_order := cond $sort_ascending "asc" "desc" }}
+{{ $query_blogs = sort $query_blogs $sort_by_blogs $sort_order }}
+
+
 
 {{ $count := len $query }}
 
