@@ -140,6 +140,7 @@
                        {{- $item.Title -}}
                       </span></a>
                   </h2>
+              <hr class="mt-2" />
                 <p class="mt-2 line-clamp-5 text-sm"><a
                     href="{{ $item.RelPermalink }}">
                     {{ ($item.Params.summary | default $item.Summary) | plainify | htmlUnescape | chomp -}}
@@ -171,11 +172,11 @@
                        {{- $item.Title -}}
                       </span></a>
                 </h2>
-              
-              <p class="mt-2 line-clamp-3 text-sm">by: 
+
+              <p class="mt-2 line-clamp-3 text-sm">by:
                 {{ range $item.Params.authors }}
                   {{ . }},
-                {{ end }}  
+                {{ end }}
                 {{ $item.Params.dateshown }}
               </p>
               <hr class="mt-2" />
