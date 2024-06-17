@@ -17,13 +17,17 @@
       </div>
     </div>
     {{end}} -->
-    
+
     <div class="flex flex-col md:flex-row justify-between items-stretch">
       <!-- img -->
       <div class="md:w-1/4 flex items-center" style="min-height: 160px;"> <!-- 添加内联样式以确保有最小高度 -->
-        {{ $image := resources.Get "media/icon.png" }}
+        {{ $image_white := resources.Get "media/bg_logo_white.png" }}
+        {{ $image_black := resources.Get "media/bg_logo_black.png" }}
         <!-- 确保图像在所有屏幕上都是全宽，且在大屏幕上有最小高度 -->
-        <img src="{{ $image.Permalink }}" alt="KVCache.ai" class="w-full h-auto md:min-h-[160px]">
+        <div class="logo-box">
+          <img src="{{ $image_black.Permalink }}" alt="KVCache.ai" class="w-full h-auto md:min-h-[160px] dark:img-hidden">
+          <img src="{{ $image_white.Permalink }}" alt="KVCache.ai" class="w-full h-auto md:min-h-[160px] img-hidden dark:img-show">
+        </div>
       </div>
 
 
@@ -68,3 +72,18 @@
   </div>
 
 </div>
+<style>
+  .logo-box {
+    width: 11rem;
+    padding: 1.5rem 1.5rem;
+  }
+  .img-hidden {
+    display: none;
+  }
+  :is(.dark .dark\:img-show) {
+    display: block;
+  }
+  :is(.dark .dark\:img-hidden) {
+    display: none;
+  }
+</style>
