@@ -210,6 +210,42 @@
               </div>
             </div>
 
+          {{ else if eq $item.Title "TrEnv-X"}}
+            {{ $image_approaching := resources.Get "media/Approaching-ai-square.png" }} 
+            <div class="p-4 border top-item bg-black text-white hover:bg-white hover:text-black dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white">
+              <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
+                <a href="{{ $item.Params.external_link }}">
+                <span class="bg-gradient-to-r from-primary-200 to-primary-100 bg-[length:0px_10px] bg-left-bottom bg-no-repeat transition-[background-size] duration-500 hover:bg-[length:100%_3px] group-hover:bg-[length:100%_10px] dark:from-primary-800 dark:to-primary-900">
+                  {{- $item.Title -}}
+                </span></a>
+              </h2>
+
+              <!-- summary -->
+              <hr class="mt-2" />
+                <p class="mt-2 line-clamp-5 text-sm">
+                  An open-source runtime platform designed for AI Agent applications.
+                </p>
+                
+                
+
+              <!-- bottom button -->
+              <div class="mt-2 jump-btn-group">
+                <!-- get start button -->
+                {{ with $item.Params.external_link }}
+                <a href="{{ . }}" target="_blank" class="jump-button">
+                  Get start
+                </a>
+                {{ end }}
+                
+                {{ with $item.Params.doc_link }}
+                |
+                <a href="{{ . }}" target="_blank" class="jump-button">
+                  Read the docs
+                </a>
+                {{ end }}
+              </div>
+            </div>
+
           {{ else }}
             <div class="p-4 border top-item bg-black text-white hover:bg-white hover:text-black dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white">
               <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
