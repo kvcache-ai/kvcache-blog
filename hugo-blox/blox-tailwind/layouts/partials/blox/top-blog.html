@@ -1,3 +1,23 @@
+<head>
+  <!-- 引入 Swiper 的 CSS 文件 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css">
+
+<!-- 引入 Swiper 的 JavaScript 文件 -->
+<style>
+/* 当屏幕宽度 ≥1200px 时生效 */
+@media (min-width: 1200px) {
+  .img_pc {
+    max-width: 300px;
+  }
+  .grid-pc{
+    display: grid;
+  }
+  .txt-lg-pc {
+    width: 400px;
+  }
+}
+</style>
+
 {{/* Hugo Blox: Collection */}}
 {{/* Documentation: https://hugoblox.com/blocks/ */}}
 {{/* License: https://github.com/HugoBlox/hugo-blox-builder/blob/main/LICENSE.md */}}
@@ -126,7 +146,7 @@
 
 <div class="flex flex-col items-center" style="padding-bottom: 1rem;">
   <div class="container px-8 mx-auto max-w-screen-xl xl:px-5 py-5 lg:py-8">
-    <div class="grid md:grid-cols-2 top-blog-container">
+    <div class="grid-pc md:grid-cols-2 top-blog-container">
 
       <div class="p-4">
         <div class="mb-6 text-2xl font-bold text-gray-900 dark:text-white">
@@ -344,13 +364,61 @@
           </div>
         {{ end }}
       </div>
+      {{ else }}
+      <div class="p-4">
+        <div class="flex flex-col items-center">
+          <div class="mb-6 text-2xl font-bold text-gray-900 dark:text-white"> Some Snaps </div> 
+            <div class="swiper relative w-full max-w-4xl mx-auto">
+                <div class="swiper-wrapper">
+                    <!-- 幻灯片 -->
+                    <div class="swiper-slide ">
+                        <div class="flex justify-center flex-col items-center">
+                            <div style="margin-left: 10px; margin-right: 10px">
+                              {{- $image := resources.Get (path.Join "media" "mingxingzhang-with-mooncake.jpg") -}}
+                              <img src="{{ $image.RelPermalink }}" class="max-w-[80%] img_pc h-auto mx-auto" alt="" style=" "/>
+                            </div>
+                        
+                            <div class="markdown-text txt-lg-pc" style="margin-top: 10px; margin-left: 10px; margin-right: 10px; ">
+                            <p>
+                                Mingxing Zhang with Mooncake-making Bunnies - Photo by Prof. Jeanna Matthews.
+                            </p>
+                            </div>
+                        </div>
+                        
+                    </div>
+                </div>
+                
+
+                <!-- 分页器 -->
+                <!-- <div class="swiper-pagination !bottom-3"></div> -->
+
+                <!-- 左右箭头 -->
+                <!-- <button class="swiper-button-prev !left-2 !top-1/2 -translate-y-1/2
+                                w-10 h-10 rounded-full bg-white/70 hover:bg-white
+                                flex items-center justify-center shadow-md">
+                    <svg class="w-5 h-5 text-gray-800" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                    </svg>
+                </button>
+
+                <button class="swiper-button-next !right-2 !top-1/2 -translate-y-1/2
+                                w-10 h-10 rounded-full bg-white/70 hover:bg-white
+                                flex items-center justify-center shadow-md">
+                    <svg class="w-5 h-5 text-gray-800" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                    </svg>
+                </button> -->
+            </div>
+        </div>
+      </div>
+      
       {{ end }}
     </div>
   </div>
 </div>
 
 
-
+<script src="https://cdn.jsdelivr.net/npm/swiper@10/swiper-bundle.min.js"></script>
 <style>
   .top-blog-container .top-item {
     margin-bottom: 1rem;
@@ -406,3 +474,24 @@
   }
 
 </style>
+
+<script>
+  const swiper = new Swiper('.swiper', {
+    loop: true,
+    pagination: {
+      el: '.swiper-pagination',
+      clickable: true,
+      // 把默认小圆点改成 Tailwind 颜色
+      bulletClass: 'swiper-pagination-bullet',
+      bulletActiveClass: 'swiper-pagination-bullet-active bg-primary',
+    },
+    navigation: {
+      nextEl: '.swiper-button-next',
+      prevEl: '.swiper-button-prev',
+    },
+    autoplay: {
+      delay: 5000,
+      disableOnInteraction: false,
+    },
+  })
+</script>
