@@ -153,6 +153,9 @@ module.exports = {
           },
         },
       }),
+    },
+    screens: {
+      lg: '1024px',
     }
   }
 }
