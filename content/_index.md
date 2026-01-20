@@ -39,18 +39,18 @@ sections:
           filters:
             brightness: 0.5
 
-  - block: top-blog
-    id: top post
-    content:
-      title: ''
-      sort_by: 'home_weight'
-      show_blog: false
-      filters:
-        folders: 
-          - blog
-          - repo
-    design:
-      view: top-blog-view
+  # - block: top-blog
+  #   id: top post
+  #   content:
+  #     title: ''
+  #     sort_by: 'home_weight'
+  #     show_blog: false
+  #     filters:
+  #       folders:
+  #         - blog
+  #         - projects
+  #   design:
+  #     view: top-blog-view
 
   # - block: snap
   #   id: snap
@@ -61,8 +61,8 @@ sections:
   #   content:
   #     title: Github repo
   #     filters:
-  #       folders: 
-  #         - repo
+  #       folders:
+  #         - projects
   #   design:
   #     view: card
 

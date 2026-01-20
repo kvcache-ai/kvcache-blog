@@ -1,0 +1,118 @@
+{{ $item := .item }}
+
+<div class="p-4 border top-item bg-black text-white hover:bg-white hover:text-black dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white">
+  <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
+    <a href="{{ $item.RelPermalink }}">
+    <span class="bg-gradient-to-r from-primary-200 to-primary-100 bg-[length:0px_10px] bg-left-bottom bg-no-repeat transition-[background-size] duration-500 hover:bg-[length:100%_3px] group-hover:bg-[length:100%_10px] dark:from-primary-800 dark:to-primary-900">
+      {{- $item.Title -}}
+    </span></a>
+  </h2>
+
+  <!-- date and author -->
+  <div class="mt-2 text-xs opacity-70 flex items-center gap-3">
+    {{ with $item.Date }}
+      <span class="flex items-center gap-1">
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+        </svg>
+        {{ if $item.Params.dateshown }}
+          {{ $item.Params.dateshown }}
+        {{ else }}
+          {{ .Format "Jan 2, 2006" }}
+        {{ end }}
+      </span>
+    {{ end }}
+
+    {{ with $item.Params.authors }}
+      <span class="flex items-center gap-1">
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+        </svg>
+        {{ delimit . ", " }}
+      </span>
+    {{ end }}
+  </div>
+
+  <!-- summary -->
+  <hr class="mt-2" />
+    <p class="mt-2 line-clamp-5 text-sm">
+      <a href="{{ $item.RelPermalink }}">
+        {{ ($item.Params.summary | default $item.Summary) | plainify | htmlUnescape | chomp -}}
+      </a>
+    </p>
+
+  <!-- tags -->
+  {{ with $item.Params.tags }}
+    <div class="mt-2 flex flex-wrap gap-1">
+      {{ range . }}
+        <span class="text-xs px-2 py-1 rounded-md bg-opacity-20 bg-white text-black dark:bg-opacity-20 dark:bg-black dark:text-white">
+          {{ . }}
+        </span>
+      {{ end }}
+    </div>
+  {{ end }}
+
+  <!-- bottom button -->
+  <div class="mt-2 jump-btn-group">
+    <a href="{{ $item.RelPermalink }}" class="jump-button">
+      Read more
+    </a>
+  </div>
+
+</div>
+
+<style>
+  .top-item {
+    margin-bottom: 1rem;
+    border-radius: 0.5rem;
+  }
+  .top-item:last-child {
+    margin-bottom: 0;
+  }
+
+  .line-clamp-5 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 5
+  }
+
+  :is(.dark .dark\:text-black) {
+    --tw-text-opacity: 1;
+    color: rgb(0 0 0/var(--tw-text-opacity))
+  }
+  :is(.dark .dark\:bg-white) {
+    background-color: #ffffff
+  }
+
+  .hover\:bg-white:hover {
+    --tw-bg-opacity: 1;
+    background-color: rgb(255 255 255/var(--tw-bg-opacity))
+  }
+  .hover\:text-black:hover {
+    --tw-text-opacity: 1;
+    color: rgb(0 0 0/var(--tw-text-opacity))
+  }
+  :is(.dark .dark\:hover\:bg-black:hover) {
+    --tw-bg-opacity: 1;
+    background-color: rgb(0 0 0/var(--tw-bg-opacity))
+  }
+  :is(.dark .dark\:hover\:text-white:hover) {
+    --tw-bg-opacity: 1;
+    color: rgb(255 255 255/var(--tw-text-opacity))
+  }
+
+  .jump-btn-group {
+    text-align: right;
+  }
+  .jump-btn-group .jump-button:hover {
+    --tw-text-opacity: 1;
+    color: rgb(var(--color-primary-700)/var(--tw-text-opacity))
+  }
+
+  :is(.dark .jump-button:hover) {
+    --tw-text-opacity: 1;
+    color: rgb(var(--color-primary-300)/var(--tw-text-opacity))
+  }
+
+</style>

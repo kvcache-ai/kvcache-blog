@@ -1,21 +1,20 @@
 ---
-linkTitle: Blog
-title: Blog
+linkTitle: Projects
+title: Projects
 type: landing
-url: /blog/
 
 sections:
   - block: collection
     content:
-      title: Blog
-      text: Explore our latest articles on LLM inference, optimization techniques, and system architecture.
+      title: Projects
+      text: Explore our open-source projects focused on KVCache optimization and LLM serving.
       filters:
         folders:
-          - blog
+          - projects
         exclude_featured: false
       sort_by: 'Params.home_weight'
       sort_ascending: false
     design:
-      view: blog-card-view
+      view: project-card-view
       columns: '1'
 ---

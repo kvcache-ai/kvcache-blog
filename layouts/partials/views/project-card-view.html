@@ -1,0 +1,201 @@
+{{ $item := .item }}
+
+{{ if eq $item.Title "Mooncake"}}
+  {{ $image_moon := resources.Get (path.Join "media" "moonshot.png") }}
+  <div class="p-4 border top-item bg-black text-white hover:bg-white hover:text-black dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white">
+    <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
+      <a href="{{ $item.Params.external_link }}">
+      <span class="bg-gradient-to-r from-primary-200 to-primary-100 bg-[length:0px_10px] bg-left-bottom bg-no-repeat transition-[background-size] duration-500 hover:bg-[length:100%_3px] group-hover:bg-[length:100%_10px] dark:from-primary-800 dark:to-primary-900">
+        {{- $item.Title -}}
+      </span></a>
+    </h2>
+
+    <!-- summary -->
+    <hr class="mt-2" />
+      <p class="mt-2 line-clamp-5 text-sm">
+        Mooncake, delicious mooncake made with <a href="https://www.moonshot.cn/" style=" text-decoration: underline;"><img src="{{ $image_moon.RelPermalink }}" alt="icon" style="height: 17px; vertical-align: baseline; display: inline-block;">Moonshot AI</a> !
+      </p>
+      <p class="mt-2 line-clamp-5 text-sm">
+        A KVCache-centric disaggregated architecture for LLM serving.
+      </p>
+
+    <!-- bottom button -->
+    <div class="mt-2 jump-btn-group">
+      <!-- get start button -->
+      {{ with $item.Params.external_link }}
+      <a href="{{ . }}" target="_blank" class="jump-button">
+        Get start
+      </a>
+      {{ end }}
+
+      {{ with $item.Params.doc_link }}
+      |
+      <a href="{{ . }}" target="_blank" class="jump-button">
+        Read the docs
+      </a>
+      {{ end }}
+    </div>
+  </div>
+
+{{ else if eq $item.Title "KTransformers"}}
+  {{ $image_approaching := resources.Get "media/Approaching-ai-square.png" }}
+  <div class="p-4 border top-item bg-black text-white hover:bg-white hover:text-black dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white">
+    <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
+      <a href="{{ $item.Params.external_link }}">
+      <span class="bg-gradient-to-r from-primary-200 to-primary-100 bg-[length:0px_10px] bg-left-bottom bg-no-repeat transition-[background-size] duration-500 hover:bg-[length:100%_3px] group-hover:bg-[length:100%_10px] dark:from-primary-800 dark:to-primary-900">
+        {{- $item.Title -}}
+      </span></a>
+    </h2>
+
+    <!-- summary -->
+    <hr class="mt-2" />
+      <p class="mt-2 line-clamp-5 text-sm">
+        A Flexible Framework for Experiencing Cutting-edge LLM Inference Optimizations. Made with
+        <a href="https://approaching-ai.com/" style=" text-decoration: underline;">
+            <img src="{{ $image_approaching.RelPermalink }}" alt="icon" style="height: 17px; vertical-align: baseline; display: inline-block;">Approaching AI</a> !
+
+      </p>
+
+    <!-- bottom button -->
+    <div class="mt-2 jump-btn-group">
+      <!-- get start button -->
+      {{ with $item.Params.external_link }}
+      <a href="{{ . }}" target="_blank" class="jump-button">
+        Get start
+      </a>
+      {{ end }}
+
+      {{ with $item.Params.doc_link }}
+      |
+      <a href="{{ . }}" target="_blank" class="jump-button">
+        Read the docs
+      </a>
+      {{ end }}
+    </div>
+  </div>
+
+{{ else if eq $item.Title "TrEnv-X"}}
+  <div class="p-4 border top-item bg-black text-white hover:bg-white hover:text-black dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white">
+    <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
+      <a href="{{ $item.Params.external_link }}">
+      <span class="bg-gradient-to-r from-primary-200 to-primary-100 bg-[length:0px_10px] bg-left-bottom bg-no-repeat transition-[background-size] duration-500 hover:bg-[length:100%_3px] group-hover:bg-[length:100%_10px] dark:from-primary-800 dark:to-primary-900">
+        {{- $item.Title -}}
+      </span></a>
+    </h2>
+
+    <!-- summary -->
+    <hr class="mt-2" />
+      <p class="mt-2 line-clamp-5 text-sm">
+        An open-source runtime platform designed for AI Agent applications.
+      </p>
+
+    <!-- bottom button -->
+    <div class="mt-2 jump-btn-group">
+      <!-- get start button -->
+      {{ with $item.Params.external_link }}
+      <a href="{{ . }}" target="_blank" class="jump-button">
+        Get start
+      </a>
+      {{ end }}
+
+      {{ with $item.Params.doc_link }}
+      |
+      <a href="{{ . }}" target="_blank" class="jump-button">
+        Read the docs
+      </a>
+      {{ end }}
+    </div>
+  </div>
+
+{{ else }}
+  <div class="p-4 border top-item bg-black text-white hover:bg-white hover:text-black dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white">
+    <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
+      <a href="{{ $item.RelPermalink }}">
+      <span class="bg-gradient-to-r from-primary-200 to-primary-100 bg-[length:0px_10px] bg-left-bottom bg-no-repeat transition-[background-size] duration-500 hover:bg-[length:100%_3px] group-hover:bg-[length:100%_10px] dark:from-primary-800 dark:to-primary-900">
+        {{- $item.Title -}}
+      </span></a>
+    </h2>
+
+    <!-- summary -->
+    <hr class="mt-2" />
+      <p class="mt-2 line-clamp-5 text-sm"><a
+          href="{{ $item.RelPermalink }}">
+          {{ ($item.Params.summary | default $item.Summary) | plainify | htmlUnescape | chomp -}}
+        </a></p>
+
+    <!-- bottom button -->
+    <div class="mt-2 jump-btn-group">
+      <!-- get start button -->
+      {{ with $item.Params.external_link }}
+      <a href="{{ . }}" target="_blank" class="jump-button">
+        Get start
+      </a>
+      {{ end }}
+
+      {{ with $item.Params.doc_link }}
+      |
+      <a href="{{ . }}" target="_blank" class="jump-button">
+        Read the docs
+      </a>
+      {{ end }}
+    </div>
+
+  </div>
+
+{{ end }}
+
+<style>
+  .top-item {
+    margin-bottom: 1rem;
+    border-radius: 0.5rem;
+  }
+  .top-item:last-child {
+    margin-bottom: 0;
+  }
+
+  .line-clamp-5 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 5
+  }
+
+  :is(.dark .dark\:text-black) {
+    --tw-text-opacity: 1;
+    color: rgb(0 0 0/var(--tw-text-opacity))
+  }
+  :is(.dark .dark\:bg-white) {
+    background-color: #ffffff
+  }
+
+  .hover\:bg-white:hover {
+    --tw-bg-opacity: 1;
+    background-color: rgb(255 255 255/var(--tw-bg-opacity))
+  }
+  .hover\:text-black:hover {
+    --tw-text-opacity: 1;
+    color: rgb(0 0 0/var(--tw-text-opacity))
+  }
+  :is(.dark .dark\:hover\:bg-black:hover) {
+    --tw-bg-opacity: 1;
+    background-color: rgb(0 0 0/var(--tw-bg-opacity))
+  }
+  :is(.dark .dark\:hover\:text-white:hover) {
+    --tw-bg-opacity: 1;
+    color: rgb(255 255 255/var(--tw-text-opacity))
+  }
+
+  .jump-btn-group {
+    text-align: right;
+  }
+  .jump-btn-group .jump-button:hover {
+    --tw-text-opacity: 1;
+    color: rgb(var(--color-primary-700)/var(--tw-text-opacity))
+  }
+
+  :is(.dark .jump-button:hover) {
+    --tw-text-opacity: 1;
+    color: rgb(var(--color-primary-300)/var(--tw-text-opacity))
+  }
+
+</style>
