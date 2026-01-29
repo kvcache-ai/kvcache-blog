@@ -14,7 +14,7 @@ tags:
   - LLM
 
 
-commentable: true
+commentable: false
 
 showathome: true
 home_weight: 15

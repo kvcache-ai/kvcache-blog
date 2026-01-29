@@ -11,7 +11,7 @@ tags:
   - Optimization
   - Open Source
 
-commentable: true
+commentable: false
 draft: false
 showathome: true
 home_weight: 16
