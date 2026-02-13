@@ -17,7 +17,7 @@ home_weight: 100
 
 ---
 
-We’re excited to announce that **Mooncake has officially joined the PyTorch Ecosystem**.
+We're excited to announce that **Mooncake has officially joined the PyTorch Ecosystem**.
 
 For Mooncake, this is more than a badge—it represents a commitment to open governance, long-term collaboration with the PyTorch community, and a shared goal of making disaggregated inference architectures easier to adopt and better supported in the PyTorch-native LLM serving stack.
 
