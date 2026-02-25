@@ -1,7 +1,7 @@
 ---
 title: "Mooncake Joins the PyTorch Ecosystem"
 summary: "Mooncake is now part of the PyTorch Ecosystem, complementing PyTorch-native LLM serving with high-performance disaggregated data transfer and storage."
-date: 2026-02-02
+date: 2026-02-12
 authors:
   - Mooncake community
 tags:
