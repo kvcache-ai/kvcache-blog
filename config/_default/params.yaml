@@ -39,10 +39,6 @@ header:
       text: "KVCache.ai"
       # Logo filename in `assets/media/` folder
       filename: "icon_1.png"
-    button:
-      enable: true
-      text: "Go back to MADSys"
-      url: "https://madsys.cs.tsinghua.edu.cn/"
     show_search: false
     show_theme_chooser: false
 
