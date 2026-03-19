@@ -67,7 +67,7 @@ permalinks:
   categories: '/category/:slug/'
 disableAliases: true
 outputs:
-  home: [HTML, RSS, WebAppManifest, headers, redirects, backlinks]
+  home: [HTML, RSS, WebAppManifest, headers, redirects]
   page: [HTML]
   section: [HTML, RSS]
 imaging:

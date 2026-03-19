@@ -83,13 +83,14 @@
 {{ $columns := $block.design.columns | default "2" }}
 
 {{ if $block.content.title }}
-<div class="flex flex-col items-center max-w-prose mx-auto gap-3 justify-center">
+<div class="collection-intro-wrap">
+  <div class="collection-intro-card">
+    <div class="collection-intro-title">
+      {{ $block.content.title | emojify | $page.RenderString }}
+    </div>
 
-  <div class="mb-6 text-3xl font-bold text-gray-900 dark:text-white">
-    {{ $block.content.title | emojify | $page.RenderString }}
+    {{ with $block.content.text }}<p class="collection-intro-text">{{ . | emojify | $page.RenderString }}</p>{{ end }}
   </div>
-
-  {{ with $block.content.text }}<p>{{ . | emojify | $page.RenderString }}</p>{{ end }}
 </div>
 {{ end }}
 
@@ -104,6 +105,44 @@
   {{ partial "functions/render_view" (dict "fragment" "end" "page" $block "item" . "view" $view) }}
 
 </div>
+
+<style>
+  .collection-intro-wrap {
+    display: flex;
+    justify-content: center;
+    margin: 0 auto 3rem;
+    padding: 0 1rem;
+  }
+
+  .collection-intro-card {
+    width: min(100%, 46rem);
+    padding: 0;
+    text-align: center;
+  }
+
+  .collection-intro-title {
+    margin-bottom: 0.75rem;
+    font-size: 1.875rem;
+    line-height: 1.15;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: -0.02em;
+  }
+
+  .collection-intro-text {
+    margin: 0 auto;
+    max-width: 36rem;
+    font-size: 0.98rem;
+    line-height: 1.75;
+    color: #64748b;
+  }
+
+  @media (min-width: 768px) {
+    .collection-intro-wrap {
+      margin-bottom: 3.75rem;
+    }
+  }
+</style>
 
 {{/* Archive link */}}
 {{ $show_archive_link := $block.content.archive.enable | default (gt $count $items_count) }}

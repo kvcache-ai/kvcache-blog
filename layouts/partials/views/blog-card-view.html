@@ -1,6 +1,7 @@
 {{ $item := .item }}
+{{ if and $item $item.Title $item.RelPermalink }}
 
-<div class="p-4 border top-item bg-black text-white hover:bg-white hover:text-black dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white">
+<div class="p-4 border top-item blog-card-shell">
   <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
     <a href="{{ $item.RelPermalink }}">
     <span class="bg-gradient-to-r from-primary-200 to-primary-100 bg-[length:0px_10px] bg-left-bottom bg-no-repeat transition-[background-size] duration-500 hover:bg-[length:100%_3px] group-hover:bg-[length:100%_10px] dark:from-primary-800 dark:to-primary-900">
@@ -45,29 +46,45 @@
   {{ with $item.Params.tags }}
     <div class="mt-2 flex flex-wrap gap-1">
       {{ range . }}
-        <span class="text-xs px-2 py-1 rounded-md bg-opacity-20 bg-white text-black dark:bg-opacity-20 dark:bg-black dark:text-white">
+        <span class="text-xs px-2 py-1 rounded-md blog-card-tag">
           {{ . }}
         </span>
       {{ end }}
     </div>
   {{ end }}
 
-  <!-- bottom button -->
-  <div class="mt-2 jump-btn-group">
-    <a href="{{ $item.RelPermalink }}" class="jump-button">
-      Read more
-    </a>
-  </div>
-
 </div>
 
 <style>
   .top-item {
+    width: min(100%, 64rem);
     margin-bottom: 1rem;
+    margin-left: auto;
+    margin-right: auto;
     border-radius: 0.5rem;
+    box-sizing: border-box;
   }
   .top-item:last-child {
     margin-bottom: 0;
+  }
+  .blog-card-shell {
+    background: #f8fafc;
+    color: #0f172a;
+    border-color: #dbe4ee;
+    transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+  }
+  .blog-card-shell:hover {
+    background: #f0f9ff;
+    border-color: #bae6fd;
+    transform: translateY(-1px);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  }
+  .blog-card-shell a {
+    color: inherit;
+  }
+  .blog-card-tag {
+    background: #e0f2fe;
+    color: #0c4a6e;
   }
 
   .line-clamp-5 {
@@ -77,42 +94,5 @@
     -webkit-line-clamp: 5
   }
 
-  :is(.dark .dark\:text-black) {
-    --tw-text-opacity: 1;
-    color: rgb(0 0 0/var(--tw-text-opacity))
-  }
-  :is(.dark .dark\:bg-white) {
-    background-color: #ffffff
-  }
-
-  .hover\:bg-white:hover {
-    --tw-bg-opacity: 1;
-    background-color: rgb(255 255 255/var(--tw-bg-opacity))
-  }
-  .hover\:text-black:hover {
-    --tw-text-opacity: 1;
-    color: rgb(0 0 0/var(--tw-text-opacity))
-  }
-  :is(.dark .dark\:hover\:bg-black:hover) {
-    --tw-bg-opacity: 1;
-    background-color: rgb(0 0 0/var(--tw-bg-opacity))
-  }
-  :is(.dark .dark\:hover\:text-white:hover) {
-    --tw-bg-opacity: 1;
-    color: rgb(255 255 255/var(--tw-text-opacity))
-  }
-
-  .jump-btn-group {
-    text-align: right;
-  }
-  .jump-btn-group .jump-button:hover {
-    --tw-text-opacity: 1;
-    color: rgb(var(--color-primary-700)/var(--tw-text-opacity))
-  }
-
-  :is(.dark .jump-button:hover) {
-    --tw-text-opacity: 1;
-    color: rgb(var(--color-primary-300)/var(--tw-text-opacity))
-  }
-
 </style>
+{{ end }}

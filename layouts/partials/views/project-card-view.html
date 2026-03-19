@@ -1,8 +1,9 @@
 {{ $item := .item }}
+{{ if and $item $item.Title (or $item.RelPermalink $item.Params.external_link) }}
 
 {{ if eq $item.Title "Mooncake"}}
   {{ $image_moon := resources.Get (path.Join "media" "moonshot.png") }}
-  <div class="p-4 border top-item bg-black text-white hover:bg-white hover:text-black dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white">
+  <div class="p-4 border top-item project-card-shell">
     <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
       <a href="{{ $item.Params.external_link }}">
       <span class="bg-gradient-to-r from-primary-200 to-primary-100 bg-[length:0px_10px] bg-left-bottom bg-no-repeat transition-[background-size] duration-500 hover:bg-[length:100%_3px] group-hover:bg-[length:100%_10px] dark:from-primary-800 dark:to-primary-900">
@@ -39,7 +40,7 @@
 
 {{ else if eq $item.Title "KTransformers"}}
   {{ $image_approaching := resources.Get "media/Approaching-ai-square.png" }}
-  <div class="p-4 border top-item bg-black text-white hover:bg-white hover:text-black dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white">
+  <div class="p-4 border top-item project-card-shell">
     <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
       <a href="{{ $item.Params.external_link }}">
       <span class="bg-gradient-to-r from-primary-200 to-primary-100 bg-[length:0px_10px] bg-left-bottom bg-no-repeat transition-[background-size] duration-500 hover:bg-[length:100%_3px] group-hover:bg-[length:100%_10px] dark:from-primary-800 dark:to-primary-900">
@@ -75,7 +76,7 @@
   </div>
 
 {{ else if eq $item.Title "TrEnv-X"}}
-  <div class="p-4 border top-item bg-black text-white hover:bg-white hover:text-black dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white">
+  <div class="p-4 border top-item project-card-shell">
     <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
       <a href="{{ $item.Params.external_link }}">
       <span class="bg-gradient-to-r from-primary-200 to-primary-100 bg-[length:0px_10px] bg-left-bottom bg-no-repeat transition-[background-size] duration-500 hover:bg-[length:100%_3px] group-hover:bg-[length:100%_10px] dark:from-primary-800 dark:to-primary-900">
@@ -108,7 +109,7 @@
   </div>
 
 {{ else }}
-  <div class="p-4 border top-item bg-black text-white hover:bg-white hover:text-black dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white">
+  <div class="p-4 border top-item project-card-shell">
     <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
       <a href="{{ $item.RelPermalink }}">
       <span class="bg-gradient-to-r from-primary-200 to-primary-100 bg-[length:0px_10px] bg-left-bottom bg-no-repeat transition-[background-size] duration-500 hover:bg-[length:100%_3px] group-hover:bg-[length:100%_10px] dark:from-primary-800 dark:to-primary-900">
@@ -146,11 +147,30 @@
 
 <style>
   .top-item {
+    width: min(100%, 64rem);
     margin-bottom: 1rem;
+    margin-left: auto;
+    margin-right: auto;
     border-radius: 0.5rem;
+    box-sizing: border-box;
   }
   .top-item:last-child {
     margin-bottom: 0;
+  }
+  .project-card-shell {
+    background: #f8fafc;
+    color: #0f172a;
+    border-color: #dbe4ee;
+    transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+  }
+  .project-card-shell:hover {
+    background: #f0f9ff;
+    border-color: #bae6fd;
+    transform: translateY(-1px);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  }
+  .project-card-shell a {
+    color: inherit;
   }
 
   .line-clamp-5 {
@@ -160,42 +180,17 @@
     -webkit-line-clamp: 5
   }
 
-  :is(.dark .dark\:text-black) {
-    --tw-text-opacity: 1;
-    color: rgb(0 0 0/var(--tw-text-opacity))
-  }
-  :is(.dark .dark\:bg-white) {
-    background-color: #ffffff
-  }
-
-  .hover\:bg-white:hover {
-    --tw-bg-opacity: 1;
-    background-color: rgb(255 255 255/var(--tw-bg-opacity))
-  }
-  .hover\:text-black:hover {
-    --tw-text-opacity: 1;
-    color: rgb(0 0 0/var(--tw-text-opacity))
-  }
-  :is(.dark .dark\:hover\:bg-black:hover) {
-    --tw-bg-opacity: 1;
-    background-color: rgb(0 0 0/var(--tw-bg-opacity))
-  }
-  :is(.dark .dark\:hover\:text-white:hover) {
-    --tw-bg-opacity: 1;
-    color: rgb(255 255 255/var(--tw-text-opacity))
-  }
-
   .jump-btn-group {
     text-align: right;
   }
-  .jump-btn-group .jump-button:hover {
-    --tw-text-opacity: 1;
-    color: rgb(var(--color-primary-700)/var(--tw-text-opacity))
+  .jump-btn-group .jump-button {
+    color: #0369a1;
+    text-decoration: none;
+    font-weight: 600;
   }
-
-  :is(.dark .jump-button:hover) {
-    --tw-text-opacity: 1;
-    color: rgb(var(--color-primary-300)/var(--tw-text-opacity))
+  .jump-btn-group .jump-button:hover {
+    color: #0c4a6e;
   }
 
 </style>
+{{ end }}
