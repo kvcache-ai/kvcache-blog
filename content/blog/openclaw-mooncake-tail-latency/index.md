@@ -1,6 +1,6 @@
 ---
-title: "OpenClaw + Mooncake: A Stability Upgrade for Real Multi-Session Inference"
-summary: "By integrating Mooncake into OpenClaw's real inference path, we did not just improve fast-path latency. We sharply reduced tail TTFT in multi-session, long-context workloads, turning a system that was usually fast but occasionally slow into one that feels consistently smooth."
+title: "OpenClaw + Mooncake: A Stability Upgrade for Real-World Multi-Session Inference"
+summary: "By integrating Mooncake into OpenClaw's real inference path, we not only improved fast-path latency, but also sharply reduced TTFT tail latency in multi-session, long-context workloads, turning a system that was usually fast but occasionally slow into one that feels consistently smooth."
 date: 2026-03-19
 dateshown: March 19, 2026
 authors:
@@ -15,7 +15,7 @@ tags:
 draft: false
 showathome: true
 commentable: false
-home_weight: 95
+home_weight: 110
 image:
   alt_text: "OpenClaw and Mooncake tail-latency stability upgrade"
 ---
@@ -32,7 +32,7 @@ If you interact with AI systems continuously, you already know how big that diff
 
 Sometimes a system is not broadly slow. It is just *occasionally* slow. Most turns feel fine, and then one reply suddenly pauses for three or five seconds. In that moment, the experience shifts from "this feels smooth" to "why did it hang again?"
 
-That kind of problem does not always stand out in single-turn benchmarks. It can even be easy to miss in lab-style testing. But in real multi-session workloads, it becomes one of the most important parts of perceived performance.
+That kind of problem does not always stand out in single-turn benchmarks. It can even be easy to miss in lab-style testing. But in real-world multi-session workloads, it becomes one of the most important parts of perceived performance.
 
 We recently integrated Mooncake into OpenClaw's inference path and ran a focused validation around exactly this question.
 
@@ -48,8 +48,8 @@ In other words:
 
 When people talk about model performance, the conversation naturally gravitates toward two things:
 
-- averages
-- best-case or peak numbers
+- Averages
+- Best-case or peak numbers
 
 The first tells you whether a system feels fast overall. The second tells you whether a benchmark chart looks impressive.
 
@@ -57,8 +57,8 @@ But for systems that people actually use, a third metric often matters more: the
 
 Users do not talk to your system in percentiles. They remember two things:
 
-- whether it usually feels responsive
-- whether it falls apart at the wrong moment
+- Whether it usually feels responsive
+- Whether it falls apart at the wrong moment
 
 If a system feels fast most of the time but occasionally freezes for several seconds, the verdict is rarely "the average latency looks good." It is usually just: "it feels a bit unstable."
 
@@ -84,7 +84,7 @@ In the baseline configuration, `OpenClaw + SGLang`, the median path is already d
 
 After enabling Mooncake, those spikes are dramatically flattened.
 
-On a chart, that shows up as performance. In a product, it shows up as fluidity. For users, it shows up as a much simpler sentence:
+On a chart, it shows up as performance. In a product, it shows up as fluidity. For users, it shows up as a much simpler sentence:
 
 **"This feels way smoother now."**
 
@@ -98,12 +98,12 @@ If the goal is to understand Mooncake's real value inside OpenClaw, then the rig
 
 So in this round, we kept:
 
-- the OpenClaw Gateway entry point
-- session routing
-- prompt assembly
-- provider invocation
-- multi-session rotation
-- long-context pressure
+- The OpenClaw Gateway entry point
+- Session routing
+- Prompt assembly
+- Provider invocation
+- Multi-session rotation
+- Long-context pressure
 
 That means the workload still travels through essentially the same path that real users hit when they access a model through OpenClaw.
 
@@ -123,17 +123,17 @@ If tool calls, tool execution time, and result post-processing are mixed into th
 
 So we used a pure-text setup:
 
-- requests still enter through OpenClaw Gateway
-- multi-session rotation is preserved
-- long context is preserved
-- tools are disabled
-- the main metric is TTFT for the first visible token
+- Requests still enter through OpenClaw Gateway
+- Multi-session rotation is preserved
+- Long context is preserved
+- Tools are disabled
+- The main metric is TTFT for the first visible token
 
 We also controlled for Qwen3's output behavior by enabling `/no_think` in the system prompt, so the measurement reflects the moment users first see output rather than hidden reasoning tokens that are not visible in the UI.
 
 In plain terms, this benchmark is meant to capture:
 
-**the part of the real OpenClaw path that is closest to the GPU inference critical path.**
+**The part of the real OpenClaw path that is closest to the GPU inference critical path.**
 
 That is why this round says more about Mooncake itself than a noisier end-to-end product evaluation would.
 
@@ -141,20 +141,20 @@ That is why this round says more about Mooncake itself than a noisier end-to-end
 
 We did not choose an exaggerated stress setup designed only to produce dramatic numbers. Instead, we used a configuration that is much closer to how sustained interaction actually feels:
 
-- model: `Qwen3-14B`
+- Model: `Qwen3-14B`
 - `2` independent sessions
 - `4` turns per session
-- round-robin progression across sessions
-- roughly `24000` characters of context in the first turn
-- roughly `8000` additional characters added on each later turn
+- Round-robin progression across sessions
+- Roughly `24000` characters of context in the first turn
+- Roughly `8000` additional characters added on each later turn
 - `1` warmup round and `3` measured rounds per configuration
-- primary metric: time to first visible token
+- Primary metric: time to first visible token
 
 This matters because the setup is neither a best-case single-session toy run nor a purely adversarial stress test.
 
 It sits in the middle, where real product behavior starts to show:
 
-multiple sessions are advancing at once, each session carries growing history, and the system has to keep switching between them while still feeling responsive.
+Multiple sessions are advancing at once, each session carries growing history, and the system has to keep switching between them while still feeling responsive.
 
 That is exactly the environment OpenClaw has to handle.
 
@@ -178,7 +178,7 @@ When requests fall into the tail, they are not just a little slower. They jump a
 
 So the baseline problem is not "everything is slow." It is this:
 
-**the fast path is already fast, but the slow path is still much too slow.**
+**The fast path is already fast, but the slow path is still much too slow.**
 
 <img src="ttft_key_metrics.png"
      alt="TTFT comparison between baseline and Mooncake"
@@ -211,7 +211,7 @@ It is a story about changing the shape of the latency distribution:
 - `turn1 p95: 5295ms -> 339ms`
 - `turn2+ p95: 4909ms -> 770ms`
 
-while at the same time:
+While at the same time:
 
 - `turn2+ p50: 171ms -> 169ms`
 
@@ -227,10 +227,10 @@ That is the most important point from this round.
 
 In a technical table, that can look less dramatic than a headline-grabbing median speedup. In actual product usage, though, the value is immediate:
 
-- fewer stalls
-- less waiting
-- fewer breaks in conversational rhythm
-- a more continuous interaction loop
+- Fewer stalls
+- Less waiting
+- Fewer breaks in conversational rhythm
+- A more continuous interaction loop
 
 Users do not want a system that is occasionally spectacular. They want one that feels consistently smooth.
 
@@ -248,10 +248,10 @@ Real users do not ask one question and disappear. They keep going. They switch t
 
 That is also where Mooncake becomes easiest to appreciate:
 
-- switching across sessions feels smoother
-- first visible token arrival stays more predictable as context grows
-- interaction rhythm becomes easier to maintain
-- the system feels more continuously available instead of occasionally pausing
+- Switching across sessions feels smoother
+- First visible token arrival stays more predictable as context grows
+- Interaction rhythm becomes easier to maintain
+- The system feels more continuously available instead of occasionally pausing
 
 <img src="latency_profile.png"
      alt="Latency profile for p50 and p95 with and without Mooncake"
@@ -279,10 +279,10 @@ That tells us something important:
 
 It does not require an especially heavy configuration before the gains become visible. From an engineering adoption perspective, that is very good news:
 
-- it is easier to try
-- the configuration envelope is friendlier
-- the benefit-cost balance appears early
-- the integration barrier is lower
+- It is easier to try
+- The configuration envelope is friendlier
+- The benefit-cost balance appears early
+- The integration barrier is lower
 
 Many technical solutions look strong on paper but require too much weight before they become worthwhile in practice.
 
@@ -304,9 +304,9 @@ That sentence is simple, but it captures the part of the upgrade that matters mo
 
 Most users will never inspect p50 or p95 dashboards. They will just decide, by feel:
 
-- does this system feel smooth?
-- does the conversation keep its rhythm?
-- does it unexpectedly stall?
+- Does this system feel smooth?
+- Does the conversation keep its rhythm?
+- Does it unexpectedly stall?
 
 Mooncake's most practical contribution here is that OpenClaw feels more like a mature system on exactly those dimensions.
 
@@ -316,11 +316,11 @@ OpenClaw was never meant to be just a single-turn Q&A wrapper.
 
 It is built to handle more demanding interaction patterns:
 
-- multiple sessions
-- multi-turn conversation
-- long context
-- sustained workflows
-- a more realistic cadence of ongoing use
+- Multiple sessions
+- Multi-turn conversation
+- Long context
+- Sustained workflows
+- A more realistic cadence of ongoing use
 
 In a system like that, stability is not a nice-to-have metric. It is part of the product capability itself.
 
