@@ -79,11 +79,21 @@ test("DeepSeek V4 hybrid formula uses sliding window, compression ratios, and ra
   };
 
   const plan = calculateElementsPerSequence(model, 128000);
-  assert.equal(plan.components.find(([label]) => label === "Layers")[1], 61);
+  assert.equal(plan.components.find(([label]) => label === "Main layers")[1], 61);
+  assert.equal(plan.components.find(([label]) => label === "Draft layers included")[1], 0);
   assert.equal(plan.components.find(([label]) => label === "Ratio=4 layers")[1], 30);
   assert.equal(plan.components.find(([label]) => label === "Ratio=128 layers")[1], 31);
   assert.equal(plan.components.find(([label]) => label === "Ratio=0 layers")[1], 0);
-  assert.equal(plan.byteGroups.find((group) => group.role === "attention").elements, 511389696);
+  assert.equal(plan.components.find(([label]) => label === "Ratio=0 KV elements")[1], 0);
+  assert.equal(plan.components.find(([label]) => label === "Sliding-window elements")[1], 3997696);
+  assert.ok(plan.formulaRows.some((row) => row.name === "sliding_kv_bytes"));
+  assert.ok(plan.formulaRows.some((row) => row.name === "compressed_kv_bytes"));
+  assert.ok(plan.formulaRows.some((row) => row.name === "kv_bytes"));
+  assert.match(
+    plan.formulaRows.find((row) => row.name === "total_bytes").expression,
+    /kv_bytes \+ indexer_bytes/,
+  );
+  assert.equal(plan.byteGroups.find((group) => group.role === "kv").elements, 511389696);
   assert.equal(plan.byteGroups.find((group) => group.role === "indexer").elements, 122880000);
 
   const result = calculate(model, { ...bf16, tokens: 128000 });
@@ -153,8 +163,69 @@ test("DeepSeek V4 can calculate explicit FP8 attention and FP4 indexer cache", (
   );
 
   assert.ok(Math.abs(result.totalGiB - 0.5334892272949219) < 1e-9);
-  assert.equal(result.components.find(([label]) => label === "Attention precision bytes")[1], 1);
+  assert.equal(result.components.find(([label]) => label === "KV precision bytes")[1], 1);
   assert.equal(result.components.find(([label]) => label === "Indexer precision bytes")[1], 0.5);
+});
+
+test("DSA indexer models can use separate KV and indexer precision", () => {
+  const model = {
+    id: "deepseek-v3.2",
+    label: "DeepSeek V3.2",
+    formula: "dsa_mla",
+    fields: {
+      num_hidden_layers: 61,
+      kv_lora_rank: 512,
+      qk_rope_head_dim: 64,
+      index_head_dim: 128,
+    },
+  };
+
+  const result = calculate(model, {
+    tokens: 128000,
+    sequences: 1,
+    precision: "fp8_int8",
+    indexerPrecision: "fp4_int4",
+  });
+
+  assert.equal(result.elementPlan.byteGroups.find((group) => group.role === "kv").elements, 4497408000);
+  assert.equal(result.elementPlan.byteGroups.find((group) => group.role === "indexer").elements, 999424000);
+  assert.ok(Math.abs(result.kvGiB - 4.18853759765625) < 1e-9);
+  assert.ok(Math.abs(result.indexerGiB - 0.46539306640625) < 1e-9);
+  assert.ok(Math.abs(result.totalGiB - 4.6539306640625) < 1e-9);
+});
+
+test("DeepSeek V4 draft KV cache option adds the ratio-0 draft layer", () => {
+  const compressRatios = [
+    128, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+    4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+    4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+    4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 0,
+  ];
+  const model = {
+    id: "deepseek-v4-pro",
+    label: "DeepSeek V4 Pro",
+    formula: "deepseek_v4_hybrid",
+    fields: {
+      head_dim: 512,
+      sliding_window: 128,
+      num_hidden_layers: 61,
+      index_head_dim: 128,
+      compress_ratios: compressRatios,
+    },
+  };
+
+  const withoutDraft = calculateElementsPerSequence(model, 128000, { includeDraftKvCache: false });
+  const withDraft = calculateElementsPerSequence(model, 128000, { includeDraftKvCache: true });
+
+  assert.equal(withDraft.components.find(([label]) => label === "Draft layers included")[1], 1);
+  assert.equal(withDraft.components.find(([label]) => label === "Ratio=0 layers")[1], 1);
+  assert.equal(withDraft.components.find(([label]) => label === "Ratio=0 KV elements")[1], 65536);
+  assert.equal(withDraft.components.find(([label]) => label === "Sliding-window elements")[1], 4063232);
+  assert.equal(
+    withDraft.byteGroups.find((group) => group.role === "kv").elements -
+      withoutDraft.byteGroups.find((group) => group.role === "kv").elements,
+    65536,
+  );
 });
 
 test("standard models ignore indexer precision and keep single precision scaling", () => {
@@ -173,9 +244,8 @@ test("standard models ignore indexer precision and keep single precision scaling
     tensorParallel: 2,
   });
 
-  assert.equal(result.totalCachedTokens, 512000);
   assert.ok(Math.abs(result.totalGiB - 60.546875) < 1e-9);
-  assert.ok(Math.abs(result.perDeviceGiB - 30.2734375) < 1e-9);
+  assert.equal(result.indexerBytes, 0);
 });
 
 test("display byte formatter keeps five decimal places", () => {

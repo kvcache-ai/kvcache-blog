@@ -3,12 +3,6 @@
 {{ $script := resources.Get "js/kv-cache-calculator.js" | minify | fingerprint }}
 
 <section id="kv-cache-calculator" class="kv-calculator-shell" data-state="loading">
-  <div class="kv-calculator-header">
-    <p class="kv-source-stamp">
-      Model configs retrieved {{ $data.metadata.retrieved_at }}
-    </p>
-  </div>
-
   <div class="kv-calculator-grid">
     <form class="kv-controls" onsubmit="return false;">
       <label>
@@ -36,39 +30,22 @@
         <select data-kv-input="indexerPrecision"></select>
       </label>
 
-      <label>
-        <span>Tensor parallel size</span>
-        <input data-kv-input="tensorParallel" type="number" min="1" step="1" inputmode="numeric" value="1">
+      <label class="kv-checkbox-row" data-kv-draft-control hidden>
+        <input data-kv-input="includeDraftKvCache" type="checkbox">
+        <span data-kv-inline-help="Adds the extra DeepSeek V4 MTP/draft layer KV cache. This ratio=0 layer keeps only the sliding-window KV segment.">Include draft KV cache</span>
       </label>
     </form>
 
     <div class="kv-results">
       <div class="kv-total-band">
         <div>
-          <span>Total KV cache</span>
+          <span>Total cache size</span>
           <strong data-kv-output="totalGiB">--</strong>
         </div>
         <em data-kv-output="totalGB">-- GB</em>
       </div>
 
-      <div class="kv-metric-grid">
-        <div>
-          <span>Total cached tokens</span>
-          <strong data-kv-output="totalTokens">--</strong>
-        </div>
-        <div>
-          <span>Per device</span>
-          <strong data-kv-output="perDevice">--</strong>
-        </div>
-        <div>
-          <span>Per sequence</span>
-          <strong data-kv-output="perSequence">--</strong>
-        </div>
-        <div>
-          <span>Per token</span>
-          <strong data-kv-output="perToken">--</strong>
-        </div>
-      </div>
+      <div class="kv-metric-grid" data-kv-metrics></div>
 
       <div class="kv-formula-panel">
         <div class="kv-formula-heading">
@@ -116,17 +93,6 @@
     color: var(--kv-ink);
   }
 
-  .kv-calculator-header {
-    margin: 0 0 0.75rem;
-    text-align: right;
-  }
-
-  .kv-source-stamp {
-    margin: 0;
-    color: var(--kv-muted);
-    font-size: 0.82rem;
-  }
-
   .kv-calculator-grid {
     display: grid;
     grid-template-columns: minmax(16rem, 24rem) minmax(0, 1fr);
@@ -156,6 +122,19 @@
     font-weight: 650;
   }
 
+  .kv-controls .kv-checkbox-row {
+    display: grid;
+    grid-template-columns: 1.05rem minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem;
+  }
+
+  .kv-checkbox-row input {
+    width: 1.05rem;
+    min-height: 1.05rem;
+    margin: 0;
+  }
+
   .kv-controls [hidden] {
     display: none !important;
   }
@@ -171,6 +150,12 @@
     font: inherit;
     font-size: 0.95rem;
     padding: 0.55rem 0.7rem;
+  }
+
+  .kv-controls input[type="checkbox"] {
+    width: 1.05rem;
+    min-height: 1.05rem;
+    padding: 0;
   }
 
   .kv-controls select:focus,
@@ -221,7 +206,7 @@
 
   .kv-metric-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
     gap: 0.75rem;
   }
 
@@ -238,6 +223,59 @@
     margin-top: 0.4rem;
     font-size: 1.2rem;
     letter-spacing: 0;
+  }
+
+  .kv-help {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    width: 1rem;
+    height: 1rem;
+    margin-left: 0.35rem;
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    background: #fff;
+    color: var(--kv-muted);
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 800;
+    line-height: 1;
+    vertical-align: 0.08rem;
+    cursor: help;
+  }
+
+  .kv-help::after {
+    position: absolute;
+    z-index: 5;
+    top: 50%;
+    left: calc(100% + 0.45rem);
+    width: max-content;
+    max-width: min(18rem, calc(100vw - 2rem));
+    padding: 0.55rem 0.65rem;
+    border: 1px solid var(--kv-line);
+    border-radius: 7px;
+    background: #fff;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+    color: var(--kv-ink);
+    content: attr(data-kv-tooltip);
+    font-family: inherit;
+    font-size: 0.78rem;
+    font-weight: 550;
+    line-height: 1.45;
+    opacity: 0;
+    pointer-events: none;
+    text-align: left;
+    transform: translateY(-50%);
+    transition: opacity 0.12s ease;
+    white-space: normal;
+  }
+
+  .kv-help:hover::after,
+  .kv-help:focus::after,
+  .kv-help:focus-visible::after,
+  .kv-help[data-kv-open="true"]::after {
+    opacity: 1;
   }
 
   .kv-formula-panel {
@@ -334,10 +372,6 @@
       flex-direction: column;
     }
 
-    .kv-calculator-header {
-      text-align: left;
-    }
-
     .kv-calculator-grid {
       grid-template-columns: 1fr;
     }
@@ -353,6 +387,15 @@
 
     .kv-formula-equals {
       display: none;
+    }
+
+    .kv-help::after {
+      top: calc(100% + 0.4rem);
+      right: auto;
+      left: 50%;
+      width: 14rem;
+      max-width: calc(100vw - 2rem);
+      transform: translateX(-50%);
     }
   }
 
@@ -370,7 +413,8 @@
   }
 
   :is(.dark .kv-controls select),
-  :is(.dark .kv-controls input) {
+  :is(.dark .kv-controls input),
+  :is(.dark .kv-help) {
     background: #020617;
     color: #e2e8f0;
     border-color: #475569;
@@ -397,5 +441,11 @@
 
   :is(.dark .kv-formula-expression) {
     color: #e2e8f0;
+  }
+
+  :is(.dark .kv-help::after) {
+    background: #020617;
+    color: #e2e8f0;
+    border-color: #334155;
   }
 </style>
