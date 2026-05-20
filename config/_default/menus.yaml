@@ -8,12 +8,15 @@ main:
   - name: Projects
     url: projects/
     weight: 20
+  - name: Tools
+    url: tools/
+    weight: 30
   - name: Blog
     url: blog/
-    weight: 30
+    weight: 40
   - name: About
     url: about/
-    weight: 40
+    weight: 50
     # - name: Community
   #   url: community/
   #   weight: 50

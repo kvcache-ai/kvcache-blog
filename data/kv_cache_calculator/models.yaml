@@ -1,0 +1,317 @@
+metadata:
+  retrieved_at: "2026-05-20"
+  note: "Curated from official Hugging Face model config/source files and serving-engine references. Values describe KV cache capacity planning, not model weights or activation memory."
+  serving_references:
+    deepseek_v4_vllm_indexer_fp4: "https://vllm.ai/blog/deepseek-v4"
+precision_options:
+  - id: bf16_fp16
+    label: "BF16 / FP16"
+    bytes_per_element: 2
+  - id: fp8_int8
+    label: "FP8 / INT8"
+    bytes_per_element: 1
+  - id: fp4_int4
+    label: "FP4 / INT4"
+    bytes_per_element: 0.5
+indexer_precision_options:
+  - id: bf16_fp16
+    label: "BF16 / FP16"
+    bytes_per_element: 2
+  - id: fp8_int8
+    label: "FP8 / INT8"
+    bytes_per_element: 1
+  - id: fp4_int4
+    label: "FP4 / INT4"
+    bytes_per_element: 0.5
+models:
+  - id: deepseek-v4-pro
+    label: "DeepSeek V4 Pro"
+    family: "DeepSeek"
+    formula: "deepseek_v4_hybrid"
+    default_tokens: 131072
+    max_position_embeddings: 1048576
+    source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 61
+      head_dim: 512
+      sliding_window: 128
+      index_head_dim: 128
+      index_topk: 1024
+      num_key_value_heads: 1
+      compress_ratios: [128, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 0]
+  - id: deepseek-v4-flash
+    label: "DeepSeek V4 Flash"
+    family: "DeepSeek"
+    formula: "deepseek_v4_hybrid"
+    default_tokens: 131072
+    max_position_embeddings: 1048576
+    source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 43
+      head_dim: 512
+      sliding_window: 128
+      index_head_dim: 128
+      index_topk: 512
+      num_key_value_heads: 1
+      compress_ratios: [0, 0, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 0]
+  - id: deepseek-v3.2
+    label: "DeepSeek V3.2"
+    family: "DeepSeek"
+    formula: "dsa_mla"
+    default_tokens: 128000
+    max_position_embeddings: 163840
+    source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V3.2/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 61
+      kv_lora_rank: 512
+      qk_nope_head_dim: 128
+      qk_rope_head_dim: 64
+      qk_head_dim: 192
+      v_head_dim: 128
+      num_key_value_heads: 128
+      index_head_dim: 128
+      index_n_heads: 64
+      index_topk: 2048
+  - id: glm-5
+    label: "GLM-5"
+    family: "GLM"
+    formula: "dsa_mla"
+    default_tokens: 128000
+    max_position_embeddings: 202752
+    source_url: "https://huggingface.co/zai-org/GLM-5/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 78
+      kv_lora_rank: 512
+      qk_nope_head_dim: 192
+      qk_rope_head_dim: 64
+      qk_head_dim: 256
+      v_head_dim: 256
+      num_key_value_heads: 64
+      index_head_dim: 128
+      index_n_heads: 32
+      index_topk: 2048
+  - id: glm-5.1
+    label: "GLM-5.1"
+    family: "GLM"
+    formula: "dsa_mla"
+    default_tokens: 128000
+    max_position_embeddings: 202752
+    source_url: "https://huggingface.co/zai-org/GLM-5.1/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 78
+      kv_lora_rank: 512
+      qk_nope_head_dim: 192
+      qk_rope_head_dim: 64
+      qk_head_dim: 256
+      v_head_dim: 256
+      num_key_value_heads: 64
+      index_head_dim: 128
+      index_n_heads: 32
+      index_topk: 2048
+  - id: kimi-k2.5
+    label: "Kimi K2.5"
+    family: "Kimi"
+    formula: "mla"
+    default_tokens: 128000
+    max_position_embeddings: 262144
+    source_url: "https://huggingface.co/moonshotai/Kimi-K2.5/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 61
+      kv_lora_rank: 512
+      qk_rope_head_dim: 64
+      qk_nope_head_dim: 128
+      v_head_dim: 128
+      num_key_value_heads: 64
+  - id: kimi-k2.6
+    label: "Kimi K2.6"
+    family: "Kimi"
+    formula: "mla"
+    default_tokens: 128000
+    max_position_embeddings: 262144
+    source_url: "https://huggingface.co/moonshotai/Kimi-K2.6/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 61
+      kv_lora_rank: 512
+      qk_rope_head_dim: 64
+      qk_nope_head_dim: 128
+      v_head_dim: 128
+      num_key_value_heads: 64
+  - id: qwen3-235b-a22b
+    label: "Qwen3-235B-A22B"
+    family: "Qwen3"
+    formula: "standard_gqa"
+    default_tokens: 40960
+    max_position_embeddings: 40960
+    source_url: "https://huggingface.co/Qwen/Qwen3-235B-A22B/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 94
+      num_attention_heads: 64
+      num_key_value_heads: 4
+      head_dim: 128
+  - id: qwen3-32b
+    label: "Qwen3-32B"
+    family: "Qwen3"
+    formula: "standard_gqa"
+    default_tokens: 40960
+    max_position_embeddings: 40960
+    source_url: "https://huggingface.co/Qwen/Qwen3-32B/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 64
+      num_attention_heads: 64
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: qwen3-30b-a3b
+    label: "Qwen3-30B-A3B"
+    family: "Qwen3"
+    formula: "standard_gqa"
+    default_tokens: 40960
+    max_position_embeddings: 40960
+    source_url: "https://huggingface.co/Qwen/Qwen3-30B-A3B/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 48
+      num_attention_heads: 32
+      num_key_value_heads: 4
+      head_dim: 128
+  - id: qwen3-14b
+    label: "Qwen3-14B"
+    family: "Qwen3"
+    formula: "standard_gqa"
+    default_tokens: 40960
+    max_position_embeddings: 40960
+    source_url: "https://huggingface.co/Qwen/Qwen3-14B/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 40
+      num_attention_heads: 40
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: qwen3-8b
+    label: "Qwen3-8B"
+    family: "Qwen3"
+    formula: "standard_gqa"
+    default_tokens: 40960
+    max_position_embeddings: 40960
+    source_url: "https://huggingface.co/Qwen/Qwen3-8B/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 36
+      num_attention_heads: 32
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: qwen3-4b
+    label: "Qwen3-4B"
+    family: "Qwen3"
+    formula: "standard_gqa"
+    default_tokens: 40960
+    max_position_embeddings: 40960
+    source_url: "https://huggingface.co/Qwen/Qwen3-4B/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 36
+      num_attention_heads: 32
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: qwen3-1.7b
+    label: "Qwen3-1.7B"
+    family: "Qwen3"
+    formula: "standard_gqa"
+    default_tokens: 40960
+    max_position_embeddings: 40960
+    source_url: "https://huggingface.co/Qwen/Qwen3-1.7B/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 28
+      num_attention_heads: 16
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: qwen3-0.6b
+    label: "Qwen3-0.6B"
+    family: "Qwen3"
+    formula: "standard_gqa"
+    default_tokens: 40960
+    max_position_embeddings: 40960
+    source_url: "https://huggingface.co/Qwen/Qwen3-0.6B/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 28
+      num_attention_heads: 16
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: minimax-m2
+    label: "MiniMax M2"
+    family: "MiniMax"
+    formula: "standard_gqa"
+    default_tokens: 128000
+    max_position_embeddings: 196608
+    source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M2/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 62
+      num_attention_heads: 48
+      num_key_value_heads: 8
+      head_dim: 128
+      rotary_dim: 64
+      use_mtp: true
+      num_mtp_modules: 3
+      mtp_transformer_layers: 1
+  - id: minimax-m2.1
+    label: "MiniMax M2.1"
+    family: "MiniMax"
+    formula: "standard_gqa"
+    default_tokens: 128000
+    max_position_embeddings: 196608
+    source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M2.1/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 62
+      num_attention_heads: 48
+      num_key_value_heads: 8
+      head_dim: 128
+      rotary_dim: 64
+      use_mtp: true
+      num_mtp_modules: 3
+      mtp_transformer_layers: 1
+  - id: minimax-m2.5
+    label: "MiniMax M2.5"
+    family: "MiniMax"
+    formula: "standard_gqa"
+    default_tokens: 128000
+    max_position_embeddings: 196608
+    source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M2.5/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 62
+      num_attention_heads: 48
+      num_key_value_heads: 8
+      head_dim: 128
+      rotary_dim: 64
+      use_mtp: true
+      num_mtp_modules: 3
+      mtp_transformer_layers: 1
+  - id: minimax-m2.7
+    label: "MiniMax M2.7"
+    family: "MiniMax"
+    formula: "standard_gqa"
+    default_tokens: 128000
+    max_position_embeddings: 204800
+    source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M2.7/raw/main/config.json"
+    source_retrieved_at: "2026-05-20"
+    fields:
+      num_hidden_layers: 62
+      num_attention_heads: 48
+      num_key_value_heads: 8
+      head_dim: 128
+      rotary_dim: 64
+      use_mtp: true
+      num_mtp_modules: 3
+      mtp_transformer_layers: 1

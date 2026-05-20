@@ -1,0 +1,401 @@
+{{ $data := site.Data.kv_cache_calculator.models }}
+{{ $payload := dict "models" $data.models "precision_options" $data.precision_options "indexer_precision_options" $data.indexer_precision_options "metadata" $data.metadata }}
+{{ $script := resources.Get "js/kv-cache-calculator.js" | minify | fingerprint }}
+
+<section id="kv-cache-calculator" class="kv-calculator-shell" data-state="loading">
+  <div class="kv-calculator-header">
+    <p class="kv-source-stamp">
+      Model configs retrieved {{ $data.metadata.retrieved_at }}
+    </p>
+  </div>
+
+  <div class="kv-calculator-grid">
+    <form class="kv-controls" onsubmit="return false;">
+      <label>
+        <span>Model</span>
+        <select data-kv-input="model"></select>
+      </label>
+
+      <label>
+        <span>Max tokens per sequence</span>
+        <input data-kv-input="tokens" type="number" min="1" step="1" inputmode="numeric" value="128000">
+      </label>
+
+      <label>
+        <span>Concurrent sequences</span>
+        <input data-kv-input="sequences" type="number" min="1" step="1" inputmode="numeric" value="1">
+      </label>
+
+      <label>
+        <span>KV precision</span>
+        <select data-kv-input="precision"></select>
+      </label>
+
+      <label data-kv-indexer-control hidden>
+        <span>Indexer precision</span>
+        <select data-kv-input="indexerPrecision"></select>
+      </label>
+
+      <label>
+        <span>Tensor parallel size</span>
+        <input data-kv-input="tensorParallel" type="number" min="1" step="1" inputmode="numeric" value="1">
+      </label>
+    </form>
+
+    <div class="kv-results">
+      <div class="kv-total-band">
+        <div>
+          <span>Total KV cache</span>
+          <strong data-kv-output="totalGiB">--</strong>
+        </div>
+        <em data-kv-output="totalGB">-- GB</em>
+      </div>
+
+      <div class="kv-metric-grid">
+        <div>
+          <span>Total cached tokens</span>
+          <strong data-kv-output="totalTokens">--</strong>
+        </div>
+        <div>
+          <span>Per device</span>
+          <strong data-kv-output="perDevice">--</strong>
+        </div>
+        <div>
+          <span>Per sequence</span>
+          <strong data-kv-output="perSequence">--</strong>
+        </div>
+        <div>
+          <span>Per token</span>
+          <strong data-kv-output="perToken">--</strong>
+        </div>
+      </div>
+
+      <div class="kv-formula-panel">
+        <div class="kv-formula-heading">
+          <span data-kv-output="formulaLabel">--</span>
+        </div>
+        <div class="kv-formula-list" data-kv-formula-rows>
+          <div class="kv-formula-row">
+            <span class="kv-formula-name">--</span>
+            <span class="kv-formula-equals">=</span>
+            <span class="kv-formula-expression">--</span>
+          </div>
+        </div>
+        <p data-kv-output="cacheNote"></p>
+      </div>
+
+      <div class="kv-breakdown" data-kv-components></div>
+
+      <a class="kv-source-link" data-kv-source-link href="#" rel="noopener" target="_blank">
+        Source: <span data-kv-output="source">--</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<script type="application/json" id="kv-cache-calculator-data">{{ $payload | jsonify | safeJS }}</script>
+<script src="{{ $script.RelPermalink }}" integrity="{{ $script.Data.Integrity }}"></script>
+<script>
+  window.KVCacheCalculator.mount(
+    "kv-cache-calculator",
+    JSON.parse(document.getElementById("kv-cache-calculator-data").textContent)
+  );
+</script>
+
+<style>
+  .kv-calculator-shell {
+    --kv-ink: #0f172a;
+    --kv-muted: #64748b;
+    --kv-line: #dbe4ee;
+    --kv-panel: #f8fafc;
+    --kv-blue: #2563eb;
+    --kv-cyan: #0891b2;
+    width: min(100%, 64rem);
+    margin: 0 auto;
+    padding: 0;
+    color: var(--kv-ink);
+  }
+
+  .kv-calculator-header {
+    margin: 0 0 0.75rem;
+    text-align: right;
+  }
+
+  .kv-source-stamp {
+    margin: 0;
+    color: var(--kv-muted);
+    font-size: 0.82rem;
+  }
+
+  .kv-calculator-grid {
+    display: grid;
+    grid-template-columns: minmax(16rem, 24rem) minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+  }
+
+  .kv-controls,
+  .kv-results {
+    border: 1px solid var(--kv-line);
+    border-radius: 8px;
+    background: var(--kv-panel);
+  }
+
+  .kv-controls {
+    display: grid;
+    gap: 0.85rem;
+    padding: 1rem;
+  }
+
+  .kv-controls label {
+    display: grid;
+    gap: 0.35rem;
+    margin: 0;
+    color: var(--kv-muted);
+    font-size: 0.82rem;
+    font-weight: 650;
+  }
+
+  .kv-controls [hidden] {
+    display: none !important;
+  }
+
+  .kv-controls select,
+  .kv-controls input {
+    width: 100%;
+    min-height: 2.75rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 7px;
+    background: #fff;
+    color: var(--kv-ink);
+    font: inherit;
+    font-size: 0.95rem;
+    padding: 0.55rem 0.7rem;
+  }
+
+  .kv-controls select:focus,
+  .kv-controls input:focus {
+    outline: 2px solid rgba(37, 99, 235, 0.2);
+    border-color: var(--kv-blue);
+  }
+
+  .kv-results {
+    display: grid;
+    gap: 1rem;
+    padding: 1rem;
+  }
+
+  .kv-total-band {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem;
+    border-radius: 8px;
+    background: #e0f2fe;
+    border: 1px solid #bae6fd;
+  }
+
+  .kv-total-band span,
+  .kv-metric-grid span {
+    display: block;
+    color: var(--kv-muted);
+    font-size: 0.82rem;
+    font-weight: 650;
+  }
+
+  .kv-total-band strong {
+    display: block;
+    margin-top: 0.2rem;
+    color: #0c4a6e;
+    font-size: clamp(2rem, 5vw, 3.2rem);
+    line-height: 1;
+    letter-spacing: 0;
+  }
+
+  .kv-total-band em {
+    align-self: end;
+    color: #0369a1;
+    font-style: normal;
+    font-weight: 700;
+  }
+
+  .kv-metric-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  .kv-metric-grid div {
+    min-height: 5rem;
+    padding: 0.85rem;
+    border: 1px solid var(--kv-line);
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .kv-metric-grid strong {
+    display: block;
+    margin-top: 0.4rem;
+    font-size: 1.2rem;
+    letter-spacing: 0;
+  }
+
+  .kv-formula-panel {
+    display: grid;
+    gap: 0.65rem;
+    padding: 0.9rem;
+    border: 1px solid var(--kv-line);
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .kv-formula-heading {
+    color: var(--kv-cyan);
+    font-weight: 750;
+  }
+
+  .kv-formula-list {
+    display: grid;
+    gap: 0.55rem;
+  }
+
+  .kv-formula-row {
+    display: grid;
+    grid-template-columns: minmax(7.5rem, max-content) 1rem minmax(0, 1fr);
+    gap: 0.55rem;
+    align-items: start;
+    padding: 0.7rem;
+    border: 1px solid #dbeafe;
+    border-radius: 7px;
+    background: #f8fafc;
+  }
+
+  .kv-formula-name,
+  .kv-formula-equals,
+  .kv-formula-expression {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    letter-spacing: 0;
+  }
+
+  .kv-formula-name {
+    color: #075985;
+    font-weight: 750;
+    overflow-wrap: anywhere;
+  }
+
+  .kv-formula-equals {
+    color: var(--kv-muted);
+    text-align: center;
+  }
+
+  .kv-formula-expression {
+    color: #1e293b;
+    overflow-wrap: anywhere;
+  }
+
+  .kv-formula-panel p {
+    margin: 0;
+    color: var(--kv-muted);
+    font-size: 0.9rem;
+    line-height: 1.55;
+  }
+
+  .kv-breakdown {
+    display: grid;
+    gap: 0.45rem;
+  }
+
+  .kv-breakdown-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.62rem 0;
+    border-bottom: 1px solid #e2e8f0;
+    color: var(--kv-muted);
+    font-size: 0.9rem;
+  }
+
+  .kv-breakdown-row strong {
+    color: var(--kv-ink);
+    text-align: right;
+  }
+
+  .kv-source-link {
+    color: var(--kv-blue);
+    font-size: 0.82rem;
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 860px) {
+    .kv-total-band {
+      align-items: start;
+      flex-direction: column;
+    }
+
+    .kv-calculator-header {
+      text-align: left;
+    }
+
+    .kv-calculator-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .kv-metric-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .kv-formula-row {
+      grid-template-columns: 1fr;
+      gap: 0.25rem;
+    }
+
+    .kv-formula-equals {
+      display: none;
+    }
+  }
+
+  :is(.dark .kv-calculator-shell) {
+    --kv-ink: #e2e8f0;
+    --kv-muted: #94a3b8;
+    --kv-line: #334155;
+    --kv-panel: #111827;
+  }
+
+  :is(.dark .kv-controls),
+  :is(.dark .kv-results),
+  :is(.dark .kv-formula-panel) {
+    background: #020617;
+  }
+
+  :is(.dark .kv-controls select),
+  :is(.dark .kv-controls input) {
+    background: #020617;
+    color: #e2e8f0;
+    border-color: #475569;
+  }
+
+  :is(.dark .kv-total-band) {
+    background: #0b1220;
+    border-color: #1d4ed8;
+  }
+
+  :is(.dark .kv-total-band strong),
+  :is(.dark .kv-total-band em) {
+    color: #93c5fd;
+  }
+
+  :is(.dark .kv-formula-row) {
+    background: #0f172a;
+    border-color: #1e293b;
+  }
+
+  :is(.dark .kv-formula-name) {
+    color: #67e8f9;
+  }
+
+  :is(.dark .kv-formula-expression) {
+    color: #e2e8f0;
+  }
+</style>
