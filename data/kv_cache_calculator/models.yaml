@@ -28,7 +28,7 @@ models:
     label: "DeepSeek V4 Pro"
     family: "DeepSeek"
     formula: "deepseek_v4_hybrid"
-    default_tokens: 131072
+    default_tokens: 1024
     max_position_embeddings: 1048576
     source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -44,7 +44,7 @@ models:
     label: "DeepSeek V4 Flash"
     family: "DeepSeek"
     formula: "deepseek_v4_hybrid"
-    default_tokens: 131072
+    default_tokens: 1024
     max_position_embeddings: 1048576
     source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -60,7 +60,7 @@ models:
     label: "DeepSeek V3.2"
     family: "DeepSeek"
     formula: "dsa_mla"
-    default_tokens: 128000
+    default_tokens: 1024
     max_position_embeddings: 163840
     source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V3.2/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -79,7 +79,7 @@ models:
     label: "GLM-5"
     family: "GLM"
     formula: "dsa_mla"
-    default_tokens: 128000
+    default_tokens: 1024
     max_position_embeddings: 202752
     source_url: "https://huggingface.co/zai-org/GLM-5/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -98,7 +98,7 @@ models:
     label: "GLM-5.1"
     family: "GLM"
     formula: "dsa_mla"
-    default_tokens: 128000
+    default_tokens: 1024
     max_position_embeddings: 202752
     source_url: "https://huggingface.co/zai-org/GLM-5.1/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -117,7 +117,7 @@ models:
     label: "Kimi K2.5"
     family: "Kimi"
     formula: "mla"
-    default_tokens: 128000
+    default_tokens: 1024
     max_position_embeddings: 262144
     source_url: "https://huggingface.co/moonshotai/Kimi-K2.5/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -132,7 +132,7 @@ models:
     label: "Kimi K2.6"
     family: "Kimi"
     formula: "mla"
-    default_tokens: 128000
+    default_tokens: 1024
     max_position_embeddings: 262144
     source_url: "https://huggingface.co/moonshotai/Kimi-K2.6/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -147,7 +147,7 @@ models:
     label: "Qwen3-235B-A22B"
     family: "Qwen3"
     formula: "standard_gqa"
-    default_tokens: 40960
+    default_tokens: 1024
     max_position_embeddings: 40960
     source_url: "https://huggingface.co/Qwen/Qwen3-235B-A22B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -160,7 +160,7 @@ models:
     label: "Qwen3-32B"
     family: "Qwen3"
     formula: "standard_gqa"
-    default_tokens: 40960
+    default_tokens: 1024
     max_position_embeddings: 40960
     source_url: "https://huggingface.co/Qwen/Qwen3-32B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -173,7 +173,7 @@ models:
     label: "Qwen3-30B-A3B"
     family: "Qwen3"
     formula: "standard_gqa"
-    default_tokens: 40960
+    default_tokens: 1024
     max_position_embeddings: 40960
     source_url: "https://huggingface.co/Qwen/Qwen3-30B-A3B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -186,7 +186,7 @@ models:
     label: "Qwen3-14B"
     family: "Qwen3"
     formula: "standard_gqa"
-    default_tokens: 40960
+    default_tokens: 1024
     max_position_embeddings: 40960
     source_url: "https://huggingface.co/Qwen/Qwen3-14B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -199,7 +199,7 @@ models:
     label: "Qwen3-8B"
     family: "Qwen3"
     formula: "standard_gqa"
-    default_tokens: 40960
+    default_tokens: 1024
     max_position_embeddings: 40960
     source_url: "https://huggingface.co/Qwen/Qwen3-8B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -212,7 +212,7 @@ models:
     label: "Qwen3-4B"
     family: "Qwen3"
     formula: "standard_gqa"
-    default_tokens: 40960
+    default_tokens: 1024
     max_position_embeddings: 40960
     source_url: "https://huggingface.co/Qwen/Qwen3-4B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -225,7 +225,7 @@ models:
     label: "Qwen3-1.7B"
     family: "Qwen3"
     formula: "standard_gqa"
-    default_tokens: 40960
+    default_tokens: 1024
     max_position_embeddings: 40960
     source_url: "https://huggingface.co/Qwen/Qwen3-1.7B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -238,7 +238,7 @@ models:
     label: "Qwen3-0.6B"
     family: "Qwen3"
     formula: "standard_gqa"
-    default_tokens: 40960
+    default_tokens: 1024
     max_position_embeddings: 40960
     source_url: "https://huggingface.co/Qwen/Qwen3-0.6B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -251,7 +251,7 @@ models:
     label: "MiniMax M2"
     family: "MiniMax"
     formula: "standard_gqa"
-    default_tokens: 128000
+    default_tokens: 1024
     max_position_embeddings: 196608
     source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M2/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -268,7 +268,7 @@ models:
     label: "MiniMax M2.1"
     family: "MiniMax"
     formula: "standard_gqa"
-    default_tokens: 128000
+    default_tokens: 1024
     max_position_embeddings: 196608
     source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M2.1/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -285,7 +285,7 @@ models:
     label: "MiniMax M2.5"
     family: "MiniMax"
     formula: "standard_gqa"
-    default_tokens: 128000
+    default_tokens: 1024
     max_position_embeddings: 196608
     source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M2.5/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
@@ -302,7 +302,7 @@ models:
     label: "MiniMax M2.7"
     family: "MiniMax"
     formula: "standard_gqa"
-    default_tokens: 128000
+    default_tokens: 1024
     max_position_embeddings: 204800
     source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M2.7/raw/main/config.json"
     source_retrieved_at: "2026-05-20"

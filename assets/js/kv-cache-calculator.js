@@ -678,7 +678,6 @@
 
     function syncModelDefaults() {
       const model = selectedModel();
-      inputs.tokens.value = model.default_tokens || 4096;
       populatePrecisionOptions(root, data, model);
       populateIndexerPrecisionOptions(root, data, model);
       syncDraftControl(root, model);
