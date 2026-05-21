@@ -704,7 +704,7 @@
         );
 
         setText(root, "[data-kv-output='totalGiB']", `${formatNumber(result.totalGiB, RESULT_DIGITS)} GiB`);
-        setText(root, "[data-kv-output='totalGB']", `${formatNumber(result.totalGB, RESULT_DIGITS)} GB`);
+        setText(root, "[data-kv-output='totalGB']", `= ${formatNumber(result.totalGB, RESULT_DIGITS)} GB`);
         renderMetrics(root, result);
         setText(root, "[data-kv-output='formulaLabel']", result.elementPlan.formulaLabel);
         renderFormulaRows(root, result.elementPlan);

@@ -11,12 +11,12 @@
       </label>
 
       <label>
-        <span>Max tokens per sequence</span>
+        <span>Tokens per sequence</span>
         <input data-kv-input="tokens" type="number" min="1" step="1" inputmode="numeric" value="128000">
       </label>
 
       <label>
-        <span>Concurrent sequences</span>
+        <span>Sequences</span>
         <input data-kv-input="sequences" type="number" min="1" step="1" inputmode="numeric" value="1">
       </label>
 
@@ -42,7 +42,7 @@
           <span>Total cache size</span>
           <strong data-kv-output="totalGiB">--</strong>
         </div>
-        <em data-kv-output="totalGB">-- GB</em>
+        <em data-kv-output="totalGB">= -- GB</em>
       </div>
 
       <div class="kv-metric-grid" data-kv-metrics></div>
@@ -87,15 +87,23 @@
     --kv-panel: #f8fafc;
     --kv-blue: #2563eb;
     --kv-cyan: #0891b2;
-    width: min(100%, 64rem);
+    width: min(100%, 72rem);
     margin: 0 auto;
     padding: 0;
     color: var(--kv-ink);
   }
 
+  body:has(#kv-cache-calculator) .hb-toc {
+    display: none !important;
+  }
+
+  body:has(#kv-cache-calculator) article > main {
+    max-width: 80rem;
+  }
+
   .kv-calculator-grid {
     display: grid;
-    grid-template-columns: minmax(16rem, 24rem) minmax(0, 1fr);
+    grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
     gap: 1rem;
     align-items: start;
   }
@@ -192,9 +200,10 @@
     display: block;
     margin-top: 0.2rem;
     color: #0c4a6e;
-    font-size: clamp(2rem, 5vw, 3.2rem);
+    font-size: clamp(2rem, 4vw, 3.2rem);
     line-height: 1;
     letter-spacing: 0;
+    white-space: nowrap;
   }
 
   .kv-total-band em {
@@ -202,6 +211,7 @@
     color: #0369a1;
     font-style: normal;
     font-weight: 700;
+    white-space: nowrap;
   }
 
   .kv-metric-grid {
@@ -223,6 +233,7 @@
     margin-top: 0.4rem;
     font-size: 1.2rem;
     letter-spacing: 0;
+    white-space: nowrap;
   }
 
   .kv-help {
