@@ -315,3 +315,262 @@ models:
       use_mtp: true
       num_mtp_modules: 3
       mtp_transformer_layers: 1
+  # ── DeepSeek V3 / R1 (MLA) ──────────────────────────────────────────
+  - id: deepseek-v3
+    label: "DeepSeek V3"
+    family: "DeepSeek"
+    formula: "mla"
+    default_tokens: 1024
+    max_position_embeddings: 163840
+    source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V3/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 61
+      kv_lora_rank: 512
+      qk_rope_head_dim: 64
+      qk_nope_head_dim: 128
+      v_head_dim: 128
+      num_key_value_heads: 128
+  - id: deepseek-r1
+    label: "DeepSeek R1"
+    family: "DeepSeek"
+    formula: "mla"
+    default_tokens: 1024
+    max_position_embeddings: 163840
+    source_url: "https://huggingface.co/deepseek-ai/DeepSeek-R1/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 61
+      kv_lora_rank: 512
+      qk_rope_head_dim: 64
+      qk_nope_head_dim: 128
+      v_head_dim: 128
+      num_key_value_heads: 128
+  # ── Llama 3.1 / 3.3 (Standard GQA) ─────────────────────────────────
+  - id: llama-3.1-8b
+    label: "Llama 3.1 8B"
+    family: "Llama"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 32
+      num_attention_heads: 32
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: llama-3.1-70b
+    label: "Llama 3.1 70B"
+    family: "Llama"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/meta-llama/Llama-3.1-70B-Instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 80
+      num_attention_heads: 64
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: llama-3.1-405b
+    label: "Llama 3.1 405B"
+    family: "Llama"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/meta-llama/Llama-3.1-405B-Instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 126
+      num_attention_heads: 128
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: llama-3.3-70b
+    label: "Llama 3.3 70B"
+    family: "Llama"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 80
+      num_attention_heads: 64
+      num_key_value_heads: 8
+      head_dim: 128
+  # ── Qwen2.5 (Standard GQA) ─────────────────────────────────────────
+  - id: qwen2.5-72b
+    label: "Qwen2.5-72B"
+    family: "Qwen2.5"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/Qwen/Qwen2.5-72B-Instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 80
+      num_attention_heads: 64
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: qwen2.5-32b
+    label: "Qwen2.5-32B"
+    family: "Qwen2.5"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/Qwen/Qwen2.5-32B-Instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 64
+      num_attention_heads: 40
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: qwen2.5-14b
+    label: "Qwen2.5-14B"
+    family: "Qwen2.5"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 48
+      num_attention_heads: 40
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: qwen2.5-7b
+    label: "Qwen2.5-7B"
+    family: "Qwen2.5"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 28
+      num_attention_heads: 28
+      num_key_value_heads: 4
+      head_dim: 128
+  # ── Mistral (Standard GQA) ─────────────────────────────────────────
+  - id: mistral-large-2411
+    label: "Mistral Large (2411)"
+    family: "Mistral"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/mistralai/Mistral-Large-Instruct-2411/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 88
+      num_attention_heads: 96
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: mistral-small-24b
+    label: "Mistral Small 24B"
+    family: "Mistral"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 32768
+    source_url: "https://huggingface.co/mistralai/Mistral-Small-24B-Instruct-2501/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 40
+      num_attention_heads: 32
+      num_key_value_heads: 8
+      head_dim: 128
+  # ── Gemma 2 (Standard GQA) ─────────────────────────────────────────
+  - id: gemma-2-27b
+    label: "Gemma 2 27B"
+    family: "Gemma"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 8192
+    source_url: "https://huggingface.co/google/gemma-2-27b-it/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 46
+      num_attention_heads: 32
+      num_key_value_heads: 16
+      head_dim: 128
+  - id: gemma-2-9b
+    label: "Gemma 2 9B"
+    family: "Gemma"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 8192
+    source_url: "https://huggingface.co/google/gemma-2-9b-it/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 42
+      num_attention_heads: 16
+      num_key_value_heads: 8
+      head_dim: 256
+  # ── Gemma 3 (Standard GQA) ─────────────────────────────────────────
+  - id: gemma-3-27b
+    label: "Gemma 3 27B"
+    family: "Gemma"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/google/gemma-3-27b-it/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 62
+      num_attention_heads: 32
+      num_key_value_heads: 16
+      head_dim: 128
+  - id: gemma-3-12b
+    label: "Gemma 3 12B"
+    family: "Gemma"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/google/gemma-3-12b-it/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 48
+      num_attention_heads: 16
+      num_key_value_heads: 8
+      head_dim: 256
+  # ── Phi-4 (Standard GQA) ───────────────────────────────────────────
+  - id: phi-4
+    label: "Phi-4 14B"
+    family: "Phi"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 16384
+    source_url: "https://huggingface.co/microsoft/phi-4/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 40
+      num_attention_heads: 40
+      num_key_value_heads: 10
+      head_dim: 128
+  # ── Cohere Command R (Standard GQA) ────────────────────────────────
+  - id: command-r-plus
+    label: "Command R+"
+    family: "Cohere"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/CohereForAI/c4ai-command-r-plus/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 64
+      num_attention_heads: 96
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: command-r
+    label: "Command R"
+    family: "Cohere"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/CohereForAI/c4ai-command-r-v01/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 40
+      num_attention_heads: 64
+      num_key_value_heads: 8
+      head_dim: 128
