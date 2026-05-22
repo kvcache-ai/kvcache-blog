@@ -6,6 +6,11 @@
   <div class="kv-calculator-grid">
     <form class="kv-controls" onsubmit="return false;">
       <label>
+        <span>Model family</span>
+        <select data-kv-input="modelFamily"></select>
+      </label>
+
+      <label>
         <span>Model</span>
         <select data-kv-input="model"></select>
       </label>
@@ -32,7 +37,7 @@
 
       <label class="kv-checkbox-row" data-kv-draft-control hidden>
         <input data-kv-input="includeDraftKvCache" type="checkbox">
-        <span data-kv-inline-help="Adds the extra DeepSeek V4 MTP/draft layer KV cache. This ratio=0 layer keeps only the sliding-window KV segment.">Include draft KV cache</span>
+        <span data-kv-inline-help="Adds model-specific MTP/draft KV layers when enabled by the serving stack. DeepSeek V4 draft layers use ratio=0 sliding-window cache.">Include draft KV cache</span>
       </label>
     </form>
 

@@ -58,6 +58,33 @@
     return Boolean(model && model.fields && Number.isFinite(Number(model.fields.index_head_dim)));
   }
 
+  function safeNumber(value, fallback) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  function draftLayerCount(model) {
+    if (!model || !model.fields) return 0;
+    const nextnLayers = safeNumber(model.fields.num_nextn_predict_layers, 0);
+    if (nextnLayers > 0) return nextnLayers;
+    if (model.fields.use_mtp === true) {
+      return (
+        safeNumber(model.fields.num_mtp_modules, 0) *
+        safeNumber(model.fields.mtp_transformer_layers, 0)
+      );
+    }
+    return 0;
+  }
+
+  function hasDraftKvCache(model) {
+    if (!model || !model.fields) return false;
+    if (isDeepSeekV4(model)) {
+      const layers = safeNumber(model.fields.num_hidden_layers, 0);
+      return Array.isArray(model.fields.compress_ratios) && model.fields.compress_ratios.length > layers;
+    }
+    return draftLayerCount(model) > 0;
+  }
+
   function toBoolean(value) {
     return value === true || value === "true" || value === "on" || value === "1";
   }
@@ -125,25 +152,34 @@
 
     if (formula === "standard_gqa") {
       const layers = getField(model, "num_hidden_layers");
+      const draftLayers = includeDraftKvCache ? draftLayerCount(model) : 0;
+      const activeLayers = layers + draftLayers;
       const kvHeads = getField(model, "num_key_value_heads");
       const headDim = getField(model, "head_dim");
-      const elementsPerToken = layers * 2 * kvHeads * headDim;
+      const elementsPerToken = activeLayers * 2 * kvHeads * headDim;
       return {
         elementsPerSequence: elementsPerToken * tokens,
         elementsPerToken,
         formulaLabel: FORMULA_LABELS[formula],
         formulaText:
-          "total_bytes = tokens * sequences * layers * 2 * num_key_value_heads * head_dim * precision_bytes",
+          "active_layers = main_layers + draft_layers_if_enabled\ntotal_bytes = tokens * sequences * active_layers * 2 * num_key_value_heads * head_dim * precision_bytes",
         formulaRows: [
           {
+            name: "active_layers",
+            expression: "main_layers + draft_layers_if_enabled",
+            description: "Draft layers are counted only when Include draft KV cache is enabled for models that define an MTP/draft stack.",
+          },
+          {
             name: "total_bytes",
-            expression: "tokens x sequences x layers x 2 x num_key_value_heads x head_dim x precision_bytes",
+            expression: "tokens x sequences x active_layers x 2 x num_key_value_heads x head_dim x precision_bytes",
             description: "Total KV cache bytes for all cached tokens and concurrent sequences.",
           },
         ],
-        note: "Production estimate of base KV payload; allocator and memory-pool bytes are excluded.",
+        note: "Production estimate of base KV payload; allocator and memory-pool bytes are excluded. Draft KV is included only when the checkbox is enabled.",
         byteGroups: [{ role: "kv", label: "KV cache", elements: elementsPerToken * tokens }],
         components: [
+          ["Main layers", layers],
+          ["Draft layers included", draftLayers, "Extra MTP/draft layers included in KV capacity when the checkbox is enabled."],
           ["Per-token elements", elementsPerToken, "Number of scalar KV elements needed for one token before multiplying by precision bytes."],
           ["Model fields", fieldList(model, ["num_hidden_layers", "num_key_value_heads", "head_dim"])],
         ],
@@ -152,25 +188,34 @@
 
     if (formula === "mla") {
       const layers = getField(model, "num_hidden_layers");
+      const draftLayers = includeDraftKvCache ? draftLayerCount(model) : 0;
+      const activeLayers = layers + draftLayers;
       const kvRank = getField(model, "kv_lora_rank");
       const ropeDim = getField(model, "qk_rope_head_dim");
-      const elementsPerToken = layers * (kvRank + ropeDim);
+      const elementsPerToken = activeLayers * (kvRank + ropeDim);
       return {
         elementsPerSequence: elementsPerToken * tokens,
         elementsPerToken,
         formulaLabel: FORMULA_LABELS[formula],
         formulaText:
-          "total_bytes = tokens * sequences * layers * (kv_lora_rank + qk_rope_head_dim) * precision_bytes",
+          "active_layers = main_layers + draft_layers_if_enabled\ntotal_bytes = tokens * sequences * active_layers * (kv_lora_rank + qk_rope_head_dim) * precision_bytes",
         formulaRows: [
           {
+            name: "active_layers",
+            expression: "main_layers + draft_layers_if_enabled",
+            description: "Draft layers are counted only when Include draft KV cache is enabled for models that define an MTP/draft stack.",
+          },
+          {
             name: "total_bytes",
-            expression: "tokens x sequences x layers x (kv_lora_rank + qk_rope_head_dim) x precision_bytes",
+            expression: "tokens x sequences x active_layers x (kv_lora_rank + qk_rope_head_dim) x precision_bytes",
             description: "Total latent KV bytes for all cached tokens and concurrent sequences.",
           },
         ],
-        note: "Production estimate of MLA latent KV payload; allocator and memory-pool bytes are excluded.",
+        note: "Production estimate of MLA latent KV payload; allocator and memory-pool bytes are excluded. Draft KV is included only when the checkbox is enabled.",
         byteGroups: [{ role: "kv", label: "KV cache", elements: elementsPerToken * tokens }],
         components: [
+          ["Main layers", layers],
+          ["Draft layers included", draftLayers, "Extra MTP/draft layers included in KV capacity when the checkbox is enabled."],
           ["Per-token elements", elementsPerToken, "Number of scalar latent KV elements needed for one token before multiplying by precision bytes."],
           ["Model fields", fieldList(model, ["num_hidden_layers", "kv_lora_rank", "qk_rope_head_dim"])],
         ],
@@ -179,6 +224,8 @@
 
     if (formula === "dsa_mla") {
       const layers = getField(model, "num_hidden_layers");
+      const draftLayers = includeDraftKvCache ? draftLayerCount(model) : 0;
+      const activeLayers = layers + draftLayers;
       const indexDim = getField(model, "index_head_dim");
       const kvRank = getField(model, "kv_lora_rank");
       const ropeDim = getField(model, "qk_rope_head_dim");
@@ -186,24 +233,29 @@
       const indexerElementsPerLayer = indexDim;
       const elementsPerLayer = kvElementsPerLayer + indexerElementsPerLayer;
 
-      const kvElementsPerToken = layers * kvElementsPerLayer;
-      const indexerElementsPerToken = layers * indexerElementsPerLayer;
-      const elementsPerToken = layers * elementsPerLayer;
+      const kvElementsPerToken = activeLayers * kvElementsPerLayer;
+      const indexerElementsPerToken = activeLayers * indexerElementsPerLayer;
+      const elementsPerToken = activeLayers * elementsPerLayer;
       return {
         elementsPerSequence: elementsPerToken * tokens,
         elementsPerToken,
         formulaLabel: FORMULA_LABELS[formula],
         formulaText:
-          "kv_bytes = tokens * sequences * layers * (kv_lora_rank + qk_rope_head_dim) * kv_precision_bytes\nindexer_bytes = tokens * sequences * layers * index_head_dim * indexer_precision_bytes\ntotal_bytes = kv_bytes + indexer_bytes",
+          "active_layers = main_layers + draft_layers_if_enabled\nkv_bytes = tokens * sequences * active_layers * (kv_lora_rank + qk_rope_head_dim) * kv_precision_bytes\nindexer_bytes = tokens * sequences * active_layers * index_head_dim * indexer_precision_bytes\ntotal_bytes = kv_bytes + indexer_bytes",
         formulaRows: [
           {
+            name: "active_layers",
+            expression: "main_layers + draft_layers_if_enabled",
+            description: "Draft layers are counted only when Include draft KV cache is enabled for models that define a next-token prediction stack.",
+          },
+          {
             name: "kv_bytes",
-            expression: "tokens x sequences x layers x (kv_lora_rank + qk_rope_head_dim) x kv_precision_bytes",
+            expression: "tokens x sequences x active_layers x (kv_lora_rank + qk_rope_head_dim) x kv_precision_bytes",
             description: "Latent KV payload stored by the production MLA/DSA path.",
           },
           {
             name: "indexer_bytes",
-            expression: "tokens x sequences x layers x index_head_dim x indexer_precision_bytes",
+            expression: "tokens x sequences x active_layers x index_head_dim x indexer_precision_bytes",
             description: "Additional per-token indexer state used by the indexer attention path.",
           },
           {
@@ -218,6 +270,8 @@
           { role: "indexer", label: "Indexer cache", elements: indexerElementsPerToken * tokens },
         ],
         components: [
+          ["Main layers", layers],
+          ["Draft layers included", draftLayers, "Extra next-token prediction layers included in KV capacity when the checkbox is enabled."],
           ["KV elements per token", kvElementsPerToken, "Latent KV elements per token before applying KV precision."],
           ["Indexer elements per token", indexerElementsPerToken, "Indexer elements per token before applying indexer precision."],
           ["Per-token elements", elementsPerToken, "KV plus indexer scalar elements per token before multiplying by precision bytes."],
@@ -380,7 +434,7 @@
         }
       : precision;
     const elementPlan = calculateElementsPerSequence(model, tokens, {
-      includeDraftKvCache: isDeepSeekV4(model) && toBoolean(input.includeDraftKvCache),
+      includeDraftKvCache: hasDraftKvCache(model) && toBoolean(input.includeDraftKvCache),
     });
     const cacheGroupsPerSequence = calculateCacheGroups(elementPlan, cachePrecision);
     const bytesPerSequence = cacheGroupsPerSequence.reduce((total, group) => total + group.bytesPerSequence, 0);
@@ -439,13 +493,22 @@
     return `${formatNumber(bytes, RESULT_DIGITS)} B`;
   }
 
+  function modelFamily(model) {
+    const family = model.family || "Other";
+    return family.indexOf("Qwen") === 0 ? "Qwen" : family;
+  }
+
   function groupModels(models) {
     return models.reduce((groups, model) => {
-      const key = model.family || "Other";
+      const key = modelFamily(model);
       if (!groups[key]) groups[key] = [];
       groups[key].push(model);
       return groups;
     }, {});
+  }
+
+  function modelById(models, id) {
+    return models.find((model) => model.id === id) || models[0];
   }
 
   function setText(root, selector, value) {
@@ -558,24 +621,40 @@
     });
   }
 
-  function populateModels(root, models) {
-    const select = root.querySelector("[data-kv-input='model']");
+  function sortedModelFamilies(models) {
+    return Object.keys(groupModels(models)).sort();
+  }
+
+  function modelsForFamily(models, family) {
+    return models
+      .filter((model) => modelFamily(model) === family);
+  }
+
+  function populateModelFamilies(select, models, preferredFamily) {
     if (!select) return;
-    const groups = groupModels(models);
+    const families = sortedModelFamilies(models);
     select.innerHTML = "";
-    Object.keys(groups)
-      .sort()
-      .forEach((family) => {
-        const optgroup = document.createElement("optgroup");
-        optgroup.label = family;
-        groups[family].forEach((model) => {
-          const option = document.createElement("option");
-          option.value = model.id;
-          option.textContent = model.label;
-          optgroup.appendChild(option);
-        });
-        select.appendChild(optgroup);
-      });
+    families.forEach((family) => {
+      const item = document.createElement("option");
+      item.value = family;
+      item.textContent = family;
+      select.appendChild(item);
+    });
+    select.value = families.includes(preferredFamily) ? preferredFamily : families[0];
+  }
+
+  function populateModelsForFamily(select, models, family, preferredModelId) {
+    if (!select) return;
+    const familyModels = modelsForFamily(models, family);
+    select.innerHTML = "";
+    familyModels.forEach((model) => {
+      const item = document.createElement("option");
+      item.value = model.id;
+      item.textContent = model.label;
+      select.appendChild(item);
+    });
+    const ids = familyModels.map((model) => model.id);
+    select.value = ids.includes(preferredModelId) ? preferredModelId : ids[0];
   }
 
   function rawPrecisionOptions(data) {
@@ -624,7 +703,7 @@
   function syncDraftControl(root, model) {
     const control = root.querySelector("[data-kv-draft-control]");
     const checkbox = root.querySelector("[data-kv-input='includeDraftKvCache']");
-    const showDraftControl = isDeepSeekV4(model);
+    const showDraftControl = hasDraftKvCache(model);
     if (control) control.hidden = !showDraftControl;
     if (checkbox && !showDraftControl) checkbox.checked = false;
     if (checkbox && showDraftControl) checkbox.checked = false;
@@ -659,10 +738,10 @@
   function initialize(root, data) {
     const models = data.models || [];
     if (!root || !models.length) return;
-    populateModels(root, models);
     setCheckboxHelp(root);
 
     const inputs = {
+      modelFamily: root.querySelector("[data-kv-input='modelFamily']"),
       model: root.querySelector("[data-kv-input='model']"),
       tokens: root.querySelector("[data-kv-input='tokens']"),
       sequences: root.querySelector("[data-kv-input='sequences']"),
@@ -673,7 +752,12 @@
     };
 
     function selectedModel() {
-      return models.find((model) => model.id === inputs.model.value) || models[0];
+      return modelById(models, inputs.model.value);
+    }
+
+    function selectedFamily() {
+      const model = selectedModel();
+      return inputValue(inputs.modelFamily, modelFamily(model));
     }
 
     function syncModelDefaults() {
@@ -719,13 +803,22 @@
       }
     }
 
+    const defaultModelId = inputs.model.value || models[0].id;
+    const defaultModel = modelById(models, defaultModelId);
+    populateModelFamilies(inputs.modelFamily, models, modelFamily(defaultModel));
+    populateModelsForFamily(inputs.model, models, selectedFamily(), defaultModelId);
+
+    inputs.modelFamily.addEventListener("change", () => {
+      populateModelsForFamily(inputs.model, models, inputValue(inputs.modelFamily, undefined));
+      syncModelDefaults();
+      update();
+    });
     inputs.model.addEventListener("change", () => {
       syncModelDefaults();
       update();
     });
     addInputListeners(inputs, update);
 
-    if (!inputs.model.value) inputs.model.value = models[0].id;
     syncModelDefaults();
     update();
   }
@@ -740,6 +833,8 @@
     calculate,
     calculateElementsPerSequence,
     formatBytes,
+    modelFamily,
+    modelsForFamily,
     mount,
   };
 });

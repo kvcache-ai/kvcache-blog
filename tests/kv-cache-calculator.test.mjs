@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const { calculate, calculateElementsPerSequence, formatBytes } = require("../assets/js/kv-cache-calculator.js");
+const { calculate, calculateElementsPerSequence, formatBytes, modelFamily, modelsForFamily } = require("../assets/js/kv-cache-calculator.js");
 
 const bf16 = { precision: "bf16_fp16", indexerPrecision: "bf16_fp16", sequences: 1, tensorParallel: 1 };
 
@@ -177,6 +177,7 @@ test("DSA indexer models can use separate KV and indexer precision", () => {
       kv_lora_rank: 512,
       qk_rope_head_dim: 64,
       index_head_dim: 128,
+      num_nextn_predict_layers: 1,
     },
   };
 
@@ -192,6 +193,51 @@ test("DSA indexer models can use separate KV and indexer precision", () => {
   assert.ok(Math.abs(result.kvGiB - 4.18853759765625) < 1e-9);
   assert.ok(Math.abs(result.indexerGiB - 0.46539306640625) < 1e-9);
   assert.ok(Math.abs(result.totalGiB - 4.6539306640625) < 1e-9);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Draft layers included")[1], 0);
+  assert.match(result.elementPlan.formulaText, /active_layers/);
+});
+
+test("DSA draft option adds one latent KV and indexer layer", () => {
+  const model = {
+    id: "deepseek-v3.2",
+    label: "DeepSeek V3.2",
+    formula: "dsa_mla",
+    fields: {
+      num_hidden_layers: 61,
+      kv_lora_rank: 512,
+      qk_rope_head_dim: 64,
+      index_head_dim: 128,
+      num_nextn_predict_layers: 1,
+    },
+  };
+
+  const withoutDraft = calculate(model, {
+    tokens: 128000,
+    sequences: 1,
+    precision: "fp8_int8",
+    indexerPrecision: "fp4_int4",
+    includeDraftKvCache: false,
+  });
+  const withDraft = calculate(model, {
+    tokens: 128000,
+    sequences: 1,
+    precision: "fp8_int8",
+    indexerPrecision: "fp4_int4",
+    includeDraftKvCache: true,
+  });
+
+  assert.equal(withDraft.elementPlan.components.find(([label]) => label === "Draft layers included")[1], 1);
+  assert.equal(
+    withDraft.elementPlan.byteGroups.find((group) => group.role === "kv").elements -
+      withoutDraft.elementPlan.byteGroups.find((group) => group.role === "kv").elements,
+    73728000,
+  );
+  assert.equal(
+    withDraft.elementPlan.byteGroups.find((group) => group.role === "indexer").elements -
+      withoutDraft.elementPlan.byteGroups.find((group) => group.role === "indexer").elements,
+    16384000,
+  );
+  assert.ok(Math.abs(withDraft.totalGiB - withoutDraft.totalGiB - 0.0762939453125) < 1e-9);
 });
 
 test("DeepSeek V4 draft KV cache option adds the ratio-0 draft layer", () => {
@@ -246,6 +292,94 @@ test("standard models ignore indexer precision and keep single precision scaling
 
   assert.ok(Math.abs(result.totalGiB - 60.546875) < 1e-9);
   assert.equal(result.indexerBytes, 0);
+});
+
+test("DeepSeek V3 MLA draft option adds one latent KV layer", () => {
+  const model = {
+    id: "deepseek-v3",
+    label: "DeepSeek V3",
+    formula: "mla",
+    fields: {
+      num_hidden_layers: 61,
+      kv_lora_rank: 512,
+      qk_rope_head_dim: 64,
+      num_nextn_predict_layers: 1,
+    },
+  };
+
+  const withoutDraft = calculateElementsPerSequence(model, 128000, { includeDraftKvCache: false });
+  const withDraft = calculateElementsPerSequence(model, 128000, { includeDraftKvCache: true });
+
+  assert.equal(withoutDraft.elementsPerToken, 35136);
+  assert.equal(withDraft.elementsPerToken, 35712);
+  assert.equal(withDraft.components.find(([label]) => label === "Draft layers included")[1], 1);
+  assert.match(withDraft.formulaText, /active_layers/);
+});
+
+test("MiniMax M2 draft option adds three standard GQA KV layers", () => {
+  const model = {
+    id: "minimax-m2",
+    label: "MiniMax M2",
+    formula: "standard_gqa",
+    fields: {
+      num_hidden_layers: 62,
+      num_key_value_heads: 8,
+      head_dim: 128,
+      use_mtp: true,
+      num_mtp_modules: 3,
+      mtp_transformer_layers: 1,
+    },
+  };
+
+  const withoutDraft = calculateElementsPerSequence(model, 128000, { includeDraftKvCache: false });
+  const withDraft = calculateElementsPerSequence(model, 128000, { includeDraftKvCache: true });
+
+  assert.equal(withoutDraft.elementsPerToken, 126976);
+  assert.equal(withDraft.elementsPerToken, 133120);
+  assert.equal(withDraft.components.find(([label]) => label === "Draft layers included")[1], 3);
+});
+
+test("Llama 3.1 70B standard GQA formula matches config fields", () => {
+  const model = {
+    id: "llama-3.1-70b",
+    label: "Llama 3.1 70B",
+    formula: "standard_gqa",
+    fields: { num_hidden_layers: 80, num_key_value_heads: 8, head_dim: 128 },
+  };
+
+  const result = calculate(model, { ...bf16, tokens: 128000 });
+  assert.equal(result.elementPlan.elementsPerToken, 163840);
+  assert.ok(Math.abs(result.totalGiB - 39.0625) < 1e-9);
+});
+
+test("Qwen2.5 72B standard GQA formula ignores draft input", () => {
+  const model = {
+    id: "qwen2.5-72b",
+    label: "Qwen2.5-72B",
+    formula: "standard_gqa",
+    fields: { num_hidden_layers: 80, num_key_value_heads: 8, head_dim: 128 },
+  };
+
+  const withoutDraft = calculate(model, { ...bf16, tokens: 128000, includeDraftKvCache: false });
+  const withDraft = calculate(model, { ...bf16, tokens: 128000, includeDraftKvCache: true });
+
+  assert.equal(withoutDraft.elementPlan.elementsPerToken, 163840);
+  assert.equal(withDraft.elementPlan.elementsPerToken, withoutDraft.elementPlan.elementsPerToken);
+  assert.ok(Math.abs(withDraft.totalGiB - 39.0625) < 1e-9);
+});
+
+test("model family grouping keeps Qwen generations under one family", () => {
+  const models = [
+    { id: "qwen3-32b", label: "Qwen3-32B", family: "Qwen3" },
+    { id: "qwen2.5-72b", label: "Qwen2.5-72B", family: "Qwen2.5" },
+    { id: "deepseek-v3", label: "DeepSeek V3", family: "DeepSeek" },
+  ];
+
+  assert.equal(modelFamily(models[0]), "Qwen");
+  assert.deepEqual(modelsForFamily(models, "Qwen").map((model) => model.id), [
+    "qwen3-32b",
+    "qwen2.5-72b",
+  ]);
 });
 
 test("display byte formatter keeps five decimal places", () => {
