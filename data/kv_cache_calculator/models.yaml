@@ -574,3 +574,233 @@ models:
       num_attention_heads: 64
       num_key_value_heads: 8
       head_dim: 128
+  # ── Llama 4 (Standard GQA, iRoPE chunked attention) ────────────────
+  - id: llama-4-scout
+    label: "Llama 4 Scout 17B-16E"
+    family: "Llama"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 10485760
+    source_url: "https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 48
+      num_attention_heads: 40
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: llama-4-maverick
+    label: "Llama 4 Maverick 17B-128E"
+    family: "Llama"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 1048576
+    source_url: "https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 48
+      num_attention_heads: 40
+      num_key_value_heads: 8
+      head_dim: 128
+  # ── Mixtral (Standard GQA, MoE) ────────────────────────────────────
+  - id: mixtral-8x7b
+    label: "Mixtral 8x7B"
+    family: "Mistral"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 32768
+    source_url: "https://huggingface.co/mistralai/Mixtral-8x7B-v0.1/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 32
+      num_attention_heads: 32
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: mixtral-8x22b
+    label: "Mixtral 8x22B"
+    family: "Mistral"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 65536
+    source_url: "https://huggingface.co/mistralai/Mixtral-8x22B-v0.1/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 56
+      num_attention_heads: 48
+      num_key_value_heads: 8
+      head_dim: 128
+  # ── Yi (Standard GQA) ──────────────────────────────────────────────
+  - id: yi-1.5-34b
+    label: "Yi-1.5-34B"
+    family: "Yi"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 4096
+    source_url: "https://huggingface.co/01-ai/Yi-1.5-34B-Chat/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 60
+      num_attention_heads: 56
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: yi-1.5-9b
+    label: "Yi-1.5-9B"
+    family: "Yi"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 4096
+    source_url: "https://huggingface.co/01-ai/Yi-1.5-9B-Chat/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 48
+      num_attention_heads: 32
+      num_key_value_heads: 4
+      head_dim: 128
+  # ── InternLM (Standard GQA) ────────────────────────────────────────
+  - id: internlm2.5-20b
+    label: "InternLM2.5-20B"
+    family: "InternLM"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 32768
+    source_url: "https://huggingface.co/internlm/internlm2_5-20b-chat/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 48
+      num_attention_heads: 48
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: internlm3-8b
+    label: "InternLM3-8B"
+    family: "InternLM"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 32768
+    source_url: "https://huggingface.co/internlm/internlm3-8b-instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 32
+      num_attention_heads: 32
+      num_key_value_heads: 8
+      head_dim: 128
+  # ── DBRX (Standard GQA, MoE) ───────────────────────────────────────
+  - id: dbrx-132b
+    label: "DBRX 132B"
+    family: "DBRX"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 32768
+    source_url: "https://huggingface.co/databricks/dbrx-instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 40
+      num_attention_heads: 48
+      num_key_value_heads: 8
+      head_dim: 128
+  # ── Phi-3 (Standard GQA) ───────────────────────────────────────────
+  - id: phi-3-medium
+    label: "Phi-3-medium 14B"
+    family: "Phi"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/microsoft/Phi-3-medium-128k-instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 40
+      num_attention_heads: 40
+      num_key_value_heads: 10
+      head_dim: 128
+  - id: phi-3-small
+    label: "Phi-3-small 7B"
+    family: "Phi"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/microsoft/Phi-3-small-128k-instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 32
+      num_attention_heads: 32
+      num_key_value_heads: 8
+      head_dim: 128
+  - id: phi-3-mini
+    label: "Phi-3-mini 3.8B"
+    family: "Phi"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 32
+      num_attention_heads: 32
+      num_key_value_heads: 32
+      head_dim: 96
+  # ── Qwen2 MoE / Coder (Standard GQA) ──────────────────────────────
+  - id: qwen2-57b-a14b
+    label: "Qwen2-57B-A14B"
+    family: "Qwen2"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 32768
+    source_url: "https://huggingface.co/Qwen/Qwen2-57B-A14B-Instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 28
+      num_attention_heads: 28
+      num_key_value_heads: 4
+      head_dim: 128
+  - id: qwen2.5-coder-32b
+    label: "Qwen2.5-Coder-32B"
+    family: "Qwen2.5"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 131072
+    source_url: "https://huggingface.co/Qwen/Qwen2.5-Coder-32B-Instruct/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 64
+      num_attention_heads: 40
+      num_key_value_heads: 8
+      head_dim: 128
+  # ── Falcon (Standard GQA) ──────────────────────────────────────────
+  - id: falcon-180b
+    label: "Falcon-180B"
+    family: "Falcon"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 2048
+    source_url: "https://huggingface.co/tiiuae/falcon-180B/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 80
+      num_attention_heads: 232
+      num_key_value_heads: 8
+      head_dim: 64
+  - id: falcon-40b
+    label: "Falcon-40B"
+    family: "Falcon"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 2048
+    source_url: "https://huggingface.co/tiiuae/falcon-40b/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 60
+      num_attention_heads: 128
+      num_key_value_heads: 8
+      head_dim: 64
+  # ── Nemotron (Standard GQA) ────────────────────────────────────────
+  - id: nemotron-4-340b
+    label: "Nemotron-4-340B"
+    family: "Nemotron"
+    formula: "standard_gqa"
+    default_tokens: 1024
+    max_position_embeddings: 4096
+    source_url: "https://huggingface.co/nvidia/Nemotron-4-340B-Base/raw/main/config.json"
+    source_retrieved_at: "2026-05-22"
+    fields:
+      num_hidden_layers: 96
+      num_attention_heads: 96
+      num_key_value_heads: 8
+      head_dim: 192
