@@ -39,6 +39,11 @@
         <input data-kv-input="includeDraftKvCache" type="checkbox">
         <span data-kv-inline-help="Adds model-specific MTP/draft KV layers when enabled by the serving stack. DeepSeek V4 draft layers use ratio=0 sliding-window cache.">Include draft KV cache</span>
       </label>
+
+      <label class="kv-checkbox-row" data-kv-linear-state-control hidden>
+        <input data-kv-input="includeLinearAttentionState" type="checkbox">
+        <span data-kv-inline-help="Adds Qwen3.5/3.6 linear-attention recurrent and convolution state. This state is sequence-level runtime cache, not ordinary per-token KV.">Include linear-attention state</span>
+      </label>
     </form>
 
     <div class="kv-results">
@@ -266,6 +271,7 @@
   }
 
   .kv-help::after {
+    display: none;
     position: absolute;
     z-index: 5;
     top: 50%;
@@ -295,6 +301,7 @@
   .kv-help:focus::after,
   .kv-help:focus-visible::after,
   .kv-help[data-kv-open="true"]::after {
+    display: block;
     opacity: 1;
   }
 
@@ -335,6 +342,7 @@
     font-size: 0.82rem;
     line-height: 1.55;
     letter-spacing: 0;
+    min-width: 0;
   }
 
   .kv-formula-name {

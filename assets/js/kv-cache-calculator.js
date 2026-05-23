@@ -10,6 +10,8 @@
   const BYTES_PER_GB = 1e9;
   const BYTES_PER_GIB = 1024 ** 3;
   const RESULT_DIGITS = 5;
+  const QWEN_LINEAR_CONV_BYTES_PER_ELEMENT = 2;
+  const QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT = 4;
 
   const DEFAULT_PRECISIONS = {
     bf16_fp16: { label: "BF16 / FP16", bytesPerElement: 2 },
@@ -87,6 +89,10 @@
     return draftLayerCount(model) > 0;
   }
 
+  function hasLinearAttentionState(model) {
+    return Boolean(model && model.formula === "qwen_linear_full_hybrid");
+  }
+
   function toBoolean(value) {
     return value === true || value === "true" || value === "on" || value === "1";
   }
@@ -158,6 +164,7 @@
   function calculateElementsPerSequence(model, tokens, settings) {
     const formula = model.formula;
     const includeDraftKvCache = toBoolean(settings && settings.includeDraftKvCache);
+    const includeLinearAttentionState = toBoolean(settings && settings.includeLinearAttentionState);
 
     if (formula === "standard_gqa") {
       const layers = getField(model, "num_hidden_layers");
@@ -295,23 +302,63 @@
       const linearLayers = getField(model, "linear_attention_layers");
       const kvHeads = getField(model, "num_key_value_heads");
       const headDim = getField(model, "head_dim");
+      const linearKeyHeads = getField(model, "linear_num_key_heads");
+      const linearKeyDim = getField(model, "linear_key_head_dim");
+      const linearValueHeads = getField(model, "linear_num_value_heads");
+      const linearValueDim = getField(model, "linear_value_head_dim");
+      const linearConvKernel = getField(model, "linear_conv_kernel_dim");
       const mtpLayers = optionalField(model, "mtp_num_hidden_layers", 0);
       const elementsPerToken = fullLayers * 2 * kvHeads * headDim;
-      return {
-        elementsPerSequence: elementsPerToken * tokens,
-        elementsPerToken,
-        formulaLabel: FORMULA_LABELS[formula],
-        formulaText:
-          "full_kv_bytes = tokens * sequences * full_attention_layers * 2 * num_key_value_heads * head_dim * precision_bytes\ntotal_bytes = full_kv_bytes",
-        formulaRows: [
+      const fullElements = elementsPerToken * tokens;
+      const linearConvElements =
+        linearLayers *
+        linearConvKernel *
+        (2 * linearKeyHeads * linearKeyDim + linearValueHeads * linearValueDim);
+      const linearRecurrentElements = linearLayers * linearValueHeads * linearKeyDim * linearValueDim;
+      const linearStateBytesPerSequence =
+        includeLinearAttentionState
+          ? linearConvElements * QWEN_LINEAR_CONV_BYTES_PER_ELEMENT +
+            linearRecurrentElements * QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT
+          : 0;
+      const byteGroups = [{ role: "kv", label: "Full-attention KV cache", elements: fullElements }];
+      const formulaRows = [
+        {
+          name: "full_kv_bytes",
+          expression: "tokens x sequences x full_attention_layers x 2 x num_key_value_heads x head_dim x precision_bytes",
+          description: "Only Qwen full-attention layers are counted as ordinary token-linear KV cache.",
+        },
+      ];
+
+      if (includeLinearAttentionState) {
+        byteGroups.push({
+          role: "linear_state",
+          label: "Linear-attention state",
+          bytesPerSequence: linearStateBytesPerSequence,
+        });
+        formulaRows.push(
           {
-            name: "full_kv_bytes",
-            expression: "tokens x sequences x full_attention_layers x 2 x num_key_value_heads x head_dim x precision_bytes",
-            description: "Only Qwen full-attention layers are counted as ordinary token-linear KV cache.",
+            name: "linear_conv_state_bytes",
+            expression:
+              "sequences x linear_attention_layers x linear_conv_kernel_dim x (2 x linear_num_key_heads x linear_key_head_dim + linear_num_value_heads x linear_value_head_dim) x 2",
+            description: "Fixed-size Qwen linear-attention convolution state, estimated at BF16/FP16 precision.",
           },
           {
+            name: "linear_recurrent_state_bytes",
+            expression:
+              "sequences x linear_attention_layers x linear_num_value_heads x linear_key_head_dim x linear_value_head_dim x 4",
+            description: "Fixed-size Qwen Gated DeltaNet recurrent state, estimated at FP32 precision.",
+          },
+          {
+            name: "total_bytes",
+            expression: "full_kv_bytes + linear_conv_state_bytes + linear_recurrent_state_bytes",
+            description: "Ordinary full-attention KV plus optional Qwen linear-attention runtime state.",
+          },
+        );
+      } else {
+        formulaRows.push(
+          {
             name: "linear_attention_state",
-            expression: "excluded from token-linear KV total",
+            expression: "excluded unless Include linear-attention state is enabled",
             description: "Qwen linear-attention / Gated DeltaNet layers keep non-standard recurrent and convolution state rather than ordinary per-token K/V tensors.",
           },
           {
@@ -319,16 +366,31 @@
             expression: "full_kv_bytes",
             description: "Capacity-planning estimate for reusable ordinary KV payload only.",
           },
-        ],
-        note: "Qwen3.5/3.6 linear-attention layers are excluded because their recurrent/conv state is not ordinary per-token KV. Add a separate state formula if Mooncake later stores that state.",
-        byteGroups: [{ role: "kv", label: "Full-attention KV cache", elements: elementsPerToken * tokens }],
+        );
+      }
+
+      return {
+        elementsPerSequence:
+          fullElements + (includeLinearAttentionState ? linearConvElements + linearRecurrentElements : 0),
+        elementsPerToken,
+        formulaLabel: FORMULA_LABELS[formula],
+        formulaText:
+          "full_kv_bytes = tokens * sequences * full_attention_layers * 2 * num_key_value_heads * head_dim * precision_bytes\ntotal_bytes = full_kv_bytes + optional_linear_attention_state_bytes",
+        formulaRows,
+        note: includeLinearAttentionState
+          ? "Qwen3.5/3.6 linear-attention state is sequence-level runtime state, not per-token KV. It does not grow linearly with tokens, so it matters more for short prompts and is diluted by full-attention KV at long context."
+          : "Qwen3.5/3.6 linear-attention recurrent/conv state is not ordinary per-token KV and is excluded by default. Enable the linear-attention state option to add a fixed runtime-state estimate.",
+        byteGroups,
         components: [
           ["Main layers", layers],
           ["Full-attention layers", fullLayers, "Layers counted as ordinary token-linear KV cache."],
-          ["Excluded linear-attention layers", linearLayers, "Linear-attention / Gated DeltaNet layers excluded from this KV-storage estimate."],
+          ["Linear-attention layers", linearLayers, "Qwen Gated DeltaNet layers whose runtime state is optional and does not grow linearly with token count."],
+          ["Linear state included", includeLinearAttentionState ? "Yes" : "No", "When enabled, adds fixed convolution and recurrent state for Qwen linear-attention layers."],
+          ["Linear conv elements", linearConvElements, "Fixed convolution-state scalar elements per sequence before applying the 2-byte estimate."],
+          ["Linear recurrent elements", linearRecurrentElements, "Fixed recurrent-state scalar elements per sequence before applying the 4-byte estimate."],
           ["MTP layers not included", mtpLayers, "Qwen3.5/3.6 configs expose MTP layers, but the cache shape is not explicit enough to include defensibly."],
           ["Per-token elements", elementsPerToken, "Ordinary full-attention KV scalar elements per token before multiplying by precision bytes."],
-          ["Model fields", fieldList(model, ["num_hidden_layers", "full_attention_layers", "linear_attention_layers", "num_key_value_heads", "head_dim"])],
+          ["Model fields", fieldList(model, ["num_hidden_layers", "full_attention_layers", "linear_attention_layers", "num_key_value_heads", "head_dim", "linear_num_key_heads", "linear_key_head_dim", "linear_num_value_heads", "linear_value_head_dim", "linear_conv_kernel_dim"])],
         ],
       };
     }
@@ -497,7 +559,9 @@
       role: group.role,
       label: group.label || "KV cache",
       elements: group.elements,
-      bytesPerSequence: group.elements * bytesPerElementForGroup(precision, group.role),
+      bytesPerSequence: Number.isFinite(group.bytesPerSequence)
+        ? group.bytesPerSequence
+        : group.elements * bytesPerElementForGroup(precision, group.role),
     }));
   }
 
@@ -542,6 +606,7 @@
       : precision;
     const elementPlan = calculateElementsPerSequence(model, tokens, {
       includeDraftKvCache: hasDraftKvCache(model) && toBoolean(input.includeDraftKvCache),
+      includeLinearAttentionState: hasLinearAttentionState(model) && toBoolean(input.includeLinearAttentionState),
     });
     const cacheGroupsPerSequence = calculateCacheGroups(elementPlan, cachePrecision);
     const bytesPerSequence = cacheGroupsPerSequence.reduce((total, group) => total + group.bytesPerSequence, 0);
@@ -549,7 +614,7 @@
     const cacheGroups = cacheGroupsPerSequence.map((group) => ({
       role: group.role,
       label: group.label,
-      elements: group.elements * sequences,
+      elements: Number.isFinite(group.elements) ? group.elements * sequences : undefined,
       bytes: group.bytesPerSequence * sequences,
     }));
     const kvBytes = cacheGroups
@@ -823,6 +888,14 @@
     if (checkbox && showDraftControl) checkbox.checked = false;
   }
 
+  function syncLinearStateControl(root, model) {
+    const control = root.querySelector("[data-kv-linear-state-control]");
+    const checkbox = root.querySelector("[data-kv-input='includeLinearAttentionState']");
+    const showLinearStateControl = hasLinearAttentionState(model);
+    if (control) control.hidden = !showLinearStateControl;
+    if (checkbox) checkbox.checked = false;
+  }
+
   function setCheckboxHelp(root) {
     root.querySelectorAll("[data-kv-inline-help]").forEach((node) => {
       appendHelp(node, node.getAttribute("data-kv-inline-help"));
@@ -862,6 +935,7 @@
       precision: root.querySelector("[data-kv-input='precision']"),
       indexerPrecision: root.querySelector("[data-kv-input='indexerPrecision']"),
       includeDraftKvCache: root.querySelector("[data-kv-input='includeDraftKvCache']"),
+      includeLinearAttentionState: root.querySelector("[data-kv-input='includeLinearAttentionState']"),
       tensorParallel: root.querySelector("[data-kv-input='tensorParallel']"),
     };
 
@@ -879,6 +953,7 @@
       populatePrecisionOptions(root, data, model);
       populateIndexerPrecisionOptions(root, data, model);
       syncDraftControl(root, model);
+      syncLinearStateControl(root, model);
     }
 
     function update() {
@@ -892,6 +967,7 @@
             precision: inputValue(inputs.precision, undefined),
             indexerPrecision: inputValue(inputs.indexerPrecision, undefined),
             includeDraftKvCache: checkboxValue(inputs.includeDraftKvCache),
+            includeLinearAttentionState: checkboxValue(inputs.includeLinearAttentionState),
             tensorParallel: inputValue(inputs.tensorParallel, 1),
           },
           {

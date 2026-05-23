@@ -34,6 +34,11 @@ test("Qwen3.6 27B counts only full-attention KV layers", () => {
       linear_attention_layers: 48,
       num_key_value_heads: 4,
       head_dim: 256,
+      linear_num_key_heads: 16,
+      linear_key_head_dim: 128,
+      linear_num_value_heads: 48,
+      linear_value_head_dim: 128,
+      linear_conv_kernel_dim: 4,
       mtp_num_hidden_layers: 1,
     },
   };
@@ -41,10 +46,43 @@ test("Qwen3.6 27B counts only full-attention KV layers", () => {
   const result = calculate(model, { ...bf16, tokens: 128000 });
 
   assert.equal(result.elementPlan.elementsPerToken, 32768);
-  assert.equal(result.elementPlan.components.find(([label]) => label === "Excluded linear-attention layers")[1], 48);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Linear-attention layers")[1], 48);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Linear state included")[1], "No");
   assert.equal(result.elementPlan.components.find(([label]) => label === "MTP layers not included")[1], 1);
-  assert.match(result.elementPlan.note, /linear-attention layers are excluded/);
+  assert.match(result.elementPlan.note, /excluded by default/);
   assert.ok(Math.abs(result.totalGiB - 7.8125) < 1e-9);
+});
+
+test("Qwen3.6 27B optional linear-attention state adds fixed conv and recurrent state", () => {
+  const model = {
+    id: "qwen3.6-27b",
+    label: "Qwen3.6-27B",
+    formula: "qwen_linear_full_hybrid",
+    fields: {
+      num_hidden_layers: 64,
+      full_attention_layers: 16,
+      linear_attention_layers: 48,
+      num_key_value_heads: 4,
+      head_dim: 256,
+      linear_num_key_heads: 16,
+      linear_key_head_dim: 128,
+      linear_num_value_heads: 48,
+      linear_value_head_dim: 128,
+      linear_conv_kernel_dim: 4,
+      mtp_num_hidden_layers: 1,
+    },
+  };
+
+  const result = calculate(model, { ...bf16, tokens: 128000, includeLinearAttentionState: true });
+  const fullBytes = 128000 * 16 * 2 * 4 * 256 * 2;
+  const convBytes = 48 * 4 * (2 * 16 * 128 + 48 * 128) * 2;
+  const recurrentBytes = 48 * 48 * 128 * 128 * 4;
+
+  assert.equal(result.cacheGroups.find((group) => group.label === "Full-attention KV cache").bytes, fullBytes);
+  assert.equal(result.cacheGroups.find((group) => group.label === "Linear-attention state").bytes, convBytes + recurrentBytes);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Linear state included")[1], "Yes");
+  assert.match(result.elementPlan.formulaRows.find((row) => row.name === "total_bytes").expression, /linear_recurrent_state_bytes/);
+  assert.equal(result.totalBytes, fullBytes + convBytes + recurrentBytes);
 });
 
 test("Qwen3.6 35B-A3B counts only full-attention KV layers", () => {
@@ -58,6 +96,11 @@ test("Qwen3.6 35B-A3B counts only full-attention KV layers", () => {
       linear_attention_layers: 30,
       num_key_value_heads: 2,
       head_dim: 256,
+      linear_num_key_heads: 16,
+      linear_key_head_dim: 128,
+      linear_num_value_heads: 32,
+      linear_value_head_dim: 128,
+      linear_conv_kernel_dim: 4,
       mtp_num_hidden_layers: 1,
     },
   };
@@ -66,7 +109,7 @@ test("Qwen3.6 35B-A3B counts only full-attention KV layers", () => {
 
   assert.equal(result.elementPlan.elementsPerToken, 10240);
   assert.equal(result.elementPlan.components.find(([label]) => label === "Full-attention layers")[1], 10);
-  assert.equal(result.elementPlan.components.find(([label]) => label === "Excluded linear-attention layers")[1], 30);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Linear-attention layers")[1], 30);
   assert.ok(Math.abs(result.totalGiB - 2.44140625) < 1e-9);
 });
 
@@ -81,6 +124,11 @@ test("Qwen3.5 small models count only full-attention KV layers", () => {
       linear_attention_layers: 18,
       num_key_value_heads: 2,
       head_dim: 256,
+      linear_num_key_heads: 16,
+      linear_key_head_dim: 128,
+      linear_num_value_heads: 16,
+      linear_value_head_dim: 128,
+      linear_conv_kernel_dim: 4,
       mtp_num_hidden_layers: 1,
     },
   };
@@ -89,8 +137,39 @@ test("Qwen3.5 small models count only full-attention KV layers", () => {
 
   assert.equal(result.elementPlan.elementsPerToken, 6144);
   assert.equal(result.elementPlan.components.find(([label]) => label === "Full-attention layers")[1], 6);
-  assert.equal(result.elementPlan.components.find(([label]) => label === "Excluded linear-attention layers")[1], 18);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Linear-attention layers")[1], 18);
   assert.ok(Math.abs(result.totalGiB - 1.46484375) < 1e-9);
+});
+
+test("Qwen3.5 0.8B linear-attention state can dominate short prompts", () => {
+  const model = {
+    id: "qwen3.5-0.8b",
+    label: "Qwen3.5-0.8B",
+    formula: "qwen_linear_full_hybrid",
+    fields: {
+      num_hidden_layers: 24,
+      full_attention_layers: 6,
+      linear_attention_layers: 18,
+      num_key_value_heads: 2,
+      head_dim: 256,
+      linear_num_key_heads: 16,
+      linear_key_head_dim: 128,
+      linear_num_value_heads: 16,
+      linear_value_head_dim: 128,
+      linear_conv_kernel_dim: 4,
+      mtp_num_hidden_layers: 1,
+    },
+  };
+
+  const result = calculate(model, { ...bf16, tokens: 128, includeLinearAttentionState: true });
+  const fullBytes = 128 * 6 * 2 * 2 * 256 * 2;
+  const convBytes = 18 * 4 * (2 * 16 * 128 + 16 * 128) * 2;
+  const recurrentBytes = 18 * 16 * 128 * 128 * 4;
+  const linearState = result.cacheGroups.find((group) => group.label === "Linear-attention state");
+
+  assert.equal(linearState.bytes, convBytes + recurrentBytes);
+  assert.ok(linearState.bytes > fullBytes);
+  assert.equal(result.totalBytes, fullBytes + convBytes + recurrentBytes);
 });
 
 test("Qwen3.5 large MoE models count only full-attention KV layers", () => {
@@ -104,6 +183,11 @@ test("Qwen3.5 large MoE models count only full-attention KV layers", () => {
       linear_attention_layers: 45,
       num_key_value_heads: 2,
       head_dim: 256,
+      linear_num_key_heads: 16,
+      linear_key_head_dim: 128,
+      linear_num_value_heads: 64,
+      linear_value_head_dim: 128,
+      linear_conv_kernel_dim: 4,
       mtp_num_hidden_layers: 1,
     },
   };
@@ -112,7 +196,7 @@ test("Qwen3.5 large MoE models count only full-attention KV layers", () => {
 
   assert.equal(result.elementPlan.elementsPerToken, 15360);
   assert.equal(result.elementPlan.components.find(([label]) => label === "Full-attention layers")[1], 15);
-  assert.equal(result.elementPlan.components.find(([label]) => label === "Excluded linear-attention layers")[1], 45);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Linear-attention layers")[1], 45);
   assert.ok(Math.abs(result.totalGiB - 3.662109375) < 1e-9);
 });
 
@@ -615,6 +699,21 @@ test("Qwen2.5 72B standard GQA formula ignores draft input", () => {
   assert.equal(withoutDraft.elementPlan.elementsPerToken, 163840);
   assert.equal(withDraft.elementPlan.elementsPerToken, withoutDraft.elementPlan.elementsPerToken);
   assert.ok(Math.abs(withDraft.totalGiB - 39.0625) < 1e-9);
+});
+
+test("standard GQA formula ignores Qwen linear-attention state input", () => {
+  const model = {
+    id: "llama-3.1-70b",
+    label: "Llama 3.1 70B",
+    formula: "standard_gqa",
+    fields: { num_hidden_layers: 80, num_key_value_heads: 8, head_dim: 128 },
+  };
+
+  const withoutLinearState = calculate(model, { ...bf16, tokens: 4096, includeLinearAttentionState: false });
+  const withLinearState = calculate(model, { ...bf16, tokens: 4096, includeLinearAttentionState: true });
+
+  assert.equal(withLinearState.totalBytes, withoutLinearState.totalBytes);
+  assert.equal(withLinearState.cacheGroups.length, withoutLinearState.cacheGroups.length);
 });
 
 test("model family grouping keeps Qwen generations under one family", () => {
