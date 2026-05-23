@@ -21,6 +21,8 @@
     standard_gqa: "Standard MHA/GQA",
     mla: "MLA latent KV",
     dsa_mla: "DSA/MLA with indexer",
+    qwen_linear_full_hybrid: "Qwen linear/full hybrid",
+    mixed_full_sliding_gqa: "Mixed full/sliding GQA",
     deepseek_v4_hybrid: "DeepSeek V4 hybrid sparse attention",
   };
 
@@ -136,6 +138,13 @@
       throw new Error(`Model ${model ? model.id : ""} is missing numeric field ${name}`);
     }
     return Number(model.fields[name]);
+  }
+
+  function optionalField(model, name, fallback) {
+    if (model && model.fields && Number.isFinite(Number(model.fields[name]))) {
+      return Number(model.fields[name]);
+    }
+    return fallback;
   }
 
   function fieldList(model, names) {
@@ -276,6 +285,104 @@
           ["Indexer elements per token", indexerElementsPerToken, "Indexer elements per token before applying indexer precision."],
           ["Per-token elements", elementsPerToken, "KV plus indexer scalar elements per token before multiplying by precision bytes."],
           ["Model fields", fieldList(model, ["num_hidden_layers", "kv_lora_rank", "qk_rope_head_dim", "index_head_dim"])],
+        ],
+      };
+    }
+
+    if (formula === "qwen_linear_full_hybrid") {
+      const layers = getField(model, "num_hidden_layers");
+      const fullLayers = getField(model, "full_attention_layers");
+      const linearLayers = getField(model, "linear_attention_layers");
+      const kvHeads = getField(model, "num_key_value_heads");
+      const headDim = getField(model, "head_dim");
+      const mtpLayers = optionalField(model, "mtp_num_hidden_layers", 0);
+      const elementsPerToken = fullLayers * 2 * kvHeads * headDim;
+      return {
+        elementsPerSequence: elementsPerToken * tokens,
+        elementsPerToken,
+        formulaLabel: FORMULA_LABELS[formula],
+        formulaText:
+          "full_kv_bytes = tokens * sequences * full_attention_layers * 2 * num_key_value_heads * head_dim * precision_bytes\ntotal_bytes = full_kv_bytes",
+        formulaRows: [
+          {
+            name: "full_kv_bytes",
+            expression: "tokens x sequences x full_attention_layers x 2 x num_key_value_heads x head_dim x precision_bytes",
+            description: "Only Qwen full-attention layers are counted as ordinary token-linear KV cache.",
+          },
+          {
+            name: "linear_attention_state",
+            expression: "excluded from token-linear KV total",
+            description: "Qwen linear-attention / Gated DeltaNet layers keep non-standard recurrent and convolution state rather than ordinary per-token K/V tensors.",
+          },
+          {
+            name: "total_bytes",
+            expression: "full_kv_bytes",
+            description: "Capacity-planning estimate for reusable ordinary KV payload only.",
+          },
+        ],
+        note: "Qwen3.5/3.6 linear-attention layers are excluded because their recurrent/conv state is not ordinary per-token KV. Add a separate state formula if Mooncake later stores that state.",
+        byteGroups: [{ role: "kv", label: "Full-attention KV cache", elements: elementsPerToken * tokens }],
+        components: [
+          ["Main layers", layers],
+          ["Full-attention layers", fullLayers, "Layers counted as ordinary token-linear KV cache."],
+          ["Excluded linear-attention layers", linearLayers, "Linear-attention / Gated DeltaNet layers excluded from this KV-storage estimate."],
+          ["MTP layers not included", mtpLayers, "Qwen3.5/3.6 configs expose MTP layers, but the cache shape is not explicit enough to include defensibly."],
+          ["Per-token elements", elementsPerToken, "Ordinary full-attention KV scalar elements per token before multiplying by precision bytes."],
+          ["Model fields", fieldList(model, ["num_hidden_layers", "full_attention_layers", "linear_attention_layers", "num_key_value_heads", "head_dim"])],
+        ],
+      };
+    }
+
+    if (formula === "mixed_full_sliding_gqa") {
+      const layers = getField(model, "num_hidden_layers");
+      const fullLayers = getField(model, "full_attention_layers");
+      const slidingLayers = getField(model, "sliding_attention_layers");
+      const kvHeads = getField(model, "num_key_value_heads");
+      const headDim = getField(model, "head_dim");
+      const fullKvHeads = optionalField(model, "num_global_key_value_heads", kvHeads);
+      const fullHeadDim = optionalField(model, "global_head_dim", headDim);
+      const slidingWindow = getField(model, "sliding_window");
+      const retainedSlidingTokens = Math.min(tokens, slidingWindow);
+      const fullElements = tokens * fullLayers * 2 * fullKvHeads * fullHeadDim;
+      const slidingElements = retainedSlidingTokens * slidingLayers * 2 * kvHeads * headDim;
+      const elementsPerSequence = fullElements + slidingElements;
+      return {
+        elementsPerSequence,
+        elementsPerToken: elementsPerSequence / tokens,
+        formulaLabel: FORMULA_LABELS[formula],
+        formulaText:
+          "full_kv_bytes = tokens * sequences * full_layers * 2 * full_kv_heads * full_head_dim * precision_bytes\nsliding_kv_bytes = min(tokens, sliding_window) * sequences * sliding_layers * 2 * num_key_value_heads * head_dim * precision_bytes\ntotal_bytes = full_kv_bytes + sliding_kv_bytes",
+        formulaRows: [
+          {
+            name: "full_kv_bytes",
+            expression: "tokens x sequences x full_layers x 2 x full_kv_heads x full_head_dim x precision_bytes",
+            description: "Full-attention layers retain ordinary KV for all cached tokens.",
+          },
+          {
+            name: "sliding_kv_bytes",
+            expression: "min(tokens, sliding_window) x sequences x sliding_layers x 2 x num_key_value_heads x head_dim x precision_bytes",
+            description: "Sliding-attention layers retain only the local window for each sequence.",
+          },
+          {
+            name: "total_bytes",
+            expression: "full_kv_bytes + sliding_kv_bytes",
+            description: "Combined reusable full-attention and sliding-window KV payload.",
+          },
+        ],
+        note: "Production estimate counts text-generation KV payload only. Vision/audio encoder activations and allocator memory are excluded.",
+        byteGroups: [
+          { role: "kv", label: "Full-attention KV cache", elements: fullElements },
+          { role: "kv", label: "Sliding-window KV cache", elements: slidingElements },
+        ],
+        components: [
+          ["Main layers", layers],
+          ["Stored layers", optionalField(model, "stored_layers", fullLayers + slidingLayers), "KV-producing layers counted after model-specific KV sharing, when configured."],
+          ["Full-attention layers", fullLayers, "Layers whose KV grows with total cached tokens."],
+          ["Sliding-attention layers", slidingLayers, "Layers whose KV is capped by the sliding window."],
+          ["Retained sliding tokens", retainedSlidingTokens, "min(tokens, sliding_window) for sliding-attention layers."],
+          ["Full-attention elements", fullElements, "Full-attention scalar KV elements before applying precision bytes."],
+          ["Sliding-window elements", slidingElements, "Sliding-window scalar KV elements before applying precision bytes."],
+          ["Model fields", fieldList(model, ["num_hidden_layers", "num_key_value_heads", "head_dim", "sliding_window"])],
         ],
       };
     }
@@ -563,6 +670,13 @@
         "Indexer cache size",
         formatBytes(result.indexerBytes),
       ]);
+    } else if (result.cacheGroups.length > 1) {
+      result.cacheGroups.forEach((group) => {
+        metrics.push([
+          `${group.label} size`,
+          formatBytes(group.bytes),
+        ]);
+      });
     }
     metrics.push([
       "Per token size",
