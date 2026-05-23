@@ -843,7 +843,7 @@
 
   function addInputListeners(inputs, update) {
     Object.values(inputs).forEach((input) => {
-      if (!input || input === inputs.model) return;
+      if (!input || input === inputs.model || input === inputs.modelFamily) return;
       input.addEventListener("input", update);
       input.addEventListener("change", update);
     });
