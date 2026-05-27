@@ -94,7 +94,7 @@ LLaMA-Factory stays responsible for the training workflow. KTransformers handles
 Under that familiar workflow, KTransformers changes the part that matters most for large MoE models: where the computation and weights live during training.
 
 <center>
-<img src="offloading-strategy-redraw.png"
+<img src="assets/offloading-strategy-redraw.png"
      alt="KTransformers maps MoE attention and routed experts across GPU and CPU resources"
      style="width:90%; max-width:960px"/>
 </center>
