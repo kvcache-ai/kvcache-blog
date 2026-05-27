@@ -60,9 +60,9 @@ In our LLaMA-Factory integration tests, KTransformers was evaluated against Hugg
 
 | LoRA BF16 SFT setting | Hugging Face backend | Unsloth backend | KTransformers backend |
 | --- | ---: | ---: | ---: |
-| DeepSeek-V2-Lite 14B throughput | 303.58 token/s | 455.37 token/s | 530.38 token/s |
+| DeepSeek-V2-Lite 14B throughput | 303.58 tokens/s | 455.37 tokens/s | 530.38 tokens/s |
 | DeepSeek-V2-Lite 14B GPU memory | 32.12 GB | 9.64 GB | 6.08 GB |
-| DeepSeek-V3 671B throughput | Too large to run | Not supported | 40.35 token/s |
+| DeepSeek-V3 671B throughput | Too large to run | Not supported | 40.35 tokens/s |
 | DeepSeek-V3 671B GPU memory pressure | about 1400 GB theoretical FP16 footprint | Not supported | 70 GB measured peak |
 
 The 14B result shows that KTransformers is not only for the largest models. Even when other systems can run, KT can reduce GPU memory use and improve throughput.
