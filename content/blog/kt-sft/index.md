@@ -3,8 +3,7 @@ title: "Fine-Tuning Huge MoE Models on Everyday GPUs with KTransformers"
 summary: "KTransformers makes large MoE fine-tuning more accessible: if you can run a model locally with KT, the next step should be tuning a LoRA adapter on the same kind of hardware."
 date: 2026-05-20
 authors:
-  - admin
-  - KVCache.ai Team
+  - Ktransformers Team
 tags:
   - KTransformers
   - Fine-Tuning
@@ -16,7 +15,7 @@ tags:
 commentable: false
 draft: false
 showathome: true
-home_weight: 18
+home_weight: 120
 ---
 
 ## Overview
