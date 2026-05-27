@@ -27,7 +27,7 @@ Once inference becomes practical, the next question is natural: can developers a
 That is the simple idea behind KT fine-tuning: if you can run it, you should be able to tune it.
 
 <center>
-<img src="local-inference-to-local-finetune.png"
+<img src="assets/local-inference-to-local-finetune.png"
      alt="Same local workstation runs inference, LoRA SFT, and local serving with the trained adapter"
      style="width:90%; max-width:960px"/>
 </center>
