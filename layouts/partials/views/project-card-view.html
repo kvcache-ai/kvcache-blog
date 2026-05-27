@@ -51,7 +51,7 @@
     <!-- summary -->
     <hr class="mt-2" />
       <p class="mt-2 line-clamp-5 text-sm">
-        A Flexible Framework for Experiencing Cutting-edge LLM Inference Optimizations. Made with
+        {{ ($item.Params.summary | default $item.Summary) | plainify | htmlUnescape | chomp -}} Made with
         <a href="https://approaching-ai.com/" style=" text-decoration: underline;">
             <img src="{{ $image_approaching.RelPermalink }}" alt="icon" style="height: 17px; vertical-align: baseline; display: inline-block;">Approaching AI</a> !
 
