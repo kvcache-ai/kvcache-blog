@@ -2,7 +2,6 @@
 title: "KTransformers + LLaMA-Factory + SGLang: Low-Cost Local Fine-Tuning and Inference"
 summary: "A low-cost, low-memory end-to-end fine-tuning and inference workflow for large MoE models with KTransformers, LLaMA-Factory, and SGLang."
 date: 2025-11-01
-dateshown: November 2025
 authors:
   - KTransformers Team
 tags:
@@ -16,7 +15,7 @@ tags:
 commentable: true
 draft: false
 showathome: true
-home_weight: 105
+home_weight: 202511010
 ---
 
 On a local workstation, the hard part of large-model experimentation is usually the cost of bringing a large MoE model into the same loop as the user's data and evaluation target. A researcher may want to try a domain dataset, a product prototype, or a benchmark, but the model quickly turns into a GPU-memory problem. This guide presents KTransformers, LLaMA-Factory, and SGLang as a low-cost, low-memory end-to-end path: LoRA fine-tuning stays in a familiar training recipe, KTransformers shifts the memory pressure through GPU+CPU heterogeneous execution, and the adapted model can continue into inference and benchmark testing.
