@@ -356,6 +356,63 @@ test("Cohere Command A Plus mixed formula caps sliding-attention KV", () => {
   assert.ok(Math.abs(result.totalGiB - 4.28125) < 1e-9);
 });
 
+test("MiMo V2.5 mixed formula uses separate K and V dimensions", () => {
+  const model = {
+    id: "mimo-v2.5",
+    label: "MiMo-V2.5",
+    formula: "mixed_full_sliding_gqa",
+    fields: {
+      num_hidden_layers: 48,
+      full_attention_layers: 9,
+      sliding_attention_layers: 39,
+      num_key_value_heads: 4,
+      head_dim: 192,
+      v_head_dim: 128,
+      swa_num_key_value_heads: 8,
+      swa_head_dim: 192,
+      swa_v_head_dim: 128,
+      sliding_window: 128,
+    },
+  };
+
+  const result = calculate(model, { ...bf16, tokens: 128000 });
+
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Retained sliding tokens")[1], 128);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Full K+V dims")[1], 320);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Sliding K+V dims")[1], 320);
+  assert.equal(result.elementPlan.byteGroups.find((group) => group.label === "Full-attention KV cache").elements, 1474560000);
+  assert.equal(result.elementPlan.byteGroups.find((group) => group.label === "Sliding-window KV cache").elements, 12779520);
+  assert.match(result.elementPlan.formulaText, /full_head_dim \+ full_v_head_dim/);
+  assert.ok(Math.abs(result.totalGiB - 2.7703857421875) < 1e-9);
+});
+
+test("MiMo V2.5 Pro mixed formula caps SWA tokens at 128", () => {
+  const model = {
+    id: "mimo-v2.5-pro",
+    label: "MiMo-V2.5-Pro",
+    formula: "mixed_full_sliding_gqa",
+    fields: {
+      num_hidden_layers: 70,
+      full_attention_layers: 10,
+      sliding_attention_layers: 60,
+      num_key_value_heads: 8,
+      head_dim: 192,
+      v_head_dim: 128,
+      swa_num_key_value_heads: 8,
+      swa_head_dim: 192,
+      swa_v_head_dim: 128,
+      sliding_window: 128,
+    },
+  };
+
+  const result = calculate(model, { ...bf16, tokens: 128000 });
+
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Retained sliding tokens")[1], 128);
+  assert.equal(result.elementPlan.byteGroups.find((group) => group.label === "Full-attention KV cache").elements, 3276800000);
+  assert.equal(result.elementPlan.byteGroups.find((group) => group.label === "Sliding-window KV cache").elements, 19660800);
+  assert.ok(Math.abs(result.totalGiB - 6.14013671875) < 1e-9);
+});
+
 test("MLA formula matches Kimi K2.5 latent KV cache", () => {
   const model = {
     id: "kimi-k2.5",

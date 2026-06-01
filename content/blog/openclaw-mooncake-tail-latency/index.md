@@ -2,7 +2,6 @@
 title: "OpenClaw + Mooncake: A Stability Upgrade for Real-World Multi-Session Inference"
 summary: "By integrating Mooncake into OpenClaw's real inference path, we not only improved fast-path latency, but also sharply reduced TTFT tail latency in multi-session, long-context workloads, turning a system that was usually fast but occasionally slow into one that feels consistently smooth."
 date: 2026-03-19
-dateshown: March 19, 2026
 authors:
   - Mooncake community
 tags:
@@ -15,7 +14,7 @@ tags:
 draft: false
 showathome: true
 commentable: false
-home_weight: 110
+home_weight: 202603190
 image:
   alt_text: "OpenClaw and Mooncake tail-latency stability upgrade"
 ---
