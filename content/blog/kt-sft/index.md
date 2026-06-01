@@ -15,7 +15,7 @@ tags:
 commentable: false
 draft: false
 showathome: true
-home_weight: 120
+home_weight: 202605290
 ---
 
 Previously, we published a guide on using [KTransformers, LLaMA-Factory, and SGLang](https://kvcache.ai/blog/ktransformers-llamafactory-fine-tuning/) for low-cost local fine-tuning and inference. This post does not replace it; it focuses on what changed with KT-FT v0.6.1 and how the post-v0.6.1 serving work closes the end-to-end loop.
