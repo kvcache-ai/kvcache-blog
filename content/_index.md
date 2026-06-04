@@ -11,7 +11,10 @@ sections:
   - block: hero
     content:
       title: KVCache.ai
-      text: "Essentially, a decoder-only Transformer model transforms data from any modality into KVCache, positioning it as a central element in LLM serving optimizations. These optimizations include, but are not limited to, caching, scheduling, compression, and offloading. KVCache.AI is a collaborative endeavor with leading industry partners such as Approaching.AI and Moonshot AI. The project focuses on developing effective and practical techniques that enhance both academic research and open-source development."
+      text: |
+        KVCache.AI is dedicated to advancing the state of the art in Large Language Model (LLM) inference optimization. In decoder-only Transformer models, data from diverse modalities can ultimately be transformed into KVCache, making it a central component of modern LLM serving systems. As a result, KVCache has become a key focus for improving inference efficiency through techniques such as caching, scheduling, compression, offloading, and disaggregated serving architectures.
+
+        Through open-source projects and academic research, KVCache.AI develops effective, practical, and high-performance solutions for KVCache management and LLM serving optimization. The project aims to make LLM deployment more accessible, efficient, and cost-effective for organizations of all sizes.
       icon: icon_1.png
       # primary_action:
       #   text: Get Started
