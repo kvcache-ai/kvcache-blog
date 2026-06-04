@@ -14,9 +14,6 @@ main:
   - name: Blog
     url: blog/
     weight: 40
-  - name: About
-    url: about/
-    weight: 50
     # - name: Community
   #   url: community/
   #   weight: 50
