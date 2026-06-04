@@ -41,6 +41,8 @@ header:
       filename: "icon_1.png"
     show_search: false
     show_theme_chooser: false
+    show_translations: false
+    x_url: "https://x.com/KVCache_AI"
 
 # Site footer
 footer:
