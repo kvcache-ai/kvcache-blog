@@ -1,0 +1,350 @@
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import test from "node:test";
+import { Worker } from "node:worker_threads";
+
+const require = createRequire(import.meta.url);
+const {
+  BYTES_PER_GIB,
+  DEFAULT_CAPACITY_GIB_VALUES,
+  cacheBlocksForGiB,
+  createCacheKey,
+  estimateBytesPerToken,
+  generateTrace,
+  modelSweepKey,
+  precomputedResultFor,
+  runLabComputation,
+  simulatePolicy,
+  shouldApplyJobResult,
+  sweepCapacity,
+} = require("../assets/js/kv-cache-lab.js");
+
+const unitTrace = {
+  blockSize: 1,
+  requests: ["A", "B", "A", "C", "A", "B"].map((id) => ({
+    inputBlocks: [{ id, tokens: 1 }],
+    appendBlocks: [],
+  })),
+};
+
+const tinyModel = {
+  id: "tiny-standard",
+  label: "Tiny Standard",
+  formula: "standard_gqa",
+  default_tokens: 16,
+  fields: {
+    num_hidden_layers: 1,
+    num_key_value_heads: 1,
+    head_dim: 1,
+  },
+};
+
+const tinyDsaModel = {
+  id: "tiny-dsa",
+  label: "Tiny DSA",
+  formula: "dsa_mla",
+  default_tokens: 16,
+  fields: {
+    num_hidden_layers: 1,
+    kv_lora_rank: 2,
+    qk_rope_head_dim: 1,
+    index_head_dim: 4,
+    num_nextn_predict_layers: 1,
+  },
+};
+
+const tinySlidingModel = {
+  id: "tiny-sliding",
+  label: "Tiny Sliding",
+  formula: "mixed_full_sliding_gqa",
+  default_tokens: 4,
+  fields: {
+    num_hidden_layers: 2,
+    full_attention_layers: 1,
+    sliding_attention_layers: 1,
+    num_key_value_heads: 1,
+    head_dim: 1,
+    sliding_window: 4,
+  },
+};
+
+const tinyPreset = {
+  id: "chat",
+  label: "Chat",
+  defaults: {
+    sessions: 4,
+    average_turns: 3,
+    shared_prefix_tokens: 16,
+    document_tokens: 8,
+    per_turn_input_tokens: 10,
+    output_tokens: 12,
+    reuse_skew: 0.8,
+    burstiness: 0.5,
+  },
+};
+
+test("FIFO, LRU, and optimal policies produce known block hit rates", () => {
+  const fifo = simulatePolicy(unitTrace, 2, "fifo", { warmupRequests: 0 });
+  const lru = simulatePolicy(unitTrace, 2, "lru", { warmupRequests: 0 });
+  const optimal = simulatePolicy(unitTrace, 2, "optimal", { warmupRequests: 0 });
+
+  assert.equal(fifo.hitTokens, 1);
+  assert.equal(lru.hitTokens, 2);
+  assert.equal(optimal.hitTokens, 3);
+  assert.equal(fifo.totalTokens, 6);
+  assert.equal(lru.totalTokens, 6);
+  assert.equal(optimal.totalTokens, 6);
+});
+
+test("warmup requests affect cache state but are excluded from hit-rate stats", () => {
+  const trace = {
+    blockSize: 1,
+    requests: ["A", "A", "A"].map((id) => ({
+      inputBlocks: [{ id, tokens: 1 }],
+      appendBlocks: [],
+    })),
+  };
+
+  const result = simulatePolicy(trace, 1, "lru", { warmupRequests: 1 });
+
+  assert.equal(result.warmupRequests, 1);
+  assert.equal(result.hitTokens, 2);
+  assert.equal(result.totalTokens, 2);
+  assert.equal(result.hitRate, 1);
+});
+
+test("generated output blocks occupy cache for later prefill hits", () => {
+  const trace = {
+    blockSize: 1,
+    requests: [
+      {
+        inputBlocks: [{ id: "A", tokens: 1 }],
+        appendBlocks: [{ id: "B", tokens: 1 }],
+      },
+      {
+        inputBlocks: [{ id: "B", tokens: 1 }],
+        appendBlocks: [],
+      },
+    ],
+  };
+
+  const result = simulatePolicy(trace, 1, "lru", { warmupRequests: 0 });
+
+  assert.equal(result.hitTokens, 1);
+  assert.equal(result.totalTokens, 2);
+});
+
+test("deterministic trace generation is stable for the same seed", () => {
+  const params = { requests: 12, blockSize: 8 };
+
+  const first = generateTrace(tinyPreset, params, 1234);
+  const second = generateTrace(tinyPreset, params, 1234);
+
+  assert.deepEqual(first, second);
+  assert.equal(first.requests.length, 12);
+  assert.ok(first.summary.totalInputTokens > 0);
+});
+
+test("capacity accounting converts model bytes per token into cache blocks", () => {
+  const bytesPerToken = estimateBytesPerToken(tinyModel, { precision: "bf16_fp16" });
+  const bytesPerBlock = bytesPerToken * 64;
+
+  assert.equal(bytesPerToken, 4);
+  assert.equal(bytesPerBlock, 256);
+  assert.equal(cacheBlocksForGiB(512 / BYTES_PER_GIB, bytesPerBlock), 2);
+});
+
+test("model byte estimate honors indexer precision and draft KV settings", () => {
+  const fp4Indexer = estimateBytesPerToken(tinyDsaModel, {
+    precision: "bf16_fp16",
+    indexerPrecision: "fp4_int4",
+    includeDraftKvCache: false,
+  });
+  const bf16Indexer = estimateBytesPerToken(tinyDsaModel, {
+    precision: "bf16_fp16",
+    indexerPrecision: "bf16_fp16",
+    includeDraftKvCache: false,
+  });
+  const withDraft = estimateBytesPerToken(tinyDsaModel, {
+    precision: "bf16_fp16",
+    indexerPrecision: "fp4_int4",
+    includeDraftKvCache: true,
+  });
+
+  assert.equal(fp4Indexer, 8);
+  assert.equal(bf16Indexer, 14);
+  assert.equal(withDraft, 16);
+});
+
+test("precomputed lookup uses model and precision key exactly", () => {
+  const preset = { id: "real_trace", label: "Real Trace" };
+  const precomputed = {
+    traces: {
+      real_trace: {
+        nativeBlockSize: 64,
+        summary: { requests: 2, averageInputTokens: 64, uniqueBlocks: 1, infiniteHitRate: 0.5 },
+        modelSweeps: {
+          "tiny-standard|precision=bf16_fp16|indexer=|draft=0": {
+            blockSize: 64,
+            points: [],
+            policies: ["lru"],
+            reuseCeiling: 0.5,
+          },
+        },
+      },
+    },
+  };
+
+  assert.equal(
+    modelSweepKey(tinyModel, { precision: "bf16_fp16", includeDraftKvCache: false }),
+    "tiny-standard|precision=bf16_fp16|indexer=|draft=0",
+  );
+  assert.ok(precomputedResultFor(precomputed, preset, tinyModel, { precision: "bf16_fp16", includeDraftKvCache: false }));
+  assert.equal(
+    precomputedResultFor(precomputed, preset, tinyModel, { precision: "bf16_fp16", indexerPrecision: "fp4_int4", includeDraftKvCache: false }),
+    null,
+  );
+});
+
+test("token-dependent cache layouts use estimate tokens for capacity accounting", () => {
+  const shortContext = estimateBytesPerToken(tinySlidingModel, { precision: "bf16_fp16", estimateTokens: 2 });
+  const longContext = estimateBytesPerToken(tinySlidingModel, { precision: "bf16_fp16", estimateTokens: 8 });
+
+  assert.equal(shortContext, 8);
+  assert.equal(longContext, 6);
+});
+
+test("capacity sweep derives token-dependent accounting from the trace", () => {
+  const trace = {
+    blockSize: 1,
+    summary: { averageInputTokens: 8 },
+    requests: ["A", "A"].map((id) => ({
+      inputBlocks: [{ id, tokens: 1 }],
+      appendBlocks: [],
+    })),
+  };
+
+  const sweep = sweepCapacity(trace, tinySlidingModel, {
+    precision: "bf16_fp16",
+    blockSize: 1,
+    minGiB: 6 / BYTES_PER_GIB,
+    maxGiB: 6 / BYTES_PER_GIB,
+    steps: 2,
+    warmupFraction: 0,
+  });
+
+  assert.equal(sweep.bytesPerToken, 6);
+  assert.equal(sweep.points[0].cacheBlocks, 1);
+});
+
+test("capacity sweep returns one result set per GiB point and policy", () => {
+  const trace = {
+    blockSize: 1,
+    requests: ["A", "B", "A", "C"].map((id) => ({
+      inputBlocks: [{ id, tokens: 1 }],
+      appendBlocks: [],
+    })),
+  };
+
+  const sweep = sweepCapacity(trace, tinyModel, {
+    precision: "bf16_fp16",
+    blockSize: 1,
+    minGiB: 4 / BYTES_PER_GIB,
+    maxGiB: 8 / BYTES_PER_GIB,
+    steps: 2,
+    warmupFraction: 0,
+  });
+
+  assert.equal(sweep.points.length, 2);
+  assert.equal(sweep.points[0].cacheBlocks, 1);
+  assert.equal(sweep.points[1].cacheBlocks, 2);
+  assert.ok(sweep.points[1].results.lru.hitRate >= sweep.points[0].results.lru.hitRate);
+  assert.ok(sweep.points[1].results.optimal.hitRate >= sweep.points[1].results.lru.hitRate);
+});
+
+test("capacity sweep defaults to fixed GiB points", () => {
+  const trace = {
+    blockSize: 1,
+    requests: ["A", "A"].map((id) => ({
+      inputBlocks: [{ id, tokens: 1 }],
+      appendBlocks: [],
+    })),
+  };
+
+  const sweep = sweepCapacity(trace, tinyModel, {
+    precision: "bf16_fp16",
+    blockSize: 1,
+    warmupFraction: 0,
+  });
+
+  assert.deepEqual(
+    sweep.points.map((point) => point.gib),
+    DEFAULT_CAPACITY_GIB_VALUES,
+  );
+});
+
+test("cache keys are stable for identical settings and change for capacity inputs", () => {
+  const first = {
+    preset: tinyPreset,
+    model: tinyModel,
+    params: { requests: 12, blockSize: 8 },
+    settings: { precision: "bf16_fp16", blockSize: 8, minGiB: 1, maxGiB: 2, steps: 2 },
+    seed: 1234,
+  };
+  const second = {
+    seed: 1234,
+    settings: { steps: 2, maxGiB: 2, minGiB: 1, blockSize: 8, precision: "bf16_fp16" },
+    params: { blockSize: 8, requests: 12 },
+    model: tinyModel,
+    preset: tinyPreset,
+  };
+  const changed = {
+    preset: tinyPreset,
+    model: tinyModel,
+    params: { requests: 12, blockSize: 16 },
+    settings: { precision: "bf16_fp16", blockSize: 16, minGiB: 1, maxGiB: 2, steps: 2 },
+    seed: 1234,
+  };
+
+  assert.equal(createCacheKey(first), createCacheKey(second));
+  assert.notEqual(createCacheKey(first), createCacheKey(changed));
+});
+
+test("stale worker jobs do not pass the latest-job guard", () => {
+  assert.equal(shouldApplyJobResult(2, { jobId: 1 }), false);
+  assert.equal(shouldApplyJobResult(2, { jobId: 2 }), true);
+  assert.equal(shouldApplyJobResult(2, null), false);
+});
+
+test("worker job returns the same sweep as direct computation", async () => {
+  const baseInput = {
+    preset: tinyPreset,
+    model: tinyModel,
+    params: { requests: 12, blockSize: 8 },
+    settings: {
+      precision: "bf16_fp16",
+      blockSize: 8,
+      minGiB: 4 / BYTES_PER_GIB,
+      maxGiB: 8 / BYTES_PER_GIB,
+      steps: 2,
+      warmupFraction: 0,
+    },
+    seed: 1234,
+  };
+  const input = Object.assign({ type: "run", jobId: 7, cacheKey: createCacheKey(baseInput) }, baseInput);
+  const direct = runLabComputation(input);
+  const workerResult = await new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("../assets/js/kv-cache-lab-worker.js", import.meta.url));
+    worker.on("message", (message) => {
+      worker.terminate();
+      if (message.error) reject(new Error(message.error));
+      else resolve(message.result);
+    });
+    worker.on("error", reject);
+    worker.postMessage(input);
+  });
+
+  assert.deepEqual(workerResult.sweep, direct.sweep);
+  assert.deepEqual(workerResult.trace.summary, direct.trace.summary);
+  assert.equal(workerResult.jobId, 7);
+});

@@ -1,0 +1,92 @@
+metadata:
+  retrieved_at: "2026-06-04"
+  mode: "precomputed_real_traces"
+  note: "Trace presets are derived from public real traces when block or message identity is available. Raw traces are downloaded into a local cache and are not committed."
+  block_size_note: "Real trace mode uses each source's native or declared block granularity. The block-size control is read-only for these traces."
+  sources:
+    mooncake_fast25: "https://github.com/kvcache-ai/Mooncake/tree/main/FAST25-release/arxiv-trace"
+    nvidia_aiperf_mooncake: "https://docs.nvidia.com/aiperf/benchmark-modes/trace-replay-with-mooncake-traces/"
+    qwen_bailian_trace: "https://github.com/alibaba-edu/qwen-bailian-usagetraces-anon"
+    ragpulse: "https://huggingface.co/datasets/flashserve/RAGPulse"
+    lmcache_agentic_traces: "https://huggingface.co/datasets/zeelHz/lmcache-agentic-traces"
+    semianalysis_weka_no_subagents: "https://huggingface.co/datasets/semianalysisai/cc-traces-weka-no-subagents-051226"
+    semianalysis_weka_with_subagents_256k: "https://huggingface.co/datasets/semianalysisai/cc-traces-weka-with-subagents-052726-256k"
+    kv_cache_tester: "https://github.com/callanjfox/kv-cache-tester"
+    exgentic_agent_traces: "https://huggingface.co/datasets/Exgentic/agent-llm-traces"
+    burstgpt: "https://huggingface.co/datasets/lzzmm/BurstGPT"
+    swissai_serving_trace: "https://huggingface.co/datasets/eth-easl/swissai-serving-trace"
+    sglang_hicache: "https://docs.sglang.io/docs/advanced_features/hicache_best_practices"
+block_sizes: [16, 64, 512]
+simulation_defaults:
+  seed: 20260528
+  warmup_fraction: 0.3
+  capacity_gib_values: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+  block_size: 512
+presets:
+  - id: mooncake_fast25
+    label: "Mooncake FAST25"
+    summary: "Production-style KV block hash trace from Mooncake FAST'25 release and AIPerf replay docs."
+    source_kind: "hash"
+    native_block_size: 512
+    block_size_locked: true
+    sources: ["mooncake_fast25", "nvidia_aiperf_mooncake"]
+  - id: bailian_qwen_trace_a
+    label: "Qwen Bailian Trace A"
+    summary: "Anonymous Qwen Bailian production traffic with chat lineage, request type, token lengths, and 16-token hash buckets."
+    source_kind: "hash"
+    native_block_size: 16
+    block_size_locked: true
+    sources: ["qwen_bailian_trace"]
+  - id: ragpulse
+    label: "RAGPulse"
+    summary: "RAG workload trace with categorized system, passage, history, web-search, and user-input hash ids."
+    source_kind: "hash"
+    native_block_size: 512
+    block_size_locked: true
+    sources: ["ragpulse"]
+  - id: lmcache_agentic_sample
+    label: "LMCache Agentic"
+    summary: "Agentic SWE-bench-style conversation traces converted offline from message text into estimated 64-token buckets."
+    source_kind: "agent_text"
+    native_block_size: 64
+    block_size_locked: true
+    sources: ["lmcache_agentic_traces"]
+  - id: semianalysis_weka_no_subagents
+    label: "Weka Claude Code"
+    summary: "SemiAnalysis Weka Claude Code production traffic with per-request 64-token KV block hashes; sub-agent blocks are removed."
+    source_kind: "hash"
+    native_block_size: 64
+    block_size_locked: true
+    sources: ["semianalysis_weka_no_subagents"]
+  - id: semianalysis_weka_with_subagents_256k
+    label: "Weka Claude Code + Subagents"
+    summary: "SemiAnalysis Weka Claude Code traffic with main-agent and sub-agent requests, filtered by the source to in+out <= 256k proxy tokens."
+    source_kind: "hash"
+    native_block_size: 64
+    block_size_locked: true
+    sources: ["semianalysis_weka_with_subagents_256k"]
+  - id: kv_cache_tester_claude_code
+    label: "kv-cache-tester Claude Code"
+    summary: "WEKA Claude Code trace replay corpus with anonymized coding-agent sessions, timing fields, sub-agent nesting, and 64-token hash ids."
+    source_kind: "hash"
+    native_block_size: 64
+    block_size_locked: true
+    sources: ["kv_cache_tester"]
+  - id: exgentic_agent_sample
+    label: "Exgentic Agent"
+    summary: "Agent benchmark span traces converted offline from span payload text into estimated 64-token buckets."
+    source_kind: "agent_text"
+    native_block_size: 64
+    block_size_locked: true
+    sources: ["exgentic_agent_traces"]
+reference_traces:
+  - id: burstgpt
+    label: "BurstGPT"
+    role: "arrival/load reference only"
+    reason: "No published block or prefix identity in the rows used here, so it is not used for cache hit-rate curves."
+    sources: ["burstgpt"]
+  - id: swissai_serving_trace
+    label: "SwissAI Serving Trace"
+    role: "arrival/length reference only"
+    reason: "Useful for serving-token distribution; not used as a hit-rate trace without explicit block identity semantics."
+    sources: ["swissai_serving_trace"]

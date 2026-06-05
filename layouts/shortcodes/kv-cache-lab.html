@@ -1,0 +1,378 @@
+{{ $modelsData := site.Data.kv_cache_calculator.models }}
+{{ $labData := site.Data.kv_cache_lab.presets }}
+{{ $precomputedData := site.Data.kv_cache_lab.precomputed }}
+{{ $payload := dict "models" $modelsData.models "precision_options" $modelsData.precision_options "indexer_precision_options" $modelsData.indexer_precision_options "lab" $labData }}
+{{ $precomputedJson := resources.FromString "data/kv-cache-lab-precomputed.json" ($precomputedData | jsonify) | fingerprint }}
+{{ $calculatorScript := resources.Get "js/kv-cache-calculator.js" | minify | fingerprint }}
+{{ $labScript := resources.Get "js/kv-cache-lab.js" | minify | fingerprint }}
+{{ $workerScript := resources.Get "js/kv-cache-lab-worker.js" | minify | fingerprint }}
+
+<section id="kv-cache-lab" class="kv-lab-shell" data-state="loading">
+  <div class="kv-lab-grid">
+    <form class="kv-lab-controls" onsubmit="return false;">
+      <label>
+        <span>Model family</span>
+        <select data-lab-input="modelFamily"></select>
+      </label>
+
+      <label>
+        <span>Model</span>
+        <select data-lab-input="model"></select>
+      </label>
+
+      <div class="kv-lab-field">
+        <span class="kv-lab-label-help">
+          <span id="kv-lab-preset-label">Trace preset</span>
+          <button class="kv-lab-help" data-lab-trace-help type="button" aria-label="Trace preset details">?</button>
+        </span>
+        <select data-lab-input="preset" aria-labelledby="kv-lab-preset-label"></select>
+      </div>
+
+      <label>
+        <span>KV precision</span>
+        <select data-lab-input="precision"></select>
+      </label>
+
+      <label data-lab-indexer-control hidden>
+        <span>Indexer precision</span>
+        <select data-lab-input="indexerPrecision"></select>
+      </label>
+
+      <label class="kv-lab-checkbox-row" data-lab-draft-control hidden>
+        <input data-lab-input="includeDraftKvCache" type="checkbox">
+        <span>Include draft KV cache</span>
+      </label>
+    </form>
+
+    <div class="kv-lab-results">
+      <div class="kv-lab-status" data-lab-status role="status" aria-live="polite">Calculating...</div>
+
+      <div class="kv-lab-metrics" data-lab-metrics></div>
+
+      <div class="kv-lab-chart-panel">
+        <svg class="kv-lab-chart" data-lab-chart viewBox="0 0 780 380" role="img" aria-label="KV cache hit-rate curve"></svg>
+      </div>
+
+      <p class="kv-lab-note" data-lab-output="note"></p>
+      <p class="kv-lab-sources" data-lab-sources></p>
+    </div>
+  </div>
+</section>
+
+<script type="application/json" id="kv-cache-lab-data">{{ $payload | jsonify | safeJS }}</script>
+<script src="{{ $calculatorScript.RelPermalink }}" integrity="{{ $calculatorScript.Data.Integrity }}"></script>
+<script src="{{ $labScript.RelPermalink }}" integrity="{{ $labScript.Data.Integrity }}"></script>
+<script>
+  window.KVCacheLab.mount(
+    "kv-cache-lab",
+    JSON.parse(document.getElementById("kv-cache-lab-data").textContent),
+    {
+      workerUrl: "{{ $workerScript.RelPermalink }}",
+      calculatorUrl: "{{ $calculatorScript.RelPermalink }}",
+      labUrl: "{{ $labScript.RelPermalink }}",
+      precomputedUrl: "{{ $precomputedJson.RelPermalink }}"
+    }
+  );
+</script>
+
+<style>
+  .kv-lab-shell {
+    --lab-ink: #111827;
+    --lab-muted: #64748b;
+    --lab-line: #dbe4ee;
+    --lab-panel: #f8fafc;
+    --lab-soft: #eef6ff;
+    --lab-blue: #2563eb;
+    width: min(100%, 86rem);
+    margin: 0 auto;
+    color: var(--lab-ink);
+  }
+
+  body:has(#kv-cache-lab) .hb-toc {
+    display: none !important;
+  }
+
+  body:has(#kv-cache-lab) article > main {
+    max-width: 94rem;
+  }
+
+  body:has(#kv-cache-lab) article h1 {
+    text-align: center;
+  }
+
+  .kv-lab-grid {
+    display: grid;
+    grid-template-columns: minmax(18rem, 25rem) minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+  }
+
+  .kv-lab-controls,
+  .kv-lab-results {
+    border: 1px solid var(--lab-line);
+    border-radius: 8px;
+    background: var(--lab-panel);
+  }
+
+  .kv-lab-controls {
+    display: grid;
+    gap: 0.85rem;
+    padding: 1rem;
+  }
+
+  .kv-lab-controls label,
+  .kv-lab-field {
+    display: grid;
+    gap: 0.35rem;
+    margin: 0;
+    color: var(--lab-muted);
+    font-size: 0.82rem;
+    font-weight: 650;
+  }
+
+  .kv-lab-controls select,
+  .kv-lab-controls input {
+    width: 100%;
+    min-height: 2.65rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 7px;
+    background: #fff;
+    color: var(--lab-ink);
+    font: inherit;
+    font-size: 0.94rem;
+    padding: 0.5rem 0.65rem;
+  }
+
+  .kv-lab-controls select:focus,
+  .kv-lab-controls input:focus {
+    outline: 2px solid rgba(37, 99, 235, 0.2);
+    border-color: var(--lab-blue);
+  }
+
+  .kv-lab-label-help {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    width: fit-content;
+    pointer-events: none;
+  }
+
+  .kv-lab-label-help .kv-lab-help {
+    pointer-events: auto;
+  }
+
+  .kv-lab-controls [hidden] {
+    display: none !important;
+  }
+
+  .kv-lab-help {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    width: 1rem;
+    height: 1rem;
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    background: #fff;
+    color: var(--lab-muted);
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 800;
+    line-height: 1;
+    cursor: help;
+  }
+
+  .kv-lab-help::after {
+    display: none;
+    position: absolute;
+    z-index: 6;
+    top: 50%;
+    left: calc(100% + 0.45rem);
+    width: max-content;
+    max-width: min(25rem, calc(100vw - 2rem));
+    padding: 0.65rem 0.75rem;
+    border: 1px solid var(--lab-line);
+    border-radius: 7px;
+    background: #fff;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+    color: var(--lab-ink);
+    content: attr(data-lab-tooltip);
+    font-family: inherit;
+    font-size: 0.78rem;
+    font-weight: 550;
+    line-height: 1.45;
+    opacity: 0;
+    pointer-events: none;
+    text-align: left;
+    transform: translateY(-50%);
+    transition: opacity 0.12s ease;
+    white-space: normal;
+  }
+
+  .kv-lab-help:hover::after,
+  .kv-lab-help:focus-visible::after,
+  .kv-lab-metric-help:hover::after,
+  .kv-lab-metric-help:focus-visible::after {
+    display: block;
+    opacity: 1;
+  }
+
+  .kv-lab-checkbox-row {
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 0.55rem;
+    color: var(--lab-ink);
+  }
+
+  .kv-lab-checkbox-row input {
+    width: 1rem;
+    min-height: 1rem;
+    padding: 0;
+  }
+
+  .kv-lab-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.65rem;
+  }
+
+  .kv-lab-row label {
+    font-size: 0.74rem;
+  }
+
+  .kv-lab-results {
+    display: grid;
+    gap: 1rem;
+    padding: 1rem;
+  }
+
+  .kv-lab-status {
+    display: none;
+    width: fit-content;
+    min-height: 1.8rem;
+    align-items: center;
+    border-radius: 999px;
+    background: #dbeafe;
+    color: #1d4ed8;
+    font-size: 0.78rem;
+    font-weight: 750;
+    padding: 0.25rem 0.65rem;
+  }
+
+  .kv-lab-shell[data-state="loading"] .kv-lab-status,
+  .kv-lab-shell[data-state="calculating"] .kv-lab-status,
+  .kv-lab-shell[data-state="error"] .kv-lab-status {
+    display: inline-flex;
+  }
+
+  .kv-lab-shell[data-state="error"] .kv-lab-status {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .kv-lab-shell[data-state="calculating"] .kv-lab-metrics,
+  .kv-lab-shell[data-state="calculating"] .kv-lab-chart-panel,
+  .kv-lab-shell[data-state="calculating"] .kv-lab-note,
+  .kv-lab-shell[data-state="calculating"] .kv-lab-sources {
+    opacity: 0.55;
+    transition: opacity 120ms ease;
+  }
+
+  .kv-lab-metrics span {
+    color: var(--lab-muted);
+    font-size: 0.82rem;
+    font-weight: 650;
+  }
+
+  .kv-lab-metric-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    width: fit-content;
+  }
+
+  .kv-lab-metric-help::after {
+    max-width: min(21rem, calc(100vw - 2rem));
+  }
+
+  .kv-lab-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+    gap: 0.75rem;
+  }
+
+  .kv-lab-metrics div {
+    min-height: 4.8rem;
+    padding: 0.85rem;
+    border: 1px solid var(--lab-line);
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .kv-lab-metrics strong {
+    display: block;
+    margin-top: 0.35rem;
+    font-size: 1.12rem;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+
+  .kv-lab-chart-panel {
+    min-height: 24rem;
+    border: 1px solid var(--lab-line);
+    border-radius: 8px;
+    background: #fff;
+    overflow: hidden;
+  }
+
+  .kv-lab-chart {
+    display: block;
+    width: 100%;
+    height: auto;
+    min-height: 22rem;
+  }
+
+  .kv-lab-note,
+  .kv-lab-sources {
+    margin: 0;
+    color: var(--lab-muted);
+    font-size: 0.88rem;
+    line-height: 1.55;
+  }
+
+  .kv-lab-sources a {
+    color: #0369a1;
+    font-weight: 650;
+    text-decoration: none;
+  }
+
+  .kv-lab-sources a:hover {
+    color: #0c4a6e;
+    text-decoration: underline;
+  }
+
+  @media (max-width: 56rem) {
+    .kv-lab-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .kv-lab-row {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .kv-lab-help::after {
+      top: calc(100% + 0.4rem);
+      left: 50%;
+      width: 18rem;
+      max-width: calc(100vw - 2rem);
+      transform: translateX(-50%);
+    }
+  }
+
+  @media (max-width: 36rem) {
+    .kv-lab-row {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
