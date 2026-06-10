@@ -157,6 +157,7 @@
 
   .kv-lab-controls,
   .kv-lab-results {
+    min-width: 0;
     border: 1px solid var(--lab-line);
     border-radius: 8px;
     background: var(--lab-panel);
@@ -172,6 +173,7 @@
   .kv-lab-field {
     display: grid;
     gap: 0.35rem;
+    min-width: 0;
     margin: 0;
     color: var(--lab-muted);
     font-size: 0.82rem;
@@ -181,6 +183,8 @@
   .kv-lab-controls select,
   .kv-lab-controls input {
     width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     min-height: 2.65rem;
     border: 1px solid #cbd5e1;
     border-radius: 7px;
@@ -201,6 +205,8 @@
     position: relative;
     display: grid;
     gap: 0.35rem;
+    min-width: 0;
+    overflow: hidden;
     cursor: pointer;
     border: 1.5px dashed #c2d2e6;
     border-radius: 8px;
@@ -239,10 +245,12 @@
   }
 
   .kv-lab-upload-hint {
+    min-width: 0;
     color: var(--lab-muted);
     font-size: 0.74rem;
     font-weight: 500;
     line-height: 1.35;
+    overflow-wrap: anywhere;
   }
 
   .kv-lab-upload-hint strong {
@@ -253,7 +261,7 @@
   .kv-lab-upload-hint code {
     color: var(--lab-ink);
     font-size: 0.72rem;
-    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 
   .kv-lab-upload-hint code::before,
@@ -266,10 +274,15 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .kv-lab-upload-status {
+    display: block;
+    flex: 1 1 auto;
     min-width: 0;
+    max-width: 100%;
     color: var(--lab-muted);
     font-size: 0.74rem;
     font-weight: 600;

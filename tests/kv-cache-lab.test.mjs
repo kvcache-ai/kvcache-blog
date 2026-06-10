@@ -11,6 +11,7 @@ const {
   createCacheKey,
   estimateBytesPerToken,
   generateTrace,
+  inspectUploadedTraceHeadText,
   modelSweepKey,
   parseUploadedTrace,
   precomputedResultFor,
@@ -422,6 +423,37 @@ test("uploaded trace parser keeps bad lines but accepts valid declared-block rec
   assert.equal(trace.summary.requests, 2);
   assert.equal(trace.summary.parseErrors, 1);
   assert.equal(trace.summary.averageInputTokens, 96);
+});
+
+test("uploaded trace head inspection reports schema problems early", () => {
+  assert.deepEqual(
+    inspectUploadedTraceHeadText(JSON.stringify({ timestamp: 1, block_size: 64, hash_ids: [1], input_length: 64 })),
+    { valid: true, blockSize: 64, validRecords: 1, parseErrors: 0 },
+  );
+
+  assert.match(
+    inspectUploadedTraceHeadText(JSON.stringify({ timestamp: 1, block_size: 64, input_length: 64 })).error,
+    /hash_ids/,
+  );
+  assert.match(
+    inspectUploadedTraceHeadText(JSON.stringify({ timestamp: 1, block_size: 64, hash_ids: [1] })).error,
+    /input_length/,
+  );
+  assert.match(
+    inspectUploadedTraceHeadText(JSON.stringify({ timestamp: 1, hash_ids: [1], input_length: 64 })).error,
+    /block_size/,
+  );
+});
+
+test("uploaded trace head inspection tolerates bad lines before a valid record", () => {
+  const inspected = inspectUploadedTraceHeadText([
+    "not json",
+    JSON.stringify({ timestamp: 1, block_size: 32, hash_ids: [1, 2], input_length: 64 }),
+  ].join("\n"));
+
+  assert.equal(inspected.valid, true);
+  assert.equal(inspected.blockSize, 32);
+  assert.equal(inspected.parseErrors, 1);
 });
 
 test("worker job returns the same sweep as direct computation", async () => {

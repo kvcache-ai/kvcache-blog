@@ -29,6 +29,8 @@
   const INPUT_DEBOUNCE_MS = 250;
   const FALLBACK_STEP_DELAY_MS = 16;
   const MAX_CACHE_ENTRIES = 12;
+  const UPLOAD_HEAD_MAX_CHARS = 256 * 1024;
+  const UPLOAD_HEAD_MAX_LINES = 64;
   const TIME_BUCKETS = 48;
   const THROUGHPUT_EPSILON = 0.001;
   const THROUGHPUT_DISPLAY_CAP = 1000;
@@ -173,6 +175,80 @@
       id: `${namespace}:${String(id)}`,
       tokens: blockTokens(inputLength, blockSize, index, safeIds.length),
     }));
+  }
+
+  function inspectUploadedTraceRecord(record) {
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      return { valid: false, error: "Uploaded trace lines must be JSON objects." };
+    }
+    if (!Array.isArray(record.hash_ids) || !record.hash_ids.length) {
+      return { valid: false, error: 'Uploaded trace records must include a non-empty "hash_ids" array.' };
+    }
+    if (!Number.isFinite(Number(record.input_length)) || Number(record.input_length) <= 0) {
+      return { valid: false, error: 'Uploaded trace records must include a positive "input_length".' };
+    }
+    const blockSize = Math.floor(Number(record.block_size));
+    if (!Number.isFinite(Number(record.block_size)) || blockSize <= 0) {
+      return { valid: false, error: 'Uploaded trace records must include a positive "block_size".' };
+    }
+    return { valid: true, blockSize };
+  }
+
+  function inspectUploadedTraceHeadText(text, options) {
+    const opts = options || {};
+    const maxLines = toPositiveInteger(opts.maxLines, UPLOAD_HEAD_MAX_LINES);
+    const source = String(text || "");
+    const len = Math.min(source.length, toPositiveInteger(opts.maxChars, UPLOAD_HEAD_MAX_CHARS));
+    let pos = 0;
+    let inspectedLines = 0;
+    let nonEmptyLines = 0;
+    let parseErrors = 0;
+    let firstSchemaError = "";
+    let blockSize = 0;
+    let validRecords = 0;
+    while (pos < len && inspectedLines < maxLines) {
+      let newline = source.indexOf("\n", pos);
+      if (newline < 0 || newline > len) newline = len;
+      const line = source.slice(pos, newline).trim();
+      pos = newline + 1;
+      if (!line) continue;
+      inspectedLines += 1;
+      nonEmptyLines += 1;
+      let record;
+      try {
+        record = JSON.parse(line);
+      } catch (error) {
+        parseErrors += 1;
+        continue;
+      }
+      const checked = inspectUploadedTraceRecord(record);
+      if (!checked.valid) {
+        if (!firstSchemaError) firstSchemaError = checked.error;
+        continue;
+      }
+      validRecords += 1;
+      if (!blockSize) blockSize = checked.blockSize;
+      else if (checked.blockSize !== blockSize) {
+        return {
+          valid: false,
+          blockSize,
+          error: `Uploaded trace block_size must be consistent. Saw ${blockSize} and ${checked.blockSize} in the file head.`,
+        };
+      }
+    }
+    if (validRecords > 0) return { valid: true, blockSize, validRecords, parseErrors };
+    if (firstSchemaError) return { valid: false, error: firstSchemaError, parseErrors };
+    if (parseErrors > 0) {
+      return {
+        valid: false,
+        error: 'Uploaded trace must be JSONL: each non-empty line must be a JSON object with "hash_ids", "input_length", and "block_size".',
+        parseErrors,
+      };
+    }
+    if (nonEmptyLines === 0) {
+      return { valid: false, error: "Uploaded trace appears empty; expected JSONL records." };
+    }
+    return { valid: false, error: 'No valid uploaded trace records found in the file head. Expected JSONL records with "hash_ids", "input_length", and "block_size".' };
   }
 
   function normalizeMooncakeRecord(record, source) {
@@ -3058,31 +3134,6 @@
       setText(root, "[data-lab-output='note']", (error && error.message) || String(error));
     }
 
-    function detectBlockSize(text) {
-      // Inspect only the file head. Ignore bad/skipped lines and return the
-      // first valid hash record's declared block_size, if present.
-      const source = String(text || "");
-      const len = source.length;
-      let pos = 0;
-      while (pos < len) {
-        let newline = source.indexOf("\n", pos);
-        if (newline < 0) newline = len;
-        const line = source.slice(pos, newline).trim();
-        pos = newline + 1;
-        if (!line) continue;
-        try {
-          const record = JSON.parse(line);
-          if (!record || !Array.isArray(record.hash_ids) || !record.hash_ids.length) continue;
-          if (Number(record.block_size) > 0) return Math.floor(Number(record.block_size));
-          return null;
-        } catch (error) {
-          // Keep scanning: bad lines are reported by the full parser, but a
-          // later valid record may still declare the native block size.
-        }
-      }
-      return null;
-    }
-
     function currentUploadBlockSize() {
       const typed = uploadBlockSizeInput && Number(uploadBlockSizeInput.value);
       if (typed && typed > 0) return Math.floor(typed);
@@ -3104,6 +3155,23 @@
       if (node) node.textContent = text || "";
     }
 
+    function failUploadValidation(error) {
+      if (activeJob) {
+        activeJob.cancel();
+        activeJob = null;
+      }
+      uploadState = null;
+      const option = inputs.preset.querySelector(`option[value="${UPLOAD_PRESET_ID}"]`);
+      if (option) option.remove();
+      if (uploadClear) uploadClear.hidden = true;
+      hideProgress();
+      root.dataset.state = "error";
+      setStatus(root, "Invalid trace");
+      const message = (error && error.message) || String(error);
+      setUploadStatus("Invalid trace");
+      setText(root, "[data-lab-output='note']", message);
+    }
+
     function setUploadOption(label) {
       let option = inputs.preset.querySelector(`option[value="${UPLOAD_PRESET_ID}"]`);
       if (!option) {
@@ -3122,29 +3190,25 @@
       return `${Math.max(1, Math.round(value / 1e3))} KB`;
     }
 
-    // Read just the head (decompressing gzip if needed) to detect the source
-    // block size from the first record — without touching the rest of the file.
-    async function detectBlockSizeFromFile(file, gzip) {
+    // Read just the decoded head to validate JSONL schema and detect the source
+    // block size before starting an expensive full simulation.
+    async function inspectUploadFileHead(file, gzip) {
       try {
-        let stream = file.slice(0, 1 << 20).stream();
-        if (gzip && typeof DecompressionStream === "function") {
-          stream = stream.pipeThrough(new DecompressionStream("gzip"));
-        }
-        const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
         let buffer = "";
-        try {
-          for (;;) {
-            const next = await reader.read();
-            if (next.done) break;
-            buffer += next.value || "";
-            if (buffer.indexOf("\n") >= 0 || buffer.length > 1 << 20) break;
+        for await (const chunk of createTraceTextStream(file, gzip, null)) {
+          buffer += chunk || "";
+          if (buffer.indexOf("\n") >= 0 || buffer.length >= UPLOAD_HEAD_MAX_CHARS) {
+            return inspectUploadedTraceHeadText(buffer);
           }
-        } finally {
-          reader.releaseLock();
         }
-        return detectBlockSize(buffer);
+        return inspectUploadedTraceHeadText(buffer);
       } catch (error) {
-        return null;
+        return {
+          valid: false,
+          error: gzip
+            ? "Could not decompress uploaded trace. Check that this is a valid JSONL.GZ file."
+            : "Could not read uploaded trace. Check that this is a valid JSONL file.",
+        };
       }
     }
 
@@ -3198,7 +3262,13 @@
       if (!file) return;
       const isGzip = /\.gz$/i.test(file.name || "");
       setUploadStatus(`Reading ${file.name} (${formatFileSize(file.size)})…`);
-      detectBlockSizeFromFile(file, isGzip).then((detected) => loadUploadFile(file, isGzip, detected));
+      inspectUploadFileHead(file, isGzip).then((inspection) => {
+        if (!inspection || !inspection.valid) {
+          failUploadValidation(new Error((inspection && inspection.error) || "Uploaded trace is not valid JSONL."));
+          return;
+        }
+        loadUploadFile(file, isGzip, inspection.blockSize || 0);
+      });
     }
 
     function syncTraceHelp() {
@@ -3668,6 +3738,7 @@
     namespacedBlocks,
     normalizeMooncakeRecord,
     createTraceTextStream,
+    inspectUploadedTraceHeadText,
     parseUploadedTrace,
     parseUploadedTraceStreaming,
     planFromBuffers,
