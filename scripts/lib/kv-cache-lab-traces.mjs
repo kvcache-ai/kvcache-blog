@@ -524,20 +524,48 @@ export async function downloadFile(url, destination, options = {}) {
   const append = existingSize > 0 && response.status === 206;
   const file = fs.createWriteStream(destination, { flags: append ? "a" : "w" });
   await new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      file.destroy(error);
+      reject(error);
+    };
+    file.on("error", fail);
     response.body.pipeTo(
       new WritableStream({
         write(chunk) {
-          file.write(Buffer.from(chunk));
+          return new Promise((res, rej) => {
+            const buffer = Buffer.from(chunk);
+            const onError = (error) => {
+              file.off("drain", onDrain);
+              rej(error);
+            };
+            const onDrain = () => {
+              file.off("error", onError);
+              res();
+            };
+            file.once("error", onError);
+            if (file.write(buffer)) {
+              file.off("error", onError);
+              res();
+            } else {
+              file.once("drain", onDrain);
+            }
+          });
         },
         close() {
-          file.end(resolve);
+          file.end(() => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          });
         },
         abort(error) {
-          file.destroy(error);
-          reject(error);
+          fail(error);
         },
       }),
-    ).catch(reject);
+    ).catch(fail);
   });
   return fileHash(destination);
 }

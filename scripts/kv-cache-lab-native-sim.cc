@@ -47,9 +47,12 @@ struct Result {
 };
 
 std::uint64_t parse_u64(const char* value, const std::string& name) {
+  if (!value || *value == '\0') {
+    throw std::runtime_error("Invalid integer for " + name);
+  }
   char* end = nullptr;
   const unsigned long long parsed = std::strtoull(value, &end, 10);
-  if (!value || *value == '\0' || (end && *end != '\0')) {
+  if (end && *end != '\0') {
     throw std::runtime_error("Invalid integer for " + name);
   }
   return static_cast<std::uint64_t>(parsed);

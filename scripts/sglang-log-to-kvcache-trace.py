@@ -58,41 +58,43 @@ def block_hashes(token_ids, block_size):
 
 
 def iter_records(paths, start_ts=None, end_ts=None):
-    handles = [sys.stdin] if not paths else [open(p, "r", errors="replace") for p in paths]
-    try:
-        for handle in handles:
-            for line in handle:
-                if "Finish: input_ids_len=" not in line:
+    def process_handle(handle):
+        for line in handle:
+            if "Finish: input_ids_len=" not in line:
+                continue
+            # Filter on request_received_ts first (cheap) before parsing the
+            # potentially huge input_ids list.
+            ts = RECEIVED_TS_RE.search(line)
+            ts_val = float(ts.group(1)) if ts else None
+            if start_ts is not None or end_ts is not None:
+                if ts_val is None:
                     continue
-                # Filter on request_received_ts first (cheap) before parsing the
-                # potentially huge input_ids list.
-                ts = RECEIVED_TS_RE.search(line)
-                ts_val = float(ts.group(1)) if ts else None
-                if start_ts is not None or end_ts is not None:
-                    if ts_val is None:
-                        continue
-                    if start_ts is not None and ts_val < start_ts:
-                        continue
-                    if end_ts is not None and ts_val >= end_ts:
-                        continue
-                m = INPUT_IDS_RE.search(line)
-                if not m:
+                if start_ts is not None and ts_val < start_ts:
                     continue
-                token_ids = parse_int_list(m.group(1))
-                if not token_ids:
+                if end_ts is not None and ts_val >= end_ts:
                     continue
-                rid = RID_RE.search(line)
-                comp = COMPLETION_RE.search(line)
-                yield {
-                    "rid": rid.group(1) if rid else None,
-                    "ts": ts_val,
-                    "input_ids": token_ids,
-                    "completion": int(comp.group(1)) if comp else 0,
-                }
-    finally:
-        for handle in handles:
-            if handle is not sys.stdin:
-                handle.close()
+            m = INPUT_IDS_RE.search(line)
+            if not m:
+                continue
+            token_ids = parse_int_list(m.group(1))
+            if not token_ids:
+                continue
+            rid = RID_RE.search(line)
+            comp = COMPLETION_RE.search(line)
+            yield {
+                "rid": rid.group(1) if rid else None,
+                "ts": ts_val,
+                "input_ids": token_ids,
+                "completion": int(comp.group(1)) if comp else 0,
+            }
+
+    if not paths:
+        yield from process_handle(sys.stdin)
+        return
+
+    for path in paths:
+        with open(path, "r", errors="replace") as handle:
+            yield from process_handle(handle)
 
 
 def convert_one(record, block_size):

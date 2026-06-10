@@ -252,6 +252,9 @@ fn find_number_u64(line: &[u8], key: &[u8]) -> Option<u64> {
     while i < line.len() && line[i] != b':' {
         i += 1;
     }
+    if i >= line.len() {
+        return None;
+    }
     i += 1;
     while i < line.len() && (line[i] == b' ' || line[i] == b'"') {
         i += 1;
@@ -276,6 +279,9 @@ fn find_number_f64(line: &[u8], key: &[u8]) -> Option<f64> {
     let mut i = pos + key.len();
     while i < line.len() && line[i] != b':' {
         i += 1;
+    }
+    if i >= line.len() {
+        return None;
     }
     i += 1;
     while i < line.len() && (line[i] == b' ' || line[i] == b'"') {
@@ -433,27 +439,23 @@ pub extern "C" fn chunk_ptr(len: u32) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn ingest(len: u32) -> u32 {
     let s = st();
-    let len = len as usize;
+    let staging = std::mem::take(&mut s.staging);
+    let len = (len as usize).min(staging.len());
     let mut start = 0usize;
     let mut idx = 0usize;
-    // Work on the staging slice without holding an overlapping borrow of `s`.
-    // SAFETY: parse_line only touches the plan/interner fields, never `staging`.
-    let staging_ptr = s.staging.as_ptr();
     while idx < len {
-        let byte = unsafe { *staging_ptr.add(idx) };
-        if byte == b'\n' {
+        if staging[idx] == b'\n' {
             if s.line.is_empty() {
-                let slice: &[u8] = unsafe { std::slice::from_raw_parts(staging_ptr.add(start), idx - start) };
-                parse_line(s, slice);
+                parse_line(s, &staging[start..idx]);
             } else {
-                let chunk = unsafe { std::slice::from_raw_parts(staging_ptr.add(start), idx - start) };
-                s.line.extend_from_slice(chunk);
-                let line = std::mem::take(&mut s.line);
+                s.line.extend_from_slice(&staging[start..idx]);
+                let mut line = std::mem::take(&mut s.line);
                 parse_line(s, &line);
+                line.clear();
                 s.line = line;
-                s.line.clear();
             }
             if s.capped {
+                s.staging = staging;
                 return 1;
             }
             start = idx + 1;
@@ -461,9 +463,9 @@ pub extern "C" fn ingest(len: u32) -> u32 {
         idx += 1;
     }
     if start < len {
-        let tail = unsafe { std::slice::from_raw_parts(staging_ptr.add(start), len - start) };
-        s.line.extend_from_slice(tail);
+        s.line.extend_from_slice(&staging[start..len]);
     }
+    s.staging = staging;
     if s.capped {
         1
     } else {
