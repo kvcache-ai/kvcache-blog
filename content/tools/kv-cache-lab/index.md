@@ -1,8 +1,8 @@
 ---
-title: "KV Cache Lab"
-linkTitle: "KV Cache Lab"
+title: "KV Cache Workload Analyzer"
+linkTitle: "KV Cache Workload Analyzer"
 date: 2026-05-28
-summary: "Simulate steady-state KV cache hit-rate curves across models, request traces, cache sizes, and eviction policies."
+summary: "Analyze KV cache hit rate, theoretical prefill throughput, and useful cache occupancy across real or custom workloads."
 home_weight: 90
 show_date_updated: false
 show_breadcrumb: false
