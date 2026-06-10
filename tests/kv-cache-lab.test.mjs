@@ -12,11 +12,13 @@ const {
   estimateBytesPerToken,
   generateTrace,
   modelSweepKey,
+  parseUploadedTrace,
   precomputedResultFor,
   runLabComputation,
   simulatePolicy,
   shouldApplyJobResult,
   sweepCapacity,
+  throughputFromHitRate,
 } = require("../assets/js/kv-cache-lab.js");
 
 const unitTrace = {
@@ -111,6 +113,47 @@ test("warmup requests affect cache state but are excluded from hit-rate stats", 
   assert.equal(result.hitTokens, 2);
   assert.equal(result.totalTokens, 2);
   assert.equal(result.hitRate, 1);
+});
+
+test("theoretical prefill throughput is derived from miss fraction and clamped", () => {
+  assert.equal(throughputFromHitRate(0), 1);
+  assert.equal(Math.round(throughputFromHitRate(0.9)), 10);
+  assert.equal(Math.round(throughputFromHitRate(0.95)), 20);
+  assert.equal(throughputFromHitRate(1), 1000);
+});
+
+test("useful cache occupancy samples future-useful cached blocks after measured requests", () => {
+  const trace = {
+    blockSize: 1,
+    requests: ["A", "B", "A"].map((id) => ({
+      inputBlocks: [{ id, tokens: 1 }],
+      appendBlocks: [],
+    })),
+  };
+
+  const result = simulatePolicy(trace, 2, "lru", { warmupRequests: 0 });
+
+  assert.equal(result.hitTokens, 1);
+  assert.equal(result.usefulCacheBlockSamples, 2);
+  assert.equal(result.usefulCacheSamples, 3);
+  assert.equal(result.usefulCacheRate, 1 / 3);
+});
+
+test("useful cache occupancy excludes warmup samples but warmup can create useful cache state", () => {
+  const trace = {
+    blockSize: 1,
+    requests: ["A", "A", "A"].map((id) => ({
+      inputBlocks: [{ id, tokens: 1 }],
+      appendBlocks: [],
+    })),
+  };
+
+  const result = simulatePolicy(trace, 1, "lru", { warmupRequests: 1 });
+
+  assert.equal(result.hitRate, 1);
+  assert.equal(result.usefulCacheBlockSamples, 1);
+  assert.equal(result.usefulCacheSamples, 2);
+  assert.equal(result.usefulCacheRate, 0.5);
 });
 
 test("generated output blocks occupy cache for later prefill hits", () => {
@@ -237,6 +280,32 @@ test("capacity sweep derives token-dependent accounting from the trace", () => {
   assert.equal(sweep.points[0].cacheBlocks, 1);
 });
 
+test("capacity sweep recomputes useful occupancy denominator above the unique working set", () => {
+  const trace = {
+    blockSize: 1,
+    summary: { averageInputTokens: 1, uniqueBlocks: 1 },
+    requests: ["A", "A"].map((id) => ({
+      inputBlocks: [{ id, tokens: 1 }],
+      appendBlocks: [],
+    })),
+  };
+
+  const sweep = sweepCapacity(trace, tinyModel, {
+    precision: "bf16_fp16",
+    blockSize: 1,
+    minGiB: 16 / BYTES_PER_GIB,
+    maxGiB: 16 / BYTES_PER_GIB,
+    steps: 2,
+    warmupFraction: 0,
+  });
+
+  assert.equal(sweep.points[0].cacheBlocks, 4);
+  assert.equal(sweep.points[0].results.lru.hitRate, 0.5);
+  assert.equal(sweep.points[0].results.lru.usefulCacheBlockSamples, 1);
+  assert.equal(sweep.points[0].results.lru.usefulCacheSamples, 2);
+  assert.equal(sweep.points[0].results.lru.usefulCacheRate, 1 / 8);
+});
+
 test("capacity sweep returns one result set per GiB point and policy", () => {
   const trace = {
     blockSize: 1,
@@ -316,6 +385,45 @@ test("stale worker jobs do not pass the latest-job guard", () => {
   assert.equal(shouldApplyJobResult(2, null), false);
 });
 
+test("uploaded trace parser requires declared block_size", () => {
+  const jsonl = [
+    JSON.stringify({ timestamp: 1, hash_ids: [1, 2], input_length: 128 }),
+    JSON.stringify({ timestamp: 2, hash_ids: [1, 3], input_length: 128 }),
+  ].join("\n");
+
+  assert.throws(
+    () => parseUploadedTrace(jsonl, { label: "missing" }),
+    /must include block_size/,
+  );
+});
+
+test("uploaded trace parser rejects inconsistent block_size", () => {
+  const jsonl = [
+    JSON.stringify({ timestamp: 1, block_size: 64, hash_ids: [1, 2], input_length: 128 }),
+    JSON.stringify({ timestamp: 2, block_size: 32, hash_ids: [1, 3], input_length: 96 }),
+  ].join("\n");
+
+  assert.throws(
+    () => parseUploadedTrace(jsonl, { label: "mixed" }),
+    /block_size must be consistent/,
+  );
+});
+
+test("uploaded trace parser keeps bad lines but accepts valid declared-block records", () => {
+  const jsonl = [
+    "not json",
+    JSON.stringify({ timestamp: 1, block_size: 64, hash_ids: [9007199254740993, 2], input_length: 96 }),
+    JSON.stringify({ timestamp: 2, block_size: 64, hash_ids: [9007199254740993, 3], input_length: 96 }),
+  ].join("\n");
+
+  const trace = parseUploadedTrace(jsonl, { label: "valid" });
+
+  assert.equal(trace.blockSize, 64);
+  assert.equal(trace.summary.requests, 2);
+  assert.equal(trace.summary.parseErrors, 1);
+  assert.equal(trace.summary.averageInputTokens, 96);
+});
+
 test("worker job returns the same sweep as direct computation", async () => {
   const baseInput = {
     preset: tinyPreset,
@@ -336,9 +444,10 @@ test("worker job returns the same sweep as direct computation", async () => {
   const workerResult = await new Promise((resolve, reject) => {
     const worker = new Worker(new URL("../assets/js/kv-cache-lab-worker.js", import.meta.url));
     worker.on("message", (message) => {
+      if (message && message.type === "progress") return;
       worker.terminate();
       if (message.error) reject(new Error(message.error));
-      else resolve(message.result);
+      else resolve(message.result || message);
     });
     worker.on("error", reject);
     worker.postMessage(input);

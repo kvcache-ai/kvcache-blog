@@ -24,8 +24,8 @@ simulation_defaults:
   block_size: 512
 presets:
   - id: mooncake_fast25
-    label: "Mooncake FAST25"
-    summary: "Production-style KV block hash trace from Mooncake FAST'25 release and AIPerf replay docs."
+    label: "Mooncake FAST25 Tool&Agent"
+    summary: "Tool&Agent workload KV block hash trace from the Mooncake FAST'25 release and AIPerf replay docs."
     source_kind: "hash"
     native_block_size: 512
     block_size_locked: true

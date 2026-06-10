@@ -6,6 +6,7 @@
 {{ $calculatorScript := resources.Get "js/kv-cache-calculator.js" | minify | fingerprint }}
 {{ $labScript := resources.Get "js/kv-cache-lab.js" | minify | fingerprint }}
 {{ $workerScript := resources.Get "js/kv-cache-lab-worker.js" | minify | fingerprint }}
+{{ $wasmModule := resources.Get "wasm/kvcache-sim.wasm" | fingerprint }}
 
 <section id="kv-cache-lab" class="kv-lab-shell" data-state="loading">
   <div class="kv-lab-grid">
@@ -28,6 +29,19 @@
         <select data-lab-input="preset" aria-labelledby="kv-lab-preset-label"></select>
       </div>
 
+      <div class="kv-lab-field">
+        <span>Customize trace</span>
+        <label class="kv-lab-upload-zone" data-lab-upload-zone>
+          <input class="kv-lab-upload-input" data-lab-upload-input type="file" accept=".jsonl,.jsonl.gz,.ndjson,.gz">
+          <span class="kv-lab-upload-action">Choose JSONL / JSONL.GZ</span>
+          <span class="kv-lab-upload-hint">Drop or choose a JSONL / JSONL.GZ trace. Each valid line needs <code>hash_ids</code>, <code>input_length</code>, and <code>block_size</code>. Requests are replayed in file order, so sort production traces by timestamp first. <strong>Computed locally in your browser.</strong></span>
+        </label>
+        <div class="kv-lab-upload-footer">
+          <span class="kv-lab-upload-status" data-lab-upload-status></span>
+          <button class="kv-lab-upload-clear" data-lab-upload-clear type="button" hidden>Clear</button>
+        </div>
+      </div>
+
       <label>
         <span>KV precision</span>
         <select data-lab-input="precision"></select>
@@ -42,15 +56,48 @@
         <input data-lab-input="includeDraftKvCache" type="checkbox">
         <span>Include draft KV cache</span>
       </label>
+
+      <div class="kv-lab-policy-note">
+        <strong>Eviction model</strong>
+        <p>When a new block would exceed the selected memory budget, the simulator evicts one cached block according to FIFO, LRU, or Optimal. It does not model high-watermark or percentage-based batch eviction. These are theoretical estimates and can differ from production behavior.</p>
+      </div>
     </form>
 
     <div class="kv-lab-results">
       <div class="kv-lab-status" data-lab-status role="status" aria-live="polite">Calculating...</div>
 
+      <div class="kv-lab-progress" data-lab-progress hidden role="progressbar" aria-label="Trace analysis progress">
+        <div class="kv-lab-progress-track">
+          <div class="kv-lab-progress-fill" data-lab-progress-fill></div>
+        </div>
+        <span class="kv-lab-progress-text" data-lab-progress-text></span>
+      </div>
+
       <div class="kv-lab-metrics" data-lab-metrics></div>
 
       <div class="kv-lab-chart-panel">
+        <div class="kv-lab-chart-heading">
+          <h2>Prefill token hit rate</h2>
+          <button class="kv-lab-help" type="button" aria-label="Prefill token hit rate calculation" data-lab-tooltip="Warmup-excluded prefill input-token hit rate: hit prefill tokens divided by total prefill input tokens at each cache budget. Output tokens are not in the denominator; they only matter later if they appear in subsequent request input/history.">?</button>
+        </div>
         <svg class="kv-lab-chart" data-lab-chart viewBox="0 0 780 380" role="img" aria-label="KV cache hit-rate curve"></svg>
+      </div>
+
+      <div class="kv-lab-derived-charts" data-lab-derived-charts hidden>
+        <div class="kv-lab-chart-panel kv-lab-derived-panel">
+          <div class="kv-lab-chart-heading">
+            <h2>Theoretical prefill throughput</h2>
+            <button class="kv-lab-help" type="button" aria-label="Theoretical prefill throughput calculation" data-lab-tooltip="Derived directly from hit rate as ideal speedup = 1 / (1 - hit rate). It assumes cached tokens need no prefill compute and excludes decode, KV lookup, transfer, scheduling, batching, and memory-bandwidth costs.">?</button>
+          </div>
+          <svg class="kv-lab-chart" data-lab-throughput-chart viewBox="0 0 780 380" role="img" aria-label="Theoretical prefill throughput curve"></svg>
+        </div>
+        <div class="kv-lab-chart-panel kv-lab-derived-panel" data-lab-useful-panel>
+          <div class="kv-lab-chart-heading">
+            <h2>Useful cache occupancy</h2>
+            <button class="kv-lab-help" type="button" aria-label="Useful cache occupancy calculation" data-lab-tooltip="After warmup, sample the cache after each request. The numerator is cached blocks that will be requested again later in the trace; the denominator is the full cache capacity, so empty space and dead blocks both reduce the value.">?</button>
+          </div>
+          <svg class="kv-lab-chart" data-lab-useful-chart viewBox="0 0 780 380" role="img" aria-label="Useful cache occupancy curve"></svg>
+        </div>
       </div>
 
       <p class="kv-lab-note" data-lab-output="note"></p>
@@ -70,6 +117,7 @@
       workerUrl: "{{ $workerScript.RelPermalink }}",
       calculatorUrl: "{{ $calculatorScript.RelPermalink }}",
       labUrl: "{{ $labScript.RelPermalink }}",
+      wasmUrl: "{{ $wasmModule.RelPermalink }}",
       precomputedUrl: "{{ $precomputedJson.RelPermalink }}"
     }
   );
@@ -147,6 +195,128 @@
   .kv-lab-controls input:focus {
     outline: 2px solid rgba(37, 99, 235, 0.2);
     border-color: var(--lab-blue);
+  }
+
+  .kv-lab-upload-zone {
+    position: relative;
+    display: grid;
+    gap: 0.35rem;
+    cursor: pointer;
+    border: 1.5px dashed #c2d2e6;
+    border-radius: 8px;
+    background: #fff;
+    padding: 0.65rem;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+
+  .kv-lab-upload-zone[data-dragging="true"] {
+    border-color: var(--lab-blue);
+    background: var(--lab-soft);
+  }
+
+  .kv-lab-controls .kv-lab-upload-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    border: none;
+    padding: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .kv-lab-upload-action {
+    width: fit-content;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #fff;
+    color: var(--lab-ink);
+    font-size: 0.78rem;
+    font-weight: 700;
+    line-height: 1;
+    padding: 0.42rem 0.55rem;
+  }
+
+  .kv-lab-upload-hint {
+    color: var(--lab-muted);
+    font-size: 0.74rem;
+    font-weight: 500;
+    line-height: 1.35;
+  }
+
+  .kv-lab-upload-hint strong {
+    color: var(--lab-ink);
+    font-weight: 800;
+  }
+
+  .kv-lab-upload-hint code {
+    color: var(--lab-ink);
+    font-size: 0.72rem;
+    word-break: break-word;
+  }
+
+  .kv-lab-upload-hint code::before,
+  .kv-lab-upload-hint code::after {
+    content: none;
+  }
+
+  .kv-lab-upload-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .kv-lab-upload-status {
+    min-width: 0;
+    color: var(--lab-muted);
+    font-size: 0.74rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .kv-lab-controls .kv-lab-upload-clear {
+    width: auto;
+    min-height: auto;
+    flex: none;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #fff;
+    color: var(--lab-muted);
+    font-size: 0.74rem;
+    font-weight: 650;
+    padding: 0.25rem 0.6rem;
+    cursor: pointer;
+  }
+
+  .kv-lab-controls .kv-lab-upload-clear:hover {
+    border-color: var(--lab-blue);
+    color: var(--lab-blue);
+  }
+
+  .kv-lab-policy-note {
+    margin-top: 0.25rem;
+    padding-top: 0.85rem;
+    border-top: 1px solid var(--lab-line);
+    color: var(--lab-muted);
+    font-size: 0.76rem;
+    font-weight: 500;
+    line-height: 1.45;
+  }
+
+  .kv-lab-policy-note strong {
+    display: block;
+    margin-bottom: 0.25rem;
+    color: var(--lab-ink);
+    font-size: 0.82rem;
+    font-weight: 750;
+  }
+
+  .kv-lab-policy-note p {
+    margin: 0;
   }
 
   .kv-lab-label-help {
@@ -271,8 +441,45 @@
     color: #991b1b;
   }
 
+  .kv-lab-progress {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin: 0.15rem 0 -0.25rem;
+  }
+
+  .kv-lab-progress[hidden] {
+    display: none;
+  }
+
+  .kv-lab-progress-track {
+    flex: 1;
+    height: 6px;
+    border-radius: 999px;
+    background: #e2e8f0;
+    overflow: hidden;
+  }
+
+  .kv-lab-progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    background: var(--lab-blue);
+    transition: width 120ms ease;
+  }
+
+  .kv-lab-progress-text {
+    flex: none;
+    min-width: 3.2rem;
+    text-align: right;
+    color: var(--lab-muted);
+    font-size: 0.76rem;
+    font-weight: 650;
+  }
+
   .kv-lab-shell[data-state="calculating"] .kv-lab-metrics,
   .kv-lab-shell[data-state="calculating"] .kv-lab-chart-panel,
+  .kv-lab-shell[data-state="calculating"] .kv-lab-derived-charts,
   .kv-lab-shell[data-state="calculating"] .kv-lab-note,
   .kv-lab-shell[data-state="calculating"] .kv-lab-sources {
     opacity: 0.55;
@@ -319,11 +526,12 @@
   }
 
   .kv-lab-chart-panel {
+    position: relative;
     min-height: 24rem;
     border: 1px solid var(--lab-line);
     border-radius: 8px;
     background: #fff;
-    overflow: hidden;
+    overflow: visible;
   }
 
   .kv-lab-chart {
@@ -331,6 +539,27 @@
     width: 100%;
     height: auto;
     min-height: 22rem;
+  }
+
+  .kv-lab-derived-charts {
+    display: grid;
+    gap: 0.9rem;
+  }
+
+  .kv-lab-chart-heading {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.85rem 1rem 0;
+    width: fit-content;
+  }
+
+  .kv-lab-chart-heading h2 {
+    margin: 0;
+    color: var(--lab-ink);
+    font-size: 1rem;
+    font-weight: 750;
+    letter-spacing: 0;
   }
 
   .kv-lab-note,

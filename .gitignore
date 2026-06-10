@@ -6,3 +6,6 @@ resources/
 public/
 jsconfig.json
 hugo_stats.json
+
+# WASM build cache
+wasm/kvcache-sim/target/

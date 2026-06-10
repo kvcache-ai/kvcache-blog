@@ -43,6 +43,7 @@ const HF_EXPECTED_ROWS = {
 
 const UINT32_MAX = 0xffffffff;
 const EVENT_CHUNK = 1_000_000;
+const SIMULATION_RESULT_CACHE_DIR = "results-useful-v1";
 
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -324,6 +325,7 @@ async function buildRequestStore(source, options, traceDir) {
 async function createSortedEventFiles(writer, traceDir, options) {
   const idsPath = path.join(traceDir, "ids.bin");
   const tokensPath = path.join(traceDir, "tokens.u16.bin");
+  const requestEndsPath = path.join(traceDir, "request-ends.u32.bin");
   const metadataPath = path.join(traceDir, "events.json");
   writer.descriptors.sort((left, right) => left.timestamp - right.timestamp || left.ordinal - right.ordinal);
 
@@ -334,6 +336,7 @@ async function createSortedEventFiles(writer, traceDir, options) {
   const readHandle = await fsp.open(writer.requestIdsPath, "r");
   const idStream = fs.createWriteStream(idsPath);
   const tokenStream = fs.createWriteStream(tokensPath);
+  const requestEndStream = fs.createWriteStream(requestEndsPath);
   let totalBlocks = 0;
   let totalInputTokens = 0;
   let warmupEventStart = 0;
@@ -352,11 +355,15 @@ async function createSortedEventFiles(writer, traceDir, options) {
     }
     await writeBuffer(tokenStream, tokenBuffer);
     totalBlocks += descriptor.count;
+    const requestEndBuffer = Buffer.allocUnsafe(4);
+    requestEndBuffer.writeUInt32LE(totalBlocks, 0);
+    await writeBuffer(requestEndStream, requestEndBuffer);
   }
   if (warmupRequests === writer.descriptors.length) warmupEventStart = totalBlocks;
   await readHandle.close();
   await new Promise((resolve) => idStream.end(resolve));
   await new Promise((resolve) => tokenStream.end(resolve));
+  await new Promise((resolve) => requestEndStream.end(resolve));
 
   const metadata = {
     id: writer.source.id,
@@ -375,6 +382,7 @@ async function createSortedEventFiles(writer, traceDir, options) {
     uniqueBlocks: writer.uniqueIdCount,
     idsPath,
     tokensPath,
+    requestEndsPath,
     nextPath: path.join(traceDir, "next.u32.bin"),
     generatedAt: new Date().toISOString(),
   };
@@ -386,7 +394,8 @@ async function ensureEventStream(source, options) {
   const traceDir = path.join(options.fullCacheDir || path.join(os.tmpdir(), "kv-cache-lab-full"), source.id);
   const metadataPath = path.join(traceDir, "events.json");
   if (!options.forceEvents && fs.existsSync(metadataPath)) {
-    return JSON.parse(await fsp.readFile(metadataPath, "utf8"));
+    const metadata = JSON.parse(await fsp.readFile(metadataPath, "utf8"));
+    if (metadata.requestEndsPath && fs.existsSync(metadata.requestEndsPath)) return metadata;
   }
   await fsp.rm(traceDir, { recursive: true, force: true });
   await fsp.mkdir(traceDir, { recursive: true });
@@ -418,48 +427,78 @@ async function scanEvents(metadata, withNext, onChunk) {
   }
 }
 
+async function readRequestEnds(metadata) {
+  if (!metadata.requestEndsPath) throw new Error(`${metadata.id} is missing requestEndsPath; rebuild event stream with scripts/kv-cache-lab-full-precompute.mjs`);
+  const buffer = await fsp.readFile(metadata.requestEndsPath);
+  if (buffer.length !== metadata.requestCount * 4) throw new Error(`${metadata.id} request-ends file has unexpected size`);
+  const ends = new Uint32Array(metadata.requestCount);
+  for (let index = 0; index < metadata.requestCount; index += 1) {
+    ends[index] = buffer.readUInt32LE(index * 4);
+  }
+  return ends;
+}
+
+function makeRequestSampler(metadata, requestEnds, capacity) {
+  let requestIndex = 0;
+  let usefulCacheBlockSamples = 0;
+  let usefulCacheSamples = 0;
+  return {
+    sample(eventIndex, usefulCount) {
+      const eventEnd = eventIndex + 1;
+      while (requestIndex < requestEnds.length && eventEnd >= requestEnds[requestIndex]) {
+        if (requestIndex >= metadata.warmupRequests) {
+          usefulCacheBlockSamples += usefulCount;
+          usefulCacheSamples += 1;
+        }
+        requestIndex += 1;
+      }
+    },
+    finish(hitTokens, totalTokens) {
+      return {
+        hitTokens,
+        totalTokens,
+        hitRate: totalTokens ? hitTokens / totalTokens : 0,
+        usefulCacheBlockSamples,
+        usefulCacheSamples,
+        usefulCacheRate: capacity > 0 && usefulCacheSamples > 0 ? usefulCacheBlockSamples / (usefulCacheSamples * capacity) : 0,
+      };
+    },
+  };
+}
+
 async function computeCeiling(metadata, options = {}) {
   if (options.nativeSimPath) {
-    const { stdout } = await execFileAsync(path.resolve(options.nativeSimPath), [
-      "--policy",
-      "ceiling",
-      "--ids",
-      metadata.idsPath,
-      "--tokens",
-      metadata.tokensPath,
-      "--total-blocks",
-      String(metadata.totalBlocks),
-      "--warmup-event-start",
-      String(metadata.warmupEventStart),
-    ], {
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024,
-    });
-    const result = JSON.parse(stdout);
-    return {
-      warmupRequests: metadata.warmupRequests,
-      hitTokens: result.hitTokens,
-      totalTokens: result.totalTokens,
-      hitRate: result.hitRate,
-    };
+    console.error(`[full] ${metadata.id}: computing infinite-cache ceiling with native helper`);
+    const nativeResult = await simulateNativePolicy(metadata, Math.max(1, metadata.uniqueBlocks), "ceiling", options);
+    return { warmupRequests: metadata.warmupRequests, ...nativeResult };
   }
-  const seen = new Set();
+
+  await ensureNextFile(metadata, options);
+  const requestEnds = await readRequestEnds(metadata);
+  const capacity = Math.max(1, metadata.uniqueBlocks);
+  const seen = new Map();
+  const sampler = makeRequestSampler(metadata, requestEnds, capacity);
+  let usefulCount = 0;
   let hitTokens = 0;
   let totalTokens = 0;
-  await scanEvents(metadata, false, ({ start, count, ids, tokens }) => {
+  await scanEvents(metadata, true, ({ start, count, ids, tokens, next }) => {
     for (let index = 0; index < count; index += 1) {
       const eventIndex = start + index;
       const id = ids.readUInt32LE(index * 4);
       const tokenCount = tokens.readUInt16LE(index * 2);
+      const nextUse = next.readUInt32LE(index * 4);
       const hit = seen.has(id);
       if (eventIndex >= metadata.warmupEventStart) {
         totalTokens += tokenCount;
         if (hit) hitTokens += tokenCount;
       }
-      seen.add(id);
+      if (hit && seen.get(id) < metadata.totalBlocks + 1) usefulCount -= 1;
+      if (nextUse < metadata.totalBlocks + 1) usefulCount += 1;
+      seen.set(id, nextUse);
+      sampler.sample(eventIndex, usefulCount);
     }
   });
-  return { warmupRequests: metadata.warmupRequests, hitTokens, totalTokens, hitRate: totalTokens ? hitTokens / totalTokens : 0 };
+  return { warmupRequests: metadata.warmupRequests, ...sampler.finish(hitTokens, totalTokens) };
 }
 
 async function ensureNextFile(metadata, options) {
@@ -558,16 +597,21 @@ class MaxHeap {
 
 async function simulateFifo(metadata, capacity) {
   if (capacity <= 0) return { hitTokens: 0, totalTokens: 0, hitRate: 0 };
-  const cache = new Set();
+  await ensureNextFile(metadata, {});
+  const requestEnds = await readRequestEnds(metadata);
+  const sampler = makeRequestSampler(metadata, requestEnds, capacity);
+  const cache = new Map();
   let queue = [];
   let head = 0;
   let hitTokens = 0;
   let totalTokens = 0;
-  await scanEvents(metadata, false, ({ start, count, ids, tokens }) => {
+  let usefulCount = 0;
+  await scanEvents(metadata, true, ({ start, count, ids, tokens, next }) => {
     for (let index = 0; index < count; index += 1) {
       const eventIndex = start + index;
       const id = ids.readUInt32LE(index * 4);
       const tokenCount = tokens.readUInt16LE(index * 2);
+      const nextUse = next.readUInt32LE(index * 4);
       const hit = cache.has(id);
       if (eventIndex >= metadata.warmupEventStart) {
         totalTokens += tokenCount;
@@ -577,65 +621,102 @@ async function simulateFifo(metadata, capacity) {
         while (cache.size >= capacity && head < queue.length) {
           const victim = queue[head];
           head += 1;
-          if (cache.delete(victim)) break;
+          const victimNextUse = cache.get(victim);
+          if (cache.delete(victim)) {
+            if (victimNextUse < metadata.totalBlocks + 1) usefulCount -= 1;
+            break;
+          }
         }
         if (cache.size < capacity) {
-          cache.add(id);
+          if (nextUse < metadata.totalBlocks + 1) usefulCount += 1;
+          cache.set(id, nextUse);
           queue.push(id);
         }
+      } else {
+        if (cache.get(id) < metadata.totalBlocks + 1) usefulCount -= 1;
+        if (nextUse < metadata.totalBlocks + 1) usefulCount += 1;
+        cache.set(id, nextUse);
       }
+      sampler.sample(eventIndex, usefulCount);
       if (head > 1_000_000 && head * 2 > queue.length) {
         queue = queue.slice(head);
         head = 0;
       }
     }
   });
-  return { hitTokens, totalTokens, hitRate: totalTokens ? hitTokens / totalTokens : 0 };
+  return sampler.finish(hitTokens, totalTokens);
 }
 
 async function simulateLru(metadata, capacity) {
   if (capacity <= 0) return { hitTokens: 0, totalTokens: 0, hitRate: 0 };
+  await ensureNextFile(metadata, {});
+  const requestEnds = await readRequestEnds(metadata);
+  const sampler = makeRequestSampler(metadata, requestEnds, capacity);
   const cache = new Map();
   let hitTokens = 0;
   let totalTokens = 0;
-  await scanEvents(metadata, false, ({ start, count, ids, tokens }) => {
+  let usefulCount = 0;
+  await scanEvents(metadata, true, ({ start, count, ids, tokens, next }) => {
     for (let index = 0; index < count; index += 1) {
       const eventIndex = start + index;
       const id = ids.readUInt32LE(index * 4);
       const tokenCount = tokens.readUInt16LE(index * 2);
+      const nextUse = next.readUInt32LE(index * 4);
       const hit = cache.has(id);
       if (eventIndex >= metadata.warmupEventStart) {
         totalTokens += tokenCount;
         if (hit) hitTokens += tokenCount;
       }
-      if (hit) cache.delete(id);
-      else while (cache.size >= capacity) cache.delete(cache.keys().next().value);
-      cache.set(id, true);
+      if (hit) {
+        if (cache.get(id) < metadata.totalBlocks + 1) usefulCount -= 1;
+        cache.delete(id);
+      } else {
+        while (cache.size >= capacity) {
+          const victim = cache.keys().next().value;
+          const victimNextUse = cache.get(victim);
+          cache.delete(victim);
+          if (victimNextUse < metadata.totalBlocks + 1) usefulCount -= 1;
+        }
+      }
+      if (nextUse < metadata.totalBlocks + 1) usefulCount += 1;
+      cache.set(id, nextUse);
+      sampler.sample(eventIndex, usefulCount);
     }
   });
-  return { hitTokens, totalTokens, hitRate: totalTokens ? hitTokens / totalTokens : 0 };
+  return sampler.finish(hitTokens, totalTokens);
 }
 
 async function simulateOptimal(metadata, capacity, options) {
   if (capacity <= 0) return { hitTokens: 0, totalTokens: 0, hitRate: 0 };
   await ensureNextFile(metadata, options);
+  const requestEnds = await readRequestEnds(metadata);
+  const sampler = makeRequestSampler(metadata, requestEnds, capacity);
   const cache = new Map();
   const heap = new MaxHeap();
   let hitTokens = 0;
   let totalTokens = 0;
+  let usefulCount = 0;
   function pushState(id, nextUse) {
-    const state = { nextUse, version: (cache.get(id)?.version || 0) + 1 };
+    const previous = cache.get(id);
+    if (previous && previous.nextUse < metadata.totalBlocks + 1) usefulCount -= 1;
+    if (nextUse < metadata.totalBlocks + 1) usefulCount += 1;
+    const state = { nextUse, version: (previous?.version || 0) + 1 };
     cache.set(id, state);
     heap.push({ id, nextUse, version: state.version });
   }
-  function evictOne() {
+  function evictForCandidate(candidateNextUse) {
     for (;;) {
       const candidate = heap.pop();
-      if (!candidate) return;
+      if (!candidate) return cache.size < capacity;
       const current = cache.get(candidate.id);
       if (!current || current.version !== candidate.version || current.nextUse !== candidate.nextUse) continue;
-      cache.delete(candidate.id);
-      return;
+      if (current.nextUse > candidateNextUse) {
+        if (current.nextUse < metadata.totalBlocks + 1) usefulCount -= 1;
+        cache.delete(candidate.id);
+        return true;
+      }
+      heap.push(candidate);
+      return false;
     }
   }
   await scanEvents(metadata, true, ({ start, count, ids, tokens, next }) => {
@@ -651,18 +732,24 @@ async function simulateOptimal(metadata, capacity, options) {
       }
       if (hit) {
         pushState(id, nextUse);
-      } else {
-        while (cache.size >= capacity) evictOne();
+      } else if (cache.size < capacity) {
+        pushState(id, nextUse);
+      } else if (evictForCandidate(nextUse)) {
         if (cache.size < capacity) pushState(id, nextUse);
+      } else {
+        // Belady-with-bypass: do not admit a miss that would be used no sooner
+        // than every resident block.
       }
+      sampler.sample(eventIndex, usefulCount);
     }
   });
-  return { hitTokens, totalTokens, hitRate: totalTokens ? hitTokens / totalTokens : 0 };
+  return sampler.finish(hitTokens, totalTokens);
 }
 
 async function simulateNativePolicy(metadata, capacity, policy, options) {
   if (!options.nativeSimPath) return null;
   if (policy === "optimal") await ensureNextFile(metadata, options);
+  else await ensureNextFile(metadata, options);
   const args = [
     "--policy",
     policy,
@@ -676,8 +763,14 @@ async function simulateNativePolicy(metadata, capacity, policy, options) {
     String(metadata.warmupEventStart),
     "--capacity",
     String(capacity),
+    "--request-ends",
+    metadata.requestEndsPath,
+    "--request-count",
+    String(metadata.requestCount),
+    "--warmup-requests",
+    String(metadata.warmupRequests),
   ];
-  if (policy === "optimal") args.push("--next", metadata.nextPath);
+  args.push("--next", metadata.nextPath);
   const { stdout } = await execFileAsync(path.resolve(options.nativeSimPath), args, {
     encoding: "utf8",
     maxBuffer: 1024 * 1024,
@@ -688,7 +781,19 @@ async function simulateNativePolicy(metadata, capacity, policy, options) {
 async function simulatePolicy(metadata, capacity, policy, ceiling, options) {
   const cacheBlocks = Math.max(0, Math.floor(capacity));
   if (cacheBlocks >= metadata.uniqueBlocks) {
-    return { policy, cacheBlocks, warmupRequests: metadata.warmupRequests, ...ceiling };
+    return {
+      policy,
+      cacheBlocks,
+      warmupRequests: metadata.warmupRequests,
+      hitTokens: ceiling.hitTokens,
+      totalTokens: ceiling.totalTokens,
+      hitRate: ceiling.hitRate,
+      usefulCacheBlockSamples: ceiling.usefulCacheBlockSamples || 0,
+      usefulCacheSamples: ceiling.usefulCacheSamples || 0,
+      usefulCacheRate: cacheBlocks > 0 && ceiling.usefulCacheSamples
+        ? (ceiling.usefulCacheBlockSamples || 0) / (ceiling.usefulCacheSamples * cacheBlocks)
+        : 0,
+    };
   }
   console.error(`[full] ${metadata.id}: simulate ${policy} capacity=${cacheBlocks}`);
   const nativeResult = await simulateNativePolicy(metadata, cacheBlocks, policy, options);
@@ -700,6 +805,11 @@ async function simulatePolicy(metadata, capacity, policy, ceiling, options) {
       hitTokens: nativeResult.hitTokens,
       totalTokens: nativeResult.totalTokens,
       hitRate: nativeResult.hitRate,
+      usefulCacheBlockSamples: nativeResult.usefulCacheBlockSamples || 0,
+      usefulCacheSamples: nativeResult.usefulCacheSamples || 0,
+      usefulCacheRate: Number.isFinite(Number(nativeResult.usefulCacheRate))
+        ? Number(nativeResult.usefulCacheRate)
+        : 0,
     };
   }
   const result =
@@ -734,11 +844,65 @@ function seedSimulationResults(existingTrace, metadata) {
       POLICIES.forEach((policy) => {
         const result = point.results && point.results[policy];
         if (!result) return;
+        if (!Number.isFinite(Number(result.usefulCacheRate))) return;
         seeded.set(`${policy}|${cacheBlocks}`, { ...result });
       });
     });
   });
   return seeded;
+}
+
+function simulationResultHasUsefulStats(result) {
+  return Boolean(result)
+    && Number.isFinite(Number(result.hitRate))
+    && Number.isFinite(Number(result.usefulCacheRate))
+    && Number.isFinite(Number(result.usefulCacheSamples));
+}
+
+function simulationResultCacheDir(metadata) {
+  return path.join(path.dirname(metadata.idsPath), SIMULATION_RESULT_CACHE_DIR);
+}
+
+function simulationResultCachePath(metadata, policy, capacity) {
+  return path.join(simulationResultCacheDir(metadata), `${policy}-${capacity}.json`);
+}
+
+async function seedCachedSimulationResults(simulationResults, metadata) {
+  let files;
+  try {
+    files = await fsp.readdir(simulationResultCacheDir(metadata));
+  } catch {
+    return 0;
+  }
+  let loaded = 0;
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    const match = /^(fifo|lru|optimal)-(\d+)\.json$/.exec(file);
+    if (!match) continue;
+    const [, policy, rawCapacity] = match;
+    const capacity = Number(rawCapacity);
+    if (!Number.isSafeInteger(capacity) || capacity < 0 || capacity >= metadata.uniqueBlocks) continue;
+    const key = `${policy}|${capacity}`;
+    if (simulationResults.has(key)) continue;
+    try {
+      const result = JSON.parse(await fsp.readFile(simulationResultCachePath(metadata, policy, capacity), "utf8"));
+      if (!simulationResultHasUsefulStats(result)) continue;
+      simulationResults.set(key, result);
+      loaded += 1;
+    } catch {
+      // Ignore corrupt partial caches; they will be recomputed.
+    }
+  }
+  return loaded;
+}
+
+async function writeCachedSimulationResult(metadata, policy, capacity, result) {
+  if (!simulationResultHasUsefulStats(result)) return;
+  await fsp.mkdir(simulationResultCacheDir(metadata), { recursive: true });
+  const destination = simulationResultCachePath(metadata, policy, capacity);
+  const temporary = `${destination}.${process.pid}.tmp`;
+  await fsp.writeFile(temporary, `${JSON.stringify(result)}\n`);
+  await fsp.rename(temporary, destination);
 }
 
 async function precomputeTrace(source, options, modelsData, existingTrace = null) {
@@ -782,10 +946,12 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
   }
 
   const simulationResults = seedSimulationResults(existingTrace, metadata);
+  const outputSeedCount = simulationResults.size;
+  const localSeedCount = await seedCachedSimulationResults(simulationResults, metadata);
   const capacities = Array.from(capacityByKey.values()).sort((left, right) => left - right);
   const missingCapacities = capacities.filter((capacity) => POLICIES.some((policy) => !simulationResults.has(`${policy}|${capacity}`)));
   console.error(
-    `[full] ${source.id}: ${capacities.length} finite capacities below unique working set, ${capacities.length - missingCapacities.length} reused, ${missingCapacities.length} missing`,
+    `[full] ${source.id}: ${capacities.length} finite capacities below unique working set, ${capacities.length - missingCapacities.length} reused (${outputSeedCount} output, ${localSeedCount} local), ${missingCapacities.length} missing`,
   );
   if (options.nativeSimPath && missingCapacities.length) {
     await ensureNextFile(metadata, options);
@@ -808,6 +974,7 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
         const task = taskList[index];
         const result = await simulatePolicy(metadata, task.capacity, task.policy, ceiling, options);
         simulationResults.set(`${task.policy}|${task.capacity}`, result);
+        await writeCachedSimulationResult(metadata, task.policy, task.capacity, result);
       }
     }
     await Promise.all(Array.from({ length: Math.min(jobs, taskList.length) }, () => worker()));
@@ -822,11 +989,13 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
     for (const task of serialTasks) {
       const result = await simulatePolicy(metadata, task.capacity, task.policy, ceiling, options);
       simulationResults.set(`${task.policy}|${task.capacity}`, result);
+      await writeCachedSimulationResult(metadata, task.policy, task.capacity, result);
     }
   } else {
     for (const task of tasks) {
       const result = await simulatePolicy(metadata, task.capacity, task.policy, ceiling, options);
       simulationResults.set(`${task.policy}|${task.capacity}`, result);
+      await writeCachedSimulationResult(metadata, task.policy, task.capacity, result);
     }
   }
 
@@ -839,7 +1008,19 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
         const key = `${policy}|${point.cacheBlocks}`;
         results[policy] =
           point.cacheBlocks >= metadata.uniqueBlocks
-            ? { policy, cacheBlocks: point.cacheBlocks, warmupRequests: metadata.warmupRequests, ...ceiling }
+            ? {
+                policy,
+                cacheBlocks: point.cacheBlocks,
+                warmupRequests: metadata.warmupRequests,
+                hitTokens: ceiling.hitTokens,
+                totalTokens: ceiling.totalTokens,
+                hitRate: ceiling.hitRate,
+                usefulCacheBlockSamples: ceiling.usefulCacheBlockSamples || 0,
+                usefulCacheSamples: ceiling.usefulCacheSamples || 0,
+                usefulCacheRate: point.cacheBlocks > 0 && ceiling.usefulCacheSamples
+                  ? (ceiling.usefulCacheBlockSamples || 0) / (ceiling.usefulCacheSamples * point.cacheBlocks)
+                  : 0,
+              }
             : simulationResults.get(key);
       });
       return { gib: point.gib, cacheBlocks: point.cacheBlocks, results };
@@ -883,6 +1064,26 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
   };
 }
 
+function refreshOutputMetadata(output, options) {
+  output.metadata = {
+    ...(output.metadata || {}),
+    mode: "precomputed_real_traces",
+    note: "Raw traces are downloaded into a local cache and are not committed. This file contains derived hit-rate curves and provenance.",
+    setting_mode: options.defaultSettings ? "default_model_settings" : "all_model_precision_indexer_draft_settings",
+    capacity_gib_values: options.capacityGiBValues,
+    warmup_fraction: options.warmupFraction ?? DEFAULT_WARMUP_FRACTION,
+    policies: POLICIES,
+    sources: { ...(output.metadata && output.metadata.sources ? output.metadata.sources : {}), ...SOURCE_LINKS },
+    reference_sources: output.metadata?.reference_sources || REFERENCE_SOURCES,
+    full_trace_updated_at: new Date().toISOString(),
+  };
+}
+
+async function writeOutputCheckpoint(outputPath, output) {
+  await fsp.mkdir(path.dirname(outputPath), { recursive: true });
+  await fsp.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`);
+}
+
 const options = parseArgs(process.argv.slice(2));
 const selectedTraceIds = options.traceIds || Array.from(FULL_TRACE_IDS);
 const modelsData = loadModelsData(options.modelsPath);
@@ -900,23 +1101,13 @@ for (const traceId of selectedTraceIds) {
   }
   const trace = await precomputeTrace(source, options, modelsData, output.traces && output.traces[traceId]);
   output.traces = { ...(output.traces || {}), [traceId]: trace };
+  refreshOutputMetadata(output, options);
+  await writeOutputCheckpoint(outputPath, output);
+  console.error(`[full] ${traceId}: checkpoint written to ${outputPath}`);
 }
 
 if (options.eventsOnly) process.exit(0);
 
-output.metadata = {
-  ...(output.metadata || {}),
-  mode: "precomputed_real_traces",
-  note: "Raw traces are downloaded into a local cache and are not committed. This file contains derived hit-rate curves and provenance.",
-  setting_mode: options.defaultSettings ? "default_model_settings" : "all_model_precision_indexer_draft_settings",
-  capacity_gib_values: options.capacityGiBValues,
-  warmup_fraction: options.warmupFraction ?? DEFAULT_WARMUP_FRACTION,
-  policies: POLICIES,
-  sources: { ...(output.metadata && output.metadata.sources ? output.metadata.sources : {}), ...SOURCE_LINKS },
-  reference_sources: output.metadata?.reference_sources || REFERENCE_SOURCES,
-  full_trace_updated_at: new Date().toISOString(),
-};
-
-await fsp.mkdir(path.dirname(outputPath), { recursive: true });
-await fsp.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`);
+refreshOutputMetadata(output, options);
+await writeOutputCheckpoint(outputPath, output);
 console.log(JSON.stringify({ outputPath, traces: selectedTraceIds }, null, 2));

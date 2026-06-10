@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   DEFAULT_CAPACITY_GIB_VALUES,
@@ -15,6 +20,8 @@ import {
   normalizeWekaSessionRecord,
   precomputeSweep,
 } from "../scripts/lib/kv-cache-lab-traces.mjs";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 const tinyModel = {
   id: "tiny-standard",
@@ -188,6 +195,72 @@ test("infinite-cache reuse ceiling uses warmup for state but not stats", () => {
   assert.equal(ceiling.hitTokens, 1);
   assert.equal(ceiling.totalTokens, 2);
   assert.equal(ceiling.hitRate, 0.5);
+});
+
+test("native full-precompute optimal uses Belady bypass admission", (t) => {
+  try {
+    execFileSync("c++", ["--version"], { stdio: "ignore" });
+  } catch {
+    t.skip("c++ is unavailable");
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kv-cache-lab-native-"));
+  try {
+    const binary = path.join(tmp, "kv-cache-lab-native-sim");
+    execFileSync("c++", [
+      "-std=c++17",
+      "-O2",
+      path.resolve(here, "../scripts/kv-cache-lab-native-sim.cc"),
+      "-o",
+      binary,
+    ]);
+
+    const ids = Buffer.alloc(3 * 4);
+    [0, 1, 0].forEach((id, index) => ids.writeUInt32LE(id, index * 4));
+    const tokens = Buffer.alloc(3 * 2);
+    [1, 1, 1].forEach((token, index) => tokens.writeUInt16LE(token, index * 2));
+    const next = Buffer.alloc(3 * 4);
+    [2, 4, 4].forEach((nextUse, index) => next.writeUInt32LE(nextUse, index * 4));
+    const requestEnds = Buffer.alloc(3 * 4);
+    [1, 2, 3].forEach((end, index) => requestEnds.writeUInt32LE(end, index * 4));
+
+    fs.writeFileSync(path.join(tmp, "ids.u32.bin"), ids);
+    fs.writeFileSync(path.join(tmp, "tokens.u16.bin"), tokens);
+    fs.writeFileSync(path.join(tmp, "next.u32.bin"), next);
+    fs.writeFileSync(path.join(tmp, "request-ends.u32.bin"), requestEnds);
+
+    const output = execFileSync(binary, [
+      "--policy",
+      "optimal",
+      "--ids",
+      path.join(tmp, "ids.u32.bin"),
+      "--tokens",
+      path.join(tmp, "tokens.u16.bin"),
+      "--next",
+      path.join(tmp, "next.u32.bin"),
+      "--request-ends",
+      path.join(tmp, "request-ends.u32.bin"),
+      "--total-blocks",
+      "3",
+      "--warmup-event-start",
+      "0",
+      "--capacity",
+      "1",
+      "--request-count",
+      "3",
+      "--warmup-requests",
+      "0",
+    ], { encoding: "utf8" });
+    const result = JSON.parse(output);
+
+    // With capacity 1 on A, B, A, Belady-with-bypass skips B and hits the final
+    // A. Classic demand-paging Belady would insert B and report 0 hit tokens.
+    assert.equal(result.hitTokens, 1);
+    assert.equal(result.totalTokens, 3);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("precompute sweep is deterministic and uses source-native block size", () => {

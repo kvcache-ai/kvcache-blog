@@ -19,8 +19,8 @@ export const POLICIES = ["fifo", "lru", "optimal"];
 export const TRACE_SOURCES = [
   {
     id: "mooncake_fast25",
-    label: "Mooncake FAST25 Trace",
-    scenario: "Production hash trace",
+    label: "Mooncake FAST25 Tool&Agent Trace",
+    scenario: "Production Tool&Agent hash trace",
     sourceKind: "hash",
     parser: "mooncake",
     nativeBlockSize: 512,
@@ -861,9 +861,16 @@ export function buildExecutionPlan(trace, options = {}) {
 }
 
 function simulateFinitePolicy(trace, cacheBlocks, policy, options = {}) {
+  if (options.plan && options.plan.nextInput) return lab.simulatePlanPolicy(options.plan, cacheBlocks, policy);
   if (options.plan) return simulatePlanPolicy(options.plan, cacheBlocks, policy);
   if (policy === "optimal") return simulateOptimalPolicy(trace, cacheBlocks, options);
   return lab.simulatePolicy(trace, cacheBlocks, policy, options);
+}
+
+function simulatePlannedPolicy(plan, cacheBlocks, policy) {
+  return plan && plan.nextInput
+    ? lab.simulatePlanPolicy(plan, cacheBlocks, policy)
+    : simulatePlanPolicy(plan, cacheBlocks, policy);
 }
 
 function simulatePlanPolicy(plan, cacheBlocks, policy) {
@@ -877,6 +884,9 @@ function simulatePlanPolicy(plan, cacheBlocks, policy) {
       hitTokens: 0,
       totalTokens: plan.totalMeasuredTokens,
       hitRate: 0,
+      usefulCacheBlockSamples: 0,
+      usefulCacheSamples: 0,
+      usefulCacheRate: 0,
     };
   }
   if (normalizedPolicy === "optimal") return simulateOptimalPlan(plan, capacity);
@@ -885,35 +895,70 @@ function simulatePlanPolicy(plan, cacheBlocks, policy) {
   const fifoQueue = [];
   let fifoHead = 0;
   let hitTokens = 0;
+  let usefulCount = 0;
+  let usefulCacheBlockSamples = 0;
+  let usefulCacheSamples = 0;
+  const never = plan.eventIds.length + 1;
+
+  function updateUseful(previousNextUse, nextUse) {
+    if (previousNextUse != null && previousNextUse < never) usefulCount -= 1;
+    if (nextUse < never) usefulCount += 1;
+  }
+
+  function sampleUseful(index) {
+    const requestIndex = plan.eventRequest[index];
+    if (requestIndex < plan.warmupRequests) return;
+    if (index !== plan.eventIds.length - 1 && plan.eventRequest[index + 1] === requestIndex) return;
+    usefulCacheBlockSamples += usefulCount;
+    usefulCacheSamples += 1;
+  }
 
   function evictFifo() {
     while (cache.size >= capacity && fifoHead < fifoQueue.length) {
       const victim = fifoQueue[fifoHead];
       fifoHead += 1;
-      if (cache.delete(victim)) return;
+      const state = cache.get(victim);
+      if (cache.delete(victim)) {
+        updateUseful(state && state.nextUse, never);
+        return;
+      }
     }
   }
 
   for (let index = 0; index < plan.eventIds.length; index += 1) {
     const id = plan.eventIds[index];
+    const nextUse = plan.nextPositions[index];
     const measured = plan.eventRequest[index] >= plan.warmupRequests;
-    const hit = cache.has(id);
+    const previous = cache.get(id);
+    const hit = previous !== undefined;
     if (measured && hit) hitTokens += plan.eventTokens[index];
     if (normalizedPolicy === "fifo") {
       if (!hit) {
         evictFifo();
         if (cache.size < capacity) {
-          cache.set(id, true);
+          updateUseful(null, nextUse);
+          cache.set(id, { nextUse });
           fifoQueue.push(id);
         }
+      } else {
+        updateUseful(previous.nextUse, nextUse);
+        cache.set(id, { nextUse });
       }
     } else if (hit) {
+      updateUseful(previous.nextUse, nextUse);
       cache.delete(id);
-      cache.set(id, true);
+      cache.set(id, { nextUse });
     } else {
-      while (cache.size >= capacity) cache.delete(cache.keys().next().value);
-      cache.set(id, true);
+      while (cache.size >= capacity) {
+        const victim = cache.keys().next().value;
+        const victimState = cache.get(victim);
+        cache.delete(victim);
+        updateUseful(victimState && victimState.nextUse, never);
+      }
+      updateUseful(null, nextUse);
+      cache.set(id, { nextUse });
     }
+    sampleUseful(index);
   }
 
   return {
@@ -923,6 +968,9 @@ function simulatePlanPolicy(plan, cacheBlocks, policy) {
     hitTokens,
     totalTokens: plan.totalMeasuredTokens,
     hitRate: plan.totalMeasuredTokens ? hitTokens / plan.totalMeasuredTokens : 0,
+    usefulCacheBlockSamples,
+    usefulCacheSamples,
+    usefulCacheRate: usefulCacheSamples ? usefulCacheBlockSamples / (usefulCacheSamples * capacity) : 0,
   };
 }
 
@@ -939,14 +987,24 @@ function simulateOptimalPlan(plan, capacity) {
       hitTokens: 0,
       totalTokens: plan.totalMeasuredTokens,
       hitRate: 0,
+      usefulCacheBlockSamples: 0,
+      usefulCacheSamples: 0,
+      usefulCacheRate: 0,
     };
   }
   const cache = new Map();
   const heap = new MaxHeap();
   let hitTokens = 0;
+  let usefulCount = 0;
+  let usefulCacheBlockSamples = 0;
+  let usefulCacheSamples = 0;
+  const never = plan.eventIds.length + 1;
 
   function pushState(id, nextUse) {
-    const state = { nextUse, version: (cache.get(id)?.version || 0) + 1 };
+    const previous = cache.get(id);
+    if (previous && previous.nextUse < never) usefulCount -= 1;
+    if (nextUse < never) usefulCount += 1;
+    const state = { nextUse, version: (previous?.version || 0) + 1 };
     cache.set(id, state);
     heap.push({ id, nextUse, version: state.version });
   }
@@ -957,9 +1015,18 @@ function simulateOptimalPlan(plan, capacity) {
       if (!candidate) return;
       const current = cache.get(candidate.id);
       if (!current || current.version !== candidate.version || current.nextUse !== candidate.nextUse) continue;
+      if (current.nextUse < never) usefulCount -= 1;
       cache.delete(candidate.id);
       return;
     }
+  }
+
+  function sampleUseful(index) {
+    const requestIndex = plan.eventRequest[index];
+    if (requestIndex < plan.warmupRequests) return;
+    if (index !== plan.eventIds.length - 1 && plan.eventRequest[index + 1] === requestIndex) return;
+    usefulCacheBlockSamples += usefulCount;
+    usefulCacheSamples += 1;
   }
 
   for (let index = 0; index < plan.eventIds.length; index += 1) {
@@ -973,6 +1040,7 @@ function simulateOptimalPlan(plan, capacity) {
       while (cache.size >= capacity) evictOne();
       if (cache.size < capacity) pushState(id, plan.nextPositions[index]);
     }
+    sampleUseful(index);
   }
 
   return {
@@ -982,6 +1050,9 @@ function simulateOptimalPlan(plan, capacity) {
     hitTokens,
     totalTokens: plan.totalMeasuredTokens,
     hitRate: plan.totalMeasuredTokens ? hitTokens / plan.totalMeasuredTokens : 0,
+    usefulCacheBlockSamples,
+    usefulCacheSamples,
+    usefulCacheRate: usefulCacheSamples ? usefulCacheBlockSamples / (usefulCacheSamples * capacity) : 0,
   };
 }
 
@@ -1016,22 +1087,31 @@ export function precomputeSweep(trace, model, setting, options = {}) {
   const plan = options.plan || buildExecutionPlan(trace, { warmupFraction });
   const simulationCache = options.simulationCache || null;
   const ceiling = options.ceiling || infiniteCacheReuse(trace, { warmupFraction });
+  const ceilingStats = options.ceilingStats || simulatePlannedPolicy(plan, Math.max(1, trace.summary && trace.summary.uniqueBlocks ? trace.summary.uniqueBlocks : 1), "lru");
   const uniqueBlocks = trace && trace.summary && Number.isFinite(Number(trace.summary.uniqueBlocks))
     ? Number(trace.summary.uniqueBlocks)
     : Infinity;
+  function resultFromCeiling(policy, cacheBlocks) {
+    const usefulCacheBlockSamples = Number(ceilingStats.usefulCacheBlockSamples) || 0;
+    const usefulCacheSamples = Number(ceilingStats.usefulCacheSamples) || 0;
+    return {
+      policy,
+      cacheBlocks,
+      warmupRequests: ceiling.warmupRequests,
+      hitTokens: ceiling.hitTokens,
+      totalTokens: ceiling.totalTokens,
+      hitRate: ceiling.hitRate,
+      usefulCacheBlockSamples,
+      usefulCacheSamples,
+      usefulCacheRate: cacheBlocks > 0 && usefulCacheSamples > 0 ? usefulCacheBlockSamples / (usefulCacheSamples * cacheBlocks) : 0,
+    };
+  }
   const points = capacityGiBValues.map((gib) => {
     const cacheBlocks = lab.cacheBlocksForGiB(gib, bytesPerBlock);
     const results = {};
     policies.forEach((policy) => {
       if (cacheBlocks >= uniqueBlocks) {
-        results[policy] = {
-          policy,
-          cacheBlocks,
-          warmupRequests: ceiling.warmupRequests,
-          hitTokens: ceiling.hitTokens,
-          totalTokens: ceiling.totalTokens,
-          hitRate: ceiling.hitRate,
-        };
+        results[policy] = resultFromCeiling(policy, cacheBlocks);
         return;
       }
       const cacheKey = `${policy}|${cacheBlocks}`;
@@ -1086,8 +1166,9 @@ export async function precomputeCurves(options = {}) {
     console.error(`[precompute] normalize ${source.id}`);
     const trace = await normalizeTraceSource(source, options);
     const warmupFraction = options.warmupFraction ?? DEFAULT_WARMUP_FRACTION;
-    const plan = buildExecutionPlan(trace, { warmupFraction });
+    const plan = lab.buildExecutionPlan(trace, { warmupFraction });
     const ceiling = infiniteCacheReuse(trace, { warmupFraction });
+    const ceilingStats = simulatePlannedPolicy(plan, Math.max(trace.summary.uniqueBlocks || 1, 1), "lru");
     const simulationCache = new Map();
     const modelSweeps = {};
     console.error(`[precompute] ${source.id}: ${trace.summary.requests} requests, ${trace.summary.totalBlocks} blocks, ${trace.summary.uniqueBlocks} unique`);
@@ -1108,7 +1189,7 @@ export async function precomputeCurves(options = {}) {
         precision: rawSetting.precision,
         indexerPrecision: rawSetting.indexerPrecision || null,
         includeDraftKvCache: Boolean(rawSetting.includeDraftKvCache),
-        ...precomputeSweep(trace, model, setting, { generatedAt, plan, simulationCache, ceiling }),
+        ...precomputeSweep(trace, model, setting, { generatedAt, plan, simulationCache, ceiling, ceilingStats }),
       };
     }
     traces[source.id] = {
