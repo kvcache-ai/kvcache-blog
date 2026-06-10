@@ -15,12 +15,10 @@
   const DEFAULT_SEED = 20260528;
   const DEFAULT_WARMUP_FRACTION = 0.3;
   const DEFAULT_BLOCK_SIZE = 64;
-  // Huge-upload guards. The compact numeric interner + narrow event arrays cost
-  // ~13 B/event to parse (a 40M-event prefix is ~0.6 GB and streams in ~8s,
-  // reading only the needed head of the file), so the limiter is the sweep, not
-  // parsing. We cap at 40M events and bound how many workers get a plan copy
-  // during the sweep — each copy is ~17 B/event, so huge plans use fewer.
-  const UPLOAD_MAX_EVENTS = 40000000;
+  // Huge-upload guards. The JS fallback keeps event arrays compact while using
+  // string hash keys for safe identity; for huge uploads the sweep plan copies
+  // are still the limiter. We cap at 40M events and bound how many workers get
+  // a plan copy during the sweep, so huge plans use fewer workers.  const UPLOAD_MAX_EVENTS = 40000000;
   const PLAN_BYTES_PER_EVENT = 17;
   const PLAN_COPY_BUDGET_BYTES = 1600000000;
   const UPLOAD_PRESET_ID = "__upload__";
@@ -366,63 +364,31 @@
     };
   }
 
-  // Open-addressing hash map: numeric hash id -> dense id assigned in first-seen
-  // order. ~24 B/unique vs ~120 B for a string-keyed Map (and no String() per
-  // event), so far more of a huge trace fits. Grouping is identical to keying on
-  // String(id) because both collapse ids that are equal as float64 — so dense
-  // ids, uniqueBlocks, and hit rates come out byte-for-byte the same.
-  function createHashInterner(estimatedUnique) {
-    let capacity = 16;
-    const target = Math.max(16, Math.floor(estimatedUnique || 0) * 2);
-    while (capacity < target) capacity *= 2;
-    let mask = capacity - 1;
-    let keys = new Float64Array(capacity);
-    let slots = new Int32Array(capacity).fill(-1); // dense id, or -1 for empty
-    let size = 0;
-    const bitsBuffer = new ArrayBuffer(8);
-    const asFloat = new Float64Array(bitsBuffer);
-    const asInt = new Int32Array(bitsBuffer);
-    function hash(value) {
-      asFloat[0] = value;
-      let h = (asInt[0] ^ Math.imul(asInt[1], 0x85ebca6b)) | 0;
-      h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d) | 0;
-      return (h ^ (h >>> 13)) >>> 0;
-    }
-    function grow() {
-      const oldKeys = keys;
-      const oldSlots = slots;
-      const oldCapacity = capacity;
-      capacity *= 2;
-      mask = capacity - 1;
-      keys = new Float64Array(capacity);
-      slots = new Int32Array(capacity).fill(-1);
-      for (let i = 0; i < oldCapacity; i += 1) {
-        const id = oldSlots[i];
-        if (id < 0) continue;
-        const value = oldKeys[i];
-        let j = hash(value) & mask;
-        while (slots[j] >= 0) j = (j + 1) & mask;
-        slots[j] = id;
-        keys[j] = value;
+  function canonicalHashId(value) {
+    if (typeof value === "number") {
+      if (!Number.isSafeInteger(value)) {
+        throw new Error(
+          'Uploaded trace hash_ids include an unsafe JSON number. Store large hash ids as strings, or use the WASM exact-u64 upload path.',
+        );
       }
+      return String(value);
     }
+    return String(value);
+  }
+
+  // String-keyed fallback interner: preserves string hash ids exactly and keeps
+  // safe JSON numbers stable by canonicalizing both forms through String(id).
+  function createHashInterner() {
+    const ids = new Map();
     function intern(value) {
-      let i = hash(value) & mask;
-      for (;;) {
-        const id = slots[i];
-        if (id < 0) {
-          const assigned = size;
-          slots[i] = assigned;
-          keys[i] = value;
-          size += 1;
-          if (size * 4 >= capacity * 3) grow(); // keep load factor below 0.75
-          return assigned;
-        }
-        if (keys[i] === value) return id;
-        i = (i + 1) & mask;
-      }
+      const key = canonicalHashId(value);
+      const existing = ids.get(key);
+      if (existing !== undefined) return existing;
+      const assigned = ids.size;
+      ids.set(key, assigned);
+      return assigned;
     }
-    return { intern, size: () => size };
+    return { intern, size: () => ids.size };
   }
 
   // Single source of truth for turning JSONL record lines into interned events
@@ -441,7 +407,7 @@
     // When capping, pre-size near the cap so the event arrays don't grow by
     // doubling (which transiently doubles memory) during a multi-GB parse.
     const stream = createEventStream(maxEvents ? maxEvents + 1024 : opts.estimatedEvents || 1024);
-    const interner = createHashInterner(maxEvents ? (maxEvents / 4) | 0 : (opts.estimatedEvents || 0) / 4);
+    const interner = createHashInterner();
     const timestamps = [];
     const requestStarts = [];
     let totalInputTokens = 0;
@@ -452,6 +418,7 @@
     let capped = false;
     let missingBlockSize = 0;
     let inconsistentBlockSize = 0;
+    let missingInputLength = 0;
     let tMin = Infinity;
     let tMax = -Infinity;
 
@@ -479,7 +446,11 @@
         inconsistentBlockSize += 1;
         return true;
       }
-      const inputLength = toPositiveInteger(record.input_length, 1);
+      const inputLength = toInteger(record.input_length, 0);
+      if (inputLength <= 0) {
+        missingInputLength += 1;
+        return true;
+      }
       const hashIds = record.hash_ids;
       const count = hashIds.length;
       requestStarts.push(eventCount);
@@ -509,9 +480,12 @@
       if (inconsistentBlockSize > 0) {
         throw new Error(`Uploaded trace block_size must be consistent. Found ${inconsistentBlockSize} record(s) with a different block_size.`);
       }
+      if (missingInputLength > 0) {
+        throw new Error(`Uploaded trace records must include a positive "input_length". Found ${missingInputLength} valid hash record(s) without it.`);
+      }
       if (!requestCount) {
         throw new Error(
-          'No valid uploaded trace records found. Each line must be JSON with a non-empty "hash_ids" array and a positive "block_size".',
+          'No valid uploaded trace records found. Each line must be JSON with a non-empty "hash_ids" array, a positive "block_size", and a positive "input_length".',
         );
       }
       requestStarts.push(eventCount);

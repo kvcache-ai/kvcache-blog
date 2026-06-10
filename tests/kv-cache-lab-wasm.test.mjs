@@ -115,16 +115,18 @@ test("wasm upload parser preserves u64 hash id identity beyond JS safe integers"
   assert.equal(instance.exports.ceiling_hit(), 64);
 });
 
-test("wasm upload parser reports missing and inconsistent block_size", { skip: hasWasm ? false : "assets/wasm/kvcache-sim.wasm not built" }, async () => {
+test("wasm upload parser reports missing block_size, inconsistent block_size, and missing input_length", { skip: hasWasm ? false : "assets/wasm/kvcache-sim.wasm not built" }, async () => {
   const { instance } = await WebAssembly.instantiate(fs.readFileSync(WASM_PATH), {});
   driveWasm(instance.exports, [
     '{"timestamp":1,"hash_ids":[1],"input_length":64}',
     '{"timestamp":2,"block_size":64,"hash_ids":[1],"input_length":64}',
     '{"timestamp":3,"block_size":32,"hash_ids":[2],"input_length":32}',
+    '{"timestamp":4,"block_size":64,"hash_ids":[3]}',
   ].join("\n"), { warmupFraction: 0 });
 
   assert.equal(instance.exports.missing_block_size(), 1);
   assert.equal(instance.exports.inconsistent_block_size(), 1);
+  assert.equal(instance.exports.missing_input_length(), 1);
   assert.equal(instance.exports.requests(), 1);
 });
 

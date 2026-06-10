@@ -205,14 +205,19 @@
         typeof wasmExports.missing_block_size === "function" ? wasmExports.missing_block_size() : 0;
       const inconsistentBlockSize =
         typeof wasmExports.inconsistent_block_size === "function" ? wasmExports.inconsistent_block_size() : 0;
+      const missingInputLength =
+        typeof wasmExports.missing_input_length === "function" ? wasmExports.missing_input_length() : 0;
       if (missingBlockSize > 0) {
         throw new Error(`Uploaded trace records must include block_size. Found ${missingBlockSize} valid hash record(s) without it.`);
       }
       if (inconsistentBlockSize > 0) {
         throw new Error(`Uploaded trace block_size must be consistent. Found ${inconsistentBlockSize} record(s) with a different block_size.`);
       }
+      if (missingInputLength > 0) {
+        throw new Error(`Uploaded trace records must include a positive "input_length". Found ${missingInputLength} valid hash record(s) without it.`);
+      }
       if (wasmExports.requests() <= 0) {
-        throw new Error('No valid uploaded trace records found. Each line must be JSON with a non-empty "hash_ids" array and a positive "block_size".');
+        throw new Error('No valid uploaded trace records found. Each line must be JSON with a non-empty "hash_ids" array, a positive "block_size", and a positive "input_length".');
       }
       wasmTimeStats = wasmComputeTimeStats(wasmExports, lab);
       wasmTraceKey = message.traceKey;

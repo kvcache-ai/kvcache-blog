@@ -14,6 +14,7 @@ const {
   inspectUploadedTraceHeadText,
   modelSweepKey,
   parseUploadedTrace,
+  parseUploadedTraceStreaming,
   precomputedResultFor,
   runLabComputation,
   simulatePolicy,
@@ -398,6 +399,33 @@ test("uploaded trace parser requires declared block_size", () => {
   );
 });
 
+test("uploaded trace parser requires declared input_length", () => {
+  const jsonl = [
+    JSON.stringify({ timestamp: 1, block_size: 64, hash_ids: [1, 2], input_length: 128 }),
+    JSON.stringify({ timestamp: 2, block_size: 64, hash_ids: [1, 3] }),
+  ].join("\n");
+
+  assert.throws(
+    () => parseUploadedTrace(jsonl, { label: "missing input" }),
+    /input_length/,
+  );
+});
+
+test("uploaded trace streaming parser requires declared input_length", async () => {
+  const jsonl = [
+    JSON.stringify({ timestamp: 1, block_size: 64, hash_ids: [1, 2], input_length: 128 }),
+    JSON.stringify({ timestamp: 2, block_size: 64, hash_ids: [1, 3] }),
+  ].join("\n");
+  async function* chunks() {
+    yield jsonl;
+  }
+
+  await assert.rejects(
+    () => parseUploadedTraceStreaming(chunks(), { label: "missing input" }),
+    /input_length/,
+  );
+});
+
 test("uploaded trace parser rejects inconsistent block_size", () => {
   const jsonl = [
     JSON.stringify({ timestamp: 1, block_size: 64, hash_ids: [1, 2], input_length: 128 }),
@@ -413,8 +441,8 @@ test("uploaded trace parser rejects inconsistent block_size", () => {
 test("uploaded trace parser keeps bad lines but accepts valid declared-block records", () => {
   const jsonl = [
     "not json",
-    JSON.stringify({ timestamp: 1, block_size: 64, hash_ids: [9007199254740993, 2], input_length: 96 }),
-    JSON.stringify({ timestamp: 2, block_size: 64, hash_ids: [9007199254740993, 3], input_length: 96 }),
+    JSON.stringify({ timestamp: 1, block_size: 64, hash_ids: ["9007199254740993", 2], input_length: 96 }),
+    JSON.stringify({ timestamp: 2, block_size: 64, hash_ids: ["9007199254740993", 3], input_length: 96 }),
   ].join("\n");
 
   const trace = parseUploadedTrace(jsonl, { label: "valid" });
@@ -423,6 +451,29 @@ test("uploaded trace parser keeps bad lines but accepts valid declared-block rec
   assert.equal(trace.summary.requests, 2);
   assert.equal(trace.summary.parseErrors, 1);
   assert.equal(trace.summary.averageInputTokens, 96);
+});
+
+test("uploaded trace parser preserves string hash ids beyond JS safe integers", () => {
+  const jsonl = [
+    '{"timestamp":1,"block_size":64,"hash_ids":["9007199254740993"],"input_length":64}',
+    '{"timestamp":2,"block_size":64,"hash_ids":["9007199254740994"],"input_length":64}',
+    '{"timestamp":3,"block_size":64,"hash_ids":["9007199254740993"],"input_length":64}',
+  ].join("\n");
+
+  const trace = parseUploadedTrace(jsonl, { label: "large string ids" });
+
+  assert.equal(trace.summary.requests, 3);
+  assert.equal(trace.summary.uniqueBlocks, 2);
+  assert.deepEqual(Array.from(trace.__flat.eventIds), [0, 1, 0]);
+});
+
+test("uploaded trace parser rejects unsafe JSON number hash ids", () => {
+  const jsonl = '{"timestamp":1,"block_size":64,"hash_ids":[9007199254740993],"input_length":64}';
+
+  assert.throws(
+    () => parseUploadedTrace(jsonl, { label: "unsafe number id" }),
+    /unsafe JSON number.*strings|WASM exact-u64/,
+  );
 });
 
 test("uploaded trace head inspection reports schema problems early", () => {

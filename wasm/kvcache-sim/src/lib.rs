@@ -118,6 +118,7 @@ struct State {
     skipped: u32,
     missing_block_size: u32,
     inconsistent_block_size: u32,
+    missing_input_length: u32,
     capped: bool,
     requests: u32,
     unique: u32,
@@ -153,6 +154,7 @@ impl State {
             skipped: 0,
             missing_block_size: 0,
             inconsistent_block_size: 0,
+            missing_input_length: 0,
             capped: false,
             requests: 0,
             unique: 0,
@@ -208,8 +210,8 @@ fn st() -> &'static mut State {
     unsafe { STATE.as_mut().unwrap() }
 }
 
-// blockTokens() from kv-cache-lab.js, with input_length defaulted to 1 (matching
-// toPositiveInteger(record.input_length, 1)) and block_size already resolved.
+// blockTokens() from kv-cache-lab.js, with a validated positive input_length
+// and block_size already resolved.
 #[inline]
 fn block_tokens(input_length: u64, block_size: u32, index: u32, count: u32) -> u16 {
     if count == 0 {
@@ -389,7 +391,13 @@ fn parse_line(s: &mut State, line: &[u8]) {
         s.inconsistent_block_size += 1;
         return;
     }
-    let input_length = find_number_u64(line, b"\"input_length\"").filter(|&v| v > 0).unwrap_or(1);
+    let input_length = match find_number_u64(line, b"\"input_length\"").filter(|&v| v > 0) {
+        Some(v) => v,
+        None => {
+            s.missing_input_length += 1;
+            return;
+        }
+    };
     let timestamp = find_number_f64(line, b"\"timestamp\"").unwrap_or(0.0);
 
     s.req_start.push(s.ids.len() as u32);
@@ -1026,6 +1034,10 @@ pub extern "C" fn missing_block_size() -> u32 {
 #[no_mangle]
 pub extern "C" fn inconsistent_block_size() -> u32 {
     st().inconsistent_block_size
+}
+#[no_mangle]
+pub extern "C" fn missing_input_length() -> u32 {
+    st().missing_input_length
 }
 #[no_mangle]
 pub extern "C" fn was_capped() -> u32 {
