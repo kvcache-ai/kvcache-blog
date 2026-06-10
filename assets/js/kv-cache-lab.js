@@ -18,7 +18,8 @@
   // Huge-upload guards. The JS fallback keeps event arrays compact while using
   // string hash keys for safe identity; for huge uploads the sweep plan copies
   // are still the limiter. We cap at 40M events and bound how many workers get
-  // a plan copy during the sweep, so huge plans use fewer workers.  const UPLOAD_MAX_EVENTS = 40000000;
+  // a plan copy during the sweep, so huge plans use fewer workers.
+  const UPLOAD_MAX_EVENTS = 40000000;
   const PLAN_BYTES_PER_EVENT = 17;
   const PLAN_COPY_BUDGET_BYTES = 1600000000;
   const UPLOAD_PRESET_ID = "__upload__";
