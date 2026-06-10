@@ -323,13 +323,17 @@
     const lab = labModule();
     let trace;
     try {
-      trace = await parseTraceFromMessage(lab, message);
+      trace = await parseTraceFromMessage(lab, message, (bytes, total) =>
+        onProgress({ phase: "parse", bytes, total }),
+      );
     } catch (error) {
       throw new Error(`parse: ${(error && error.message) || error}`);
     }
     let sweep;
     try {
-      sweep = lab.sweepCapacity(trace, message.model, message.settings || {}, onProgress);
+      sweep = lab.sweepCapacity(trace, message.model, message.settings || {}, (completed, total) =>
+        onProgress({ phase: "sweep", completed, total }),
+      );
     } catch (error) {
       throw new Error(`sweep: ${(error && error.message) || error}`);
     }
@@ -365,8 +369,7 @@
         return;
       }
       if (message.type === "run") {
-        const onProgress = (completed, total) =>
-          postResult({ type: "progress", jobId: message.jobId, completed, total });
+        const onProgress = (info) => postResult(Object.assign({ type: "progress", jobId: message.jobId }, info));
         postResult({ type: "result", jobId: message.jobId, result: await runWorkerJob(message, onProgress) });
         return;
       }

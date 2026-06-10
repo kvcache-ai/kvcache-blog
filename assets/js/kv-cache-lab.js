@@ -1703,8 +1703,8 @@
         if (input.useWasm && input.wasmUrl) {
           activeOnProgress = (data) => {
             if (typeof onProgress !== "function" || !data) return;
-            if (data.phase === "parse") onProgress(data.bytes || 0, data.total || 1);
-            else if (data.phase === "sweep") onProgress(data.completed || 0, data.total || 1);
+            if (data.phase === "parse") onProgress(data.bytes || 0, data.total || 1, "parse");
+            else if (data.phase === "sweep") onProgress(data.completed || 0, data.total || 1, "sweep");
           };
           try {
             const resp = await request(
@@ -1742,7 +1742,7 @@
         if (!analysis) {
           activeOnProgress = (data) => {
             if (data && data.phase === "parse" && typeof onProgress === "function") {
-              onProgress(data.bytes || 0, data.total || 1);
+              onProgress(data.bytes || 0, data.total || 1, "parse");
             }
           };
           let resp;
@@ -1784,7 +1784,7 @@
         const todo = planned.tasks.filter((task) => !memo.has(`${task.policy}|${task.cacheBlocks}`));
         const total = planned.tasks.length;
         let completed = total - todo.length;
-        if (typeof onProgress === "function") onProgress(completed, Math.max(total, 1));
+        if (typeof onProgress === "function") onProgress(completed, Math.max(total, 1), "sweep");
         // Fan out across as many workers as a plan-copy memory budget allows.
         // pool[0] already holds the plan (from analyze, no copy); each extra
         // worker costs ~17 B/event, so a huge plan collapses toward one worker
@@ -1822,7 +1822,7 @@
             if (!cancelled && resp && resp.result) {
               memo.set(`${resp.result.policy}|${resp.result.cacheBlocks}`, resp.result);
               completed += 1;
-              if (typeof onProgress === "function") onProgress(completed, Math.max(total, 1));
+              if (typeof onProgress === "function") onProgress(completed, Math.max(total, 1), "sweep");
             }
           }
         }
@@ -2204,7 +2204,7 @@
             point = null;
             policyIndex = 0;
             pointIndex += 1;
-            if (typeof onProgress === "function") onProgress(pointIndex, sweep.values.length);
+            if (typeof onProgress === "function") onProgress(pointIndex, sweep.values.length, "sweep");
           }
 
           if (pointIndex >= sweep.values.length) {
@@ -2241,8 +2241,15 @@
       // No-Worker fallback for a File upload: stream-parse it (async, on the main
       // thread) before the stepwise sweep begins. Rare — Workers are ~universal.
       if (input.uploadFile && typeof createTraceTextStream === "function") {
+        let seenBytes = 0;
+        const onBytes = typeof onProgress === "function"
+          ? (bytes) => {
+            seenBytes += bytes;
+            onProgress(seenBytes, input.uploadFile.size || 1, "parse");
+          }
+          : null;
         parseUploadedTraceStreaming(
-          createTraceTextStream(input.uploadFile, !!input.gzip, null),
+          createTraceTextStream(input.uploadFile, !!input.gzip, onBytes),
           Object.assign({}, input.uploadOptions || {}),
         )
           .then((parsed) => {
@@ -2271,7 +2278,11 @@
       worker.onmessage = (event) => {
         const message = event.data || {};
         if (message.type === "progress") {
-          if (typeof onProgress === "function") onProgress(message.completed, message.total);
+          if (typeof onProgress === "function") {
+            if (message.phase === "parse") onProgress(message.bytes || 0, message.total || 1, "parse");
+            else if (message.phase === "sweep") onProgress(message.completed || 0, message.total || 1, "sweep");
+            else onProgress(message.completed, message.total);
+          }
           return;
         }
         settled = true;
@@ -3089,9 +3100,16 @@
       if (progressText) progressText.textContent = "0%";
     }
 
-    function setProgress(completed, total) {
+    function progressStatus(phase) {
+      if (phase === "parse") return "Calculating (parsing)...";
+      if (phase === "sweep") return "Calculating (sweeping)...";
+      return "Calculating...";
+    }
+
+    function setProgress(completed, total, phase) {
       if (!progressEl) return;
       progressEl.hidden = false;
+      if (phase) setStatus(root, progressStatus(phase));
       const fraction = total > 0 ? Math.max(0, Math.min(1, completed / total)) : 0;
       if (progressFill) progressFill.style.width = `${(fraction * 100).toFixed(0)}%`;
       if (progressText) progressText.textContent = `${completed}/${total}`;
@@ -3482,8 +3500,8 @@
           wasmUrl: runtimeOptions.wasmUrl,
           uploadOptions: { blockSize, sourceId: "upload", label: uploadState.fileName, maxEvents },
         },
-        (completed, total) => {
-          if (jobId === latestJobId) setProgress(completed, total);
+        (completed, total, phase) => {
+          if (jobId === latestJobId) setProgress(completed, total, phase);
         },
       );
       activeJob.promise
@@ -3549,8 +3567,8 @@
         root.dataset.state = "calculating";
         setStatus(root, "Calculating...");
         showProgress();
-        activeJob = startJob(Object.assign({ jobId, cacheKey }, baseInput), (completed, total) => {
-          if (jobId === latestJobId) setProgress(completed, total);
+        activeJob = startJob(Object.assign({ jobId, cacheKey }, baseInput), (completed, total, phase) => {
+          if (jobId === latestJobId) setProgress(completed, total, phase);
         });
         activeJob.promise
           .then((result) => {
