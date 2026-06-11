@@ -27,7 +27,7 @@
             <span id="kv-lab-preset-label">Trace preset</span>
             <button class="kv-lab-help" data-lab-trace-help type="button" aria-label="Trace preset details">?</button>
           </span>
-          <a class="kv-lab-trace-download" data-lab-trace-download href="#" target="_blank" rel="noopener" hidden>Download Trace</a>
+          <a class="kv-lab-trace-download" data-lab-trace-download href="#" target="_blank" rel="noopener" hidden>Open Source</a>
         </span>
         <select data-lab-input="preset" aria-labelledby="kv-lab-preset-label"></select>
       </div>
@@ -62,7 +62,7 @@
 
       <div class="kv-lab-policy-note">
         <strong>KV Cache Eviction</strong>
-        <p>When adding a new block would exceed the selected memory budget, the simulator evicts one cached block based on the following policies: FIFO<button class="kv-lab-help kv-lab-policy-help" type="button" aria-label="FIFO eviction policy" data-lab-tooltip="First in, first out: evicts the block that entered the cache earliest.">?</button>, LRU<button class="kv-lab-help kv-lab-policy-help" type="button" aria-label="LRU eviction policy" data-lab-tooltip="Least recently used: evicts the block that has gone unused the longest.">?</button>, or Optimal<button class="kv-lab-help kv-lab-policy-help" type="button" aria-label="Optimal eviction policy" data-lab-tooltip="Evicts the block whose next reuse is farthest in the future. This is an ideal offline baseline.">?</button>.</p>
+        <p>When adding a new block would exceed the selected memory budget, the simulator evicts one cached block based on the following policies: <span class="kv-lab-policy-term" tabindex="0" aria-label="FIFO eviction policy: first in, first out evicts the block that entered the cache earliest." data-lab-tooltip="First in, first out: evicts the block that entered the cache earliest.">FIFO</span>, <span class="kv-lab-policy-term" tabindex="0" aria-label="LRU eviction policy: least recently used evicts the block that has gone unused the longest." data-lab-tooltip="Least recently used: evicts the block that has gone unused the longest.">LRU</span>, or <span class="kv-lab-policy-term" tabindex="0" aria-label="Optimal eviction policy: evicts the block whose next reuse is farthest in the future." data-lab-tooltip="Evicts the block whose next reuse is farthest in the future. This is an ideal offline baseline.">Optimal</span>.</p>
       </div>
     </form>
 
@@ -401,12 +401,23 @@
     cursor: help;
   }
 
-  .kv-lab-policy-help {
-    margin-left: 0.2rem;
-    vertical-align: 0.08rem;
+  .kv-lab-policy-term {
+    position: relative;
+    display: inline-block;
+    border-bottom: 1px dotted #94a3b8;
+    color: var(--lab-ink);
+    font-weight: 750;
+    cursor: help;
   }
 
-  .kv-lab-help::after {
+  .kv-lab-policy-term:focus-visible {
+    outline: 2px solid rgba(37, 99, 235, 0.2);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  .kv-lab-help::after,
+  .kv-lab-policy-term::after {
     display: none;
     position: absolute;
     z-index: 6;
@@ -435,6 +446,8 @@
 
   .kv-lab-help:hover::after,
   .kv-lab-help:focus-visible::after,
+  .kv-lab-policy-term:hover::after,
+  .kv-lab-policy-term:focus-visible::after,
   .kv-lab-metric-help:hover::after,
   .kv-lab-metric-help:focus-visible::after {
     display: block;
@@ -643,7 +656,8 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .kv-lab-help::after {
+    .kv-lab-help::after,
+    .kv-lab-policy-term::after {
       top: calc(100% + 0.4rem);
       left: 50%;
       width: 18rem;
