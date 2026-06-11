@@ -22,9 +22,12 @@
       </label>
 
       <div class="kv-lab-field">
-        <span class="kv-lab-label-help">
-          <span id="kv-lab-preset-label">Trace preset</span>
-          <button class="kv-lab-help" data-lab-trace-help type="button" aria-label="Trace preset details">?</button>
+        <span class="kv-lab-field-heading">
+          <span class="kv-lab-label-help">
+            <span id="kv-lab-preset-label">Trace preset</span>
+            <button class="kv-lab-help" data-lab-trace-help type="button" aria-label="Trace preset details">?</button>
+          </span>
+          <a class="kv-lab-trace-download" data-lab-trace-download href="#" target="_blank" rel="noopener" hidden>Download Trace</a>
         </span>
         <select data-lab-input="preset" aria-labelledby="kv-lab-preset-label"></select>
       </div>
@@ -332,6 +335,14 @@
     margin: 0;
   }
 
+  .kv-lab-field-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.65rem;
+    min-width: 0;
+  }
+
   .kv-lab-label-help {
     display: inline-flex;
     align-items: center;
@@ -342,6 +353,30 @@
 
   .kv-lab-label-help .kv-lab-help {
     pointer-events: auto;
+  }
+
+  .kv-lab-trace-download {
+    flex: none;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #fff;
+    color: var(--lab-ink);
+    font-size: 0.72rem;
+    font-weight: 750;
+    line-height: 1;
+    padding: 0.35rem 0.5rem;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .kv-lab-trace-download:hover {
+    border-color: var(--lab-blue);
+    color: var(--lab-blue);
+    text-decoration: none;
+  }
+
+  .kv-lab-trace-download[hidden] {
+    display: none !important;
   }
 
   .kv-lab-controls [hidden] {

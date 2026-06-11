@@ -72,6 +72,40 @@
     swissai_serving_trace: "SwissAI serving trace",
     sglang_hicache: "SGLang HiCache docs",
   };
+  const TRACE_DOWNLOADS = {
+    mooncake_fast25: {
+      url: "https://raw.githubusercontent.com/kvcache-ai/Mooncake/refs/heads/main/FAST25-release/arxiv-trace/mooncake_trace.jsonl",
+      fileName: "mooncake_trace.jsonl",
+    },
+    bailian_qwen_trace_a: {
+      url: "https://github.com/alibaba-edu/qwen-bailian-usagetraces-anon/raw/refs/heads/main/qwen_traceA_blksz_16.jsonl",
+      fileName: "qwen_traceA_blksz_16.jsonl",
+    },
+    ragpulse: {
+      url: "https://huggingface.co/datasets/flashserve/RAGPulse/resolve/refs%2Fconvert%2Fparquet/default/train/0000.parquet",
+      fileName: "ragpulse.parquet",
+    },
+    lmcache_agentic_sample: {
+      url: "https://huggingface.co/datasets/zeelHz/lmcache-agentic-traces/resolve/refs%2Fconvert%2Fparquet/default/train/0000.parquet",
+      fileName: "lmcache-agentic-traces.parquet",
+    },
+    semianalysis_weka_no_subagents: {
+      url: "https://huggingface.co/datasets/semianalysisai/cc-traces-weka-no-subagents-051226/resolve/refs%2Fconvert%2Fparquet/default/train/0000.parquet",
+      fileName: "cc-traces-weka-no-subagents-051226.parquet",
+    },
+    semianalysis_weka_with_subagents_256k: {
+      url: "https://huggingface.co/datasets/semianalysisai/cc-traces-weka-with-subagents-052726-256k/resolve/refs%2Fconvert%2Fparquet/default/train/0000.parquet",
+      fileName: "cc-traces-weka-with-subagents-052726-256k.parquet",
+    },
+    kv_cache_tester_claude_code: {
+      url: "https://github.com/callanjfox/kv-cache-tester/archive/refs/heads/main.zip",
+      fileName: "kv-cache-tester.zip",
+    },
+    exgentic_agent_sample: {
+      url: "https://huggingface.co/datasets/Exgentic/agent-llm-traces/resolve/refs%2Fconvert%2Fparquet/default/train/0000.parquet",
+      fileName: "agent-llm-traces.parquet",
+    },
+  };
   const METRIC_HELP = {
     "Trace requests": "Number of normalized requests in the real trace used to precompute this curve.",
     "Warmup skipped": "Requests used only to warm the cache before measuring hit rate. They still populate and evict cache blocks, but their hits and misses are excluded.",
@@ -2068,6 +2102,11 @@
     return sections.join(" ");
   }
 
+  function traceDownloadInfo(preset) {
+    if (!preset || preset.id === UPLOAD_PRESET_ID) return null;
+    return TRACE_DOWNLOADS[preset.id] || null;
+  }
+
   function formatNumber(value, digits) {
     return Number(value).toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits });
   }
@@ -3226,7 +3265,7 @@
       populateFamilies(inputs.modelFamily.value);
       populateModels(inputs.model.value);
       syncModelControls();
-      syncTraceHelp();
+      syncTraceControls();
       setUploadStatus(`Loaded ${label} (${formatFileSize(file.size)}${isGzip ? ", gzip" : ""})`);
       scheduleUpdate(0);
     }
@@ -3247,7 +3286,7 @@
       populateFamilies(inputs.modelFamily.value);
       populateModels(inputs.model.value);
       syncModelControls();
-      syncTraceHelp();
+      syncTraceControls();
       scheduleUpdate(0);
     }
 
@@ -3271,6 +3310,30 @@
       help.dataset.labTooltip = text;
       help.setAttribute("aria-label", text);
       help.removeAttribute("title");
+    }
+
+    function syncTraceDownload() {
+      const link = root.querySelector("[data-lab-trace-download]");
+      if (!link) return;
+      const preset = selectedPreset();
+      const info = traceDownloadInfo(preset);
+      if (!info || !info.url) {
+        link.hidden = true;
+        link.removeAttribute("href");
+        link.removeAttribute("download");
+        link.removeAttribute("aria-label");
+        return;
+      }
+      link.hidden = false;
+      link.href = info.url;
+      if (info.fileName) link.setAttribute("download", info.fileName);
+      else link.removeAttribute("download");
+      link.setAttribute("aria-label", `Download ${preset.label} trace`);
+    }
+
+    function syncTraceControls() {
+      syncTraceHelp();
+      syncTraceDownload();
     }
 
     function setupTraceHelp() {
@@ -3612,7 +3675,7 @@
     syncModelControls();
     applyPresetDefaults();
     setupTraceHelp();
-    syncTraceHelp();
+    syncTraceControls();
 
     inputs.modelFamily.addEventListener("change", () => {
       populateModels();
@@ -3628,7 +3691,7 @@
       populateFamilies(inputs.modelFamily.value);
       populateModels(inputs.model.value);
       syncModelControls();
-      syncTraceHelp();
+      syncTraceControls();
       scheduleUpdate(0);
     });
     Object.values(inputs).forEach((input) => {
