@@ -496,6 +496,16 @@ test("uploaded trace head inspection reports schema problems early", () => {
   );
 });
 
+test("uploaded trace head inspection rejects schema errors even with valid records", () => {
+  const inspected = inspectUploadedTraceHeadText([
+    JSON.stringify({ timestamp: 1, block_size: 64, hash_ids: [1], input_length: 64 }),
+    JSON.stringify({ timestamp: 2, block_size: 64, hash_ids: [2] }),
+  ].join("\n"));
+
+  assert.equal(inspected.valid, false);
+  assert.match(inspected.error, /input_length/);
+});
+
 test("uploaded trace head inspection tolerates bad lines before a valid record", () => {
   const inspected = inspectUploadedTraceHeadText([
     "not json",

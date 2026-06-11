@@ -235,8 +235,8 @@
         };
       }
     }
-    if (validRecords > 0) return { valid: true, blockSize, validRecords, parseErrors };
     if (firstSchemaError) return { valid: false, error: firstSchemaError, parseErrors };
+    if (validRecords > 0) return { valid: true, blockSize, validRecords, parseErrors };
     if (parseErrors > 0) {
       return {
         valid: false,
