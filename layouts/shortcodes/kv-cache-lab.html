@@ -58,8 +58,8 @@
       </label>
 
       <div class="kv-lab-policy-note">
-        <strong>Eviction model</strong>
-        <p>When a new block would exceed the selected memory budget, the simulator evicts one cached block according to FIFO, LRU, or Optimal. It does not model high-watermark or percentage-based batch eviction. These are theoretical estimates and can differ from production behavior.</p>
+        <strong>KV Cache Eviction</strong>
+        <p>When adding a new block would exceed the selected memory budget, the simulator evicts one cached block based on the following policies: FIFO, LRU, or Optimal. </p>
       </div>
     </form>
 
@@ -77,8 +77,8 @@
 
       <div class="kv-lab-chart-panel">
         <div class="kv-lab-chart-heading">
-          <h2>Prefill token hit rate</h2>
-          <button class="kv-lab-help" type="button" aria-label="Prefill token hit rate calculation" data-lab-tooltip="Warmup-excluded prefill input-token hit rate: hit prefill tokens divided by total prefill input tokens at each cache budget. Output tokens are not in the denominator; they only matter later if they appear in subsequent request input/history.">?</button>
+          <h2>KV Cache Hit Rate</h2>
+          <button class="kv-lab-help" type="button" aria-label="KV Cache Hit Rate calculation" data-lab-tooltip="The fraction of KV cache blocks that can be reused from previous requests while processing the input prompt, reducing redundant computation.">?</button>
         </div>
         <svg class="kv-lab-chart" data-lab-chart viewBox="0 0 780 380" role="img" aria-label="KV cache hit-rate curve"></svg>
       </div>
@@ -86,17 +86,17 @@
       <div class="kv-lab-derived-charts" data-lab-derived-charts hidden>
         <div class="kv-lab-chart-panel kv-lab-derived-panel">
           <div class="kv-lab-chart-heading">
-            <h2>Theoretical prefill throughput</h2>
-            <button class="kv-lab-help" type="button" aria-label="Theoretical prefill throughput calculation" data-lab-tooltip="Derived directly from hit rate as ideal speedup = 1 / (1 - hit rate). It assumes cached tokens need no prefill compute and excludes decode, KV lookup, transfer, scheduling, batching, and memory-bandwidth costs.">?</button>
+            <h2>Ideal Prefill Throughput Speedup</h2>
+            <button class="kv-lab-help" type="button" aria-label="Ideal Prefill Throughput Speedup" data-lab-tooltip="This figure shows the ideal prefill throughput speedup. Compared with no KV cache hits, a hit rate of (r) reduces the required prefill computation to (1 - r), resulting in a theoretical speedup of (1 / (1 - r)).">?</button>
           </div>
-          <svg class="kv-lab-chart" data-lab-throughput-chart viewBox="0 0 780 380" role="img" aria-label="Theoretical prefill throughput curve"></svg>
+          <svg class="kv-lab-chart" data-lab-throughput-chart viewBox="0 0 780 380" role="img" aria-label="Ideal prefill throughput speedup curve"></svg>
         </div>
         <div class="kv-lab-chart-panel kv-lab-derived-panel" data-lab-useful-panel>
           <div class="kv-lab-chart-heading">
-            <h2>Useful cache occupancy</h2>
-            <button class="kv-lab-help" type="button" aria-label="Useful cache occupancy calculation" data-lab-tooltip="After warmup, sample the cache after each request. The numerator is cached blocks that will be requested again later in the trace; the denominator is the full cache capacity, so empty space and dead blocks both reduce the value.">?</button>
+            <h2>Useful KV Cache Occupancy</h2>
+            <button class="kv-lab-help" type="button" aria-label="Useful KV Cache Occupancy calculation" data-lab-tooltip="This figure shows how much of the KV cache pool is useful under different KV cache budgets. A KV cache block is defined as useful if it is reused at least once before eviction.">?</button>
           </div>
-          <svg class="kv-lab-chart" data-lab-useful-chart viewBox="0 0 780 380" role="img" aria-label="Useful cache occupancy curve"></svg>
+          <svg class="kv-lab-chart" data-lab-useful-chart viewBox="0 0 780 380" role="img" aria-label="Useful KV Cache Occupancy curve"></svg>
         </div>
       </div>
 

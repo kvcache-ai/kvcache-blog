@@ -73,11 +73,11 @@
     sglang_hicache: "SGLang HiCache docs",
   };
   const METRIC_HELP = {
-    "Trace requests": "Number of normalized requests in the real trace used to precompute this curve. Each request contributes prefill input blocks.",
+    "Trace requests": "Number of normalized requests in the real trace used to precompute this curve.",
     "Warmup skipped": "Requests used only to warm the cache before measuring hit rate. They still populate and evict cache blocks, but their hits and misses are excluded.",
     "Avg input tokens": "Average prefill input tokens per request in the normalized trace. Output tokens are counted only when they appear in later request input/history.",
     "Unique blocks": "Distinct block identities in the normalized trace. This is the trace working-set size before converting the selected model budget into cache-block capacity.",
-    "Hit rate ceiling": "Infinite-cache prefill token hit rate after warmup. A finite FIFO/LRU/Optimal cache cannot exceed this trace-level reuse upper bound.",
+    "Hit rate ceiling": "Assuming an unlimited KV cache budget, the upper bound of the achievable hit rate.",
     "Native block size": "Source-native or declared block granularity used by the normalized trace. Real trace mode keeps this fixed instead of reinterpreting the trace at another block size.",
     "Max cache blocks": "Number of cache blocks that fit at the largest GiB budget on the x axis, after converting model precision and block size into bytes per block.",
     "Loaded time span": "Wall-clock duration covered by the parsed requests (first to last timestamp). For a truncated upload this is the span of the loaded prefix, not the whole file.",
@@ -2579,7 +2579,7 @@
 
     const yLabelX = 13;
     const yLabel = svgNode("text", { x: yLabelX, y: margin.top + plotHeight / 2, transform: `rotate(-90 ${yLabelX} ${margin.top + plotHeight / 2})`, "text-anchor": "middle", "font-size": 12, fill: "#475569", "font-weight": 700 });
-    yLabel.textContent = "Prefill token hit rate";
+    yLabel.textContent = "KV Cache Hit Rate";
     svg.appendChild(yLabel);
 
     const xLabel = svgNode("text", { x: margin.left + plotWidth / 2, y: height - 5, "text-anchor": "middle", "font-size": 12, fill: "#475569", "font-weight": 700 });
@@ -2813,7 +2813,7 @@
     }
     section.hidden = false;
     renderPolicyValueChart(root.querySelector("[data-lab-throughput-chart]"), sweep, {
-      yTitle: "Ideal prefill speedup",
+      yTitle: "Ideal Prefill Throughput Speedup",
       yFormat: (value) => `${formatNumber(value, value >= 10 ? 0 : 1)}x`,
       valueFor: (result) => throughputFromHitRate(result.hitRate),
       tooltipLines: (result, point, policy, value) => [
@@ -2831,7 +2831,7 @@
     }
     if (usefulPanel) usefulPanel.hidden = false;
     renderPolicyValueChart(root.querySelector("[data-lab-useful-chart]"), sweep, {
-      yTitle: "Useful cache occupancy",
+      yTitle: "Useful KV Cache Occupancy",
       yMax: 1,
       yFormat: (value) => formatPercent(value),
       valueFor: (result) => toNumber(result.usefulCacheRate, 0),
@@ -2959,7 +2959,7 @@
       values: timeStats.timeBuckets.map((b) => b.hitRate),
       yMax: 1,
       yFormat: (v) => formatPercent(v),
-      yTitle: "Prefill token hit rate",
+      yTitle: "KV Cache Hit Rate",
       xTitle: "Time since trace start",
       color: POLICY_COLORS.lru,
       xTicks,

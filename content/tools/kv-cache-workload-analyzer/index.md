@@ -2,7 +2,7 @@
 title: "KV Cache Workload Analyzer"
 linkTitle: "KV Cache Workload Analyzer"
 date: 2026-05-28
-summary: "Analyze KV cache hit rate, theoretical prefill throughput, and useful cache occupancy across real or custom workloads."
+summary: "Analyze KV cache hit rate, ideal prefill throughput speedup, and useful KV cache occupancy across real or custom workloads."
 home_weight: 90
 show_date_updated: false
 show_breadcrumb: false
