@@ -375,14 +375,18 @@ fn parse_line(s: &mut State, line: &[u8]) {
         return;
     }
 
-    let record_block_size = match find_number_u64(line, b"\"block_size\"")
-        .map(|v| v as u32)
-        .filter(|&v| v > 0)
-    {
-        Some(v) => v,
-        None => {
+    let record_block_size = match find_number_u64(line, b"\"block_size\"") {
+        Some(v) if v > 0 => v as u32,
+        Some(_) => {
             s.missing_block_size += 1;
             return;
+        }
+        None => {
+            if s.block_size == 0 {
+                s.missing_block_size += 1;
+                return;
+            }
+            s.block_size
         }
     };
     if s.block_size == 0 {

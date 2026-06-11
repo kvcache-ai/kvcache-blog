@@ -387,16 +387,17 @@ test("stale worker jobs do not pass the latest-job guard", () => {
   assert.equal(shouldApplyJobResult(2, null), false);
 });
 
-test("uploaded trace parser requires declared block_size", () => {
+test("uploaded trace parser uses provided blockSize when records omit block_size", () => {
   const jsonl = [
     JSON.stringify({ timestamp: 1, hash_ids: [1, 2], input_length: 128 }),
     JSON.stringify({ timestamp: 2, hash_ids: [1, 3], input_length: 128 }),
   ].join("\n");
 
-  assert.throws(
-    () => parseUploadedTrace(jsonl, { label: "missing" }),
-    /must include block_size/,
-  );
+  const trace = parseUploadedTrace(jsonl, { label: "custom", blockSize: 64 });
+
+  assert.equal(trace.blockSize, 64);
+  assert.equal(trace.summary.requests, 2);
+  assert.deepEqual(Array.from(trace.__flat.eventTokens), [64, 64, 64, 64]);
 });
 
 test("uploaded trace parser requires declared input_length", () => {
@@ -490,9 +491,9 @@ test("uploaded trace head inspection reports schema problems early", () => {
     inspectUploadedTraceHeadText(JSON.stringify({ timestamp: 1, block_size: 64, hash_ids: [1] })).error,
     /input_length/,
   );
-  assert.match(
-    inspectUploadedTraceHeadText(JSON.stringify({ timestamp: 1, hash_ids: [1], input_length: 64 })).error,
-    /block_size/,
+  assert.deepEqual(
+    inspectUploadedTraceHeadText(JSON.stringify({ timestamp: 1, hash_ids: [1], input_length: 64 })),
+    { valid: true, blockSize: 0, validRecords: 1, parseErrors: 0 },
   );
 });
 

@@ -186,9 +186,12 @@
     if (!Number.isFinite(Number(record.input_length)) || Number(record.input_length) <= 0) {
       return { valid: false, error: 'Uploaded trace records must include a positive "input_length".' };
     }
+    if (!Object.prototype.hasOwnProperty.call(record, "block_size") || record.block_size == null) {
+      return { valid: true, blockSize: 0 };
+    }
     const blockSize = Math.floor(Number(record.block_size));
     if (!Number.isFinite(Number(record.block_size)) || blockSize <= 0) {
-      return { valid: false, error: 'Uploaded trace records must include a positive "block_size".' };
+      return { valid: false, error: 'Uploaded trace "block_size" must be a positive integer when provided.' };
     }
     return { valid: true, blockSize };
   }
@@ -226,6 +229,7 @@
         continue;
       }
       validRecords += 1;
+      if (!checked.blockSize) continue;
       if (!blockSize) blockSize = checked.blockSize;
       else if (checked.blockSize !== blockSize) {
         return {
@@ -240,14 +244,14 @@
     if (parseErrors > 0) {
       return {
         valid: false,
-        error: 'Uploaded trace must be JSONL: each non-empty line must be a JSON object with "hash_ids", "input_length", and "block_size".',
+        error: 'Uploaded trace must be JSONL: each non-empty line must be a JSON object with "hash_ids" and "input_length".',
         parseErrors,
       };
     }
     if (nonEmptyLines === 0) {
       return { valid: false, error: "Uploaded trace appears empty; expected JSONL records." };
     }
-    return { valid: false, error: 'No valid uploaded trace records found in the file head. Expected JSONL records with "hash_ids", "input_length", and "block_size".' };
+    return { valid: false, error: 'No valid uploaded trace records found in the file head. Expected JSONL records with "hash_ids" and "input_length".' };
   }
 
   function normalizeMooncakeRecord(record, source) {
@@ -397,9 +401,8 @@
   // Both the whole-string parser and the streaming parser feed lines here, so
   // they stay byte-for-byte consistent. Honors maxRecords/maxEvents caps
   // (checked after each complete request) so huge uploads stay memory-bounded.
-  // Uploaded traces must declare one source-native block_size consistently in
-  // every valid hash record. The page displays it read-only; it is not a user
-  // setting because it defines the trace identity granularity.
+  // Uploaded traces may declare one source-native block_size consistently. When
+  // they do not, the UI supplies an explicit positive blockSize option.
   function createTraceIngester(options) {
     const opts = options || {};
     let blockSize = toInteger(opts.blockSize, 0);
@@ -418,6 +421,7 @@
     let requestCount = 0;
     let capped = false;
     let missingBlockSize = 0;
+    let invalidBlockSize = 0;
     let inconsistentBlockSize = 0;
     let missingInputLength = 0;
     let tMin = Infinity;
@@ -437,19 +441,25 @@
         skipped += 1;
         return true;
       }
-      const recordBlockSize = toInteger(record.block_size, 0);
-      if (recordBlockSize <= 0) {
-        missingBlockSize += 1;
-        return true;
-      }
-      if (!blockSize) blockSize = recordBlockSize;
-      if (recordBlockSize !== blockSize) {
-        inconsistentBlockSize += 1;
-        return true;
-      }
       const inputLength = toInteger(record.input_length, 0);
       if (inputLength <= 0) {
         missingInputLength += 1;
+        return true;
+      }
+      const hasRecordBlockSize = Object.prototype.hasOwnProperty.call(record, "block_size") && record.block_size != null;
+      const recordBlockSize = hasRecordBlockSize ? toInteger(record.block_size, 0) : 0;
+      if (hasRecordBlockSize && recordBlockSize <= 0) {
+        invalidBlockSize += 1;
+        return true;
+      }
+      if (recordBlockSize > 0) {
+        if (!blockSize) blockSize = recordBlockSize;
+        if (recordBlockSize !== blockSize) {
+          inconsistentBlockSize += 1;
+          return true;
+        }
+      } else if (!blockSize) {
+        missingBlockSize += 1;
         return true;
       }
       const hashIds = record.hash_ids;
@@ -476,7 +486,10 @@
 
     function finish() {
       if (missingBlockSize > 0) {
-        throw new Error(`Uploaded trace records must include block_size. Found ${missingBlockSize} valid hash record(s) without it.`);
+        throw new Error(`Uploaded trace records without block_size need a positive Block size value. Found ${missingBlockSize} valid hash record(s) without one.`);
+      }
+      if (invalidBlockSize > 0) {
+        throw new Error(`Uploaded trace block_size must be a positive integer when provided. Found ${invalidBlockSize} invalid record(s).`);
       }
       if (inconsistentBlockSize > 0) {
         throw new Error(`Uploaded trace block_size must be consistent. Found ${inconsistentBlockSize} record(s) with a different block_size.`);
@@ -486,7 +499,7 @@
       }
       if (!requestCount) {
         throw new Error(
-          'No valid uploaded trace records found. Each line must be JSON with a non-empty "hash_ids" array, a positive "block_size", and a positive "input_length".',
+          'No valid uploaded trace records found. Each line must be JSON with a non-empty "hash_ids" array and a positive "input_length". Include "block_size" in the trace or set Block size before running.',
         );
       }
       requestStarts.push(eventCount);
@@ -2376,10 +2389,7 @@
     if (Number.isFinite(Number(summary.timeSpanSeconds)) && Number(summary.timeSpanSeconds) > 0) {
       metrics.push(["Loaded time span", formatDuration(Number(summary.timeSpanSeconds))]);
     }
-    if (Number.isFinite(Number(summary.uniqueBlocks))) metrics.push(["Unique blocks", formatInteger(summary.uniqueBlocks)]);
     if (Number.isFinite(Number(sweep.reuseCeiling))) metrics.push(["Hit rate ceiling", formatPercent(Number(sweep.reuseCeiling))]);
-    if (Number.isFinite(Number(sweep.blockSize || trace.blockSize))) metrics.push(["Native block size", `${formatInteger(sweep.blockSize || trace.blockSize)} tokens`]);
-    if (maxPoint) metrics.push(["Max cache blocks", formatInteger(maxPoint.cacheBlocks)]);
     list.innerHTML = "";
     metrics.forEach(([label, value]) => list.appendChild(renderMetric(label, value)));
   }
@@ -3123,11 +3133,30 @@
       setText(root, "[data-lab-output='note']", (error && error.message) || String(error));
     }
 
+    function defaultBlockSize() {
+      return toPositiveInteger(defaults.block_size || DEFAULT_BLOCK_SIZE, DEFAULT_BLOCK_SIZE);
+    }
+
+    function positiveIntegerValue(value) {
+      const parsed = Math.floor(Number(value));
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    }
+
+    function presetBlockSize(preset) {
+      return positiveIntegerValue(preset && (preset.native_block_size || preset.nativeBlockSize));
+    }
+
+    function sanitizeBlockSizeInput() {
+      if (!uploadBlockSizeInput) return 0;
+      const cleaned = String(uploadBlockSizeInput.value || "").replace(/[^\d]/g, "");
+      if (uploadBlockSizeInput.value !== cleaned) uploadBlockSizeInput.value = cleaned;
+      return positiveIntegerValue(cleaned);
+    }
+
     function currentUploadBlockSize() {
-      const typed = uploadBlockSizeInput && Number(uploadBlockSizeInput.value);
-      if (typed && typed > 0) return Math.floor(typed);
-      if (uploadState && uploadState.detectedBlockSize) return uploadState.detectedBlockSize;
-      return 0;
+      const detected = uploadState && positiveIntegerValue(uploadState.detectedBlockSize);
+      if (detected) return detected;
+      return sanitizeBlockSizeInput() || defaultBlockSize();
     }
 
     function selectedModel() {
@@ -3137,6 +3166,44 @@
     function selectedPreset() {
       if (uploadState && inputs.preset.value === UPLOAD_PRESET_ID) return uploadState.preset;
       return presetById(presets, inputs.preset.value);
+    }
+
+    function selectedTraceBlockSize() {
+      const preset = selectedPreset();
+      if (preset && preset.id === UPLOAD_PRESET_ID) return currentUploadBlockSize();
+      return presetBlockSize(preset) || defaultBlockSize();
+    }
+
+    function syncBlockSizeControl() {
+      if (!uploadBlockSizeInput) return;
+      const preset = selectedPreset();
+      const fallback = defaultBlockSize();
+      let value = fallback;
+      let locked = true;
+      let title = "Block size is fixed by the selected trace.";
+      if (preset && preset.id === UPLOAD_PRESET_ID) {
+        const detected = uploadState && positiveIntegerValue(uploadState.detectedBlockSize);
+        if (detected) {
+          value = detected;
+          locked = true;
+          title = "Detected from the uploaded trace.";
+        } else {
+          locked = false;
+          value = sanitizeBlockSizeInput() || fallback;
+          title = "Used for uploaded traces that do not include block_size.";
+        }
+      } else {
+        value = presetBlockSize(preset) || fallback;
+      }
+      uploadBlockSizeInput.disabled = locked;
+      uploadBlockSizeInput.readOnly = locked;
+      uploadBlockSizeInput.setAttribute("aria-readonly", locked ? "true" : "false");
+      uploadBlockSizeInput.setAttribute("aria-disabled", locked ? "true" : "false");
+      uploadBlockSizeInput.placeholder = String(fallback);
+      uploadBlockSizeInput.title = title;
+      if (locked || !positiveIntegerValue(uploadBlockSizeInput.value)) {
+        uploadBlockSizeInput.value = String(value);
+      }
     }
 
     function setUploadStatus(text) {
@@ -3213,9 +3280,8 @@
         token: `${file.size}:${file.lastModified}:${label}`,
         preset: { id: UPLOAD_PRESET_ID, label, summary: "", sources: [], defaults: {} },
       };
-      if (uploadBlockSizeInput) {
-        uploadBlockSizeInput.value = "";
-        uploadBlockSizeInput.placeholder = detected ? `auto (${detected})` : "declared in trace";
+      if (uploadBlockSizeInput && !positiveIntegerValue(detected)) {
+        uploadBlockSizeInput.value = String(defaultBlockSize());
       }
       setUploadOption(`Uploaded: ${label}`);
       if (uploadClear) uploadClear.hidden = false;
@@ -3233,10 +3299,6 @@
       if (option) option.remove();
       if (uploadInput) uploadInput.value = "";
       if (uploadClear) uploadClear.hidden = true;
-      if (uploadBlockSizeInput) {
-        uploadBlockSizeInput.value = "";
-        uploadBlockSizeInput.placeholder = "auto";
-      }
       inputs.preset.value = presets[0].id;
       setUploadStatus("");
       applyPresetDefaults();
@@ -3289,6 +3351,7 @@
     function syncTraceControls() {
       syncTraceHelp();
       syncTraceDownload();
+      syncBlockSizeControl();
     }
 
     function setupTraceHelp() {
@@ -3365,7 +3428,7 @@
       paramInputs.forEach((input) => {
         params[input.dataset.labParam] = input.value;
       });
-      params.blockSize = selectedPreset().native_block_size || selectedPreset().nativeBlockSize || defaults.block_size || DEFAULT_BLOCK_SIZE;
+      params.blockSize = selectedTraceBlockSize();
       return params;
     }
 
@@ -3385,7 +3448,7 @@
 
     function computationInput() {
       const preset = selectedPreset();
-      const blockSize = toPositiveInteger(preset.native_block_size || preset.nativeBlockSize || defaults.block_size, DEFAULT_BLOCK_SIZE);
+      const blockSize = selectedTraceBlockSize();
       return {
         preset,
         model: selectedModel(),
@@ -3667,7 +3730,17 @@
     }
     if (uploadBlockSizeInput) {
       uploadBlockSizeInput.addEventListener("input", () => {
-        if (uploadState && inputs.preset.value === UPLOAD_PRESET_ID) scheduleUpdate(INPUT_DEBOUNCE_MS);
+        sanitizeBlockSizeInput();
+        if (uploadState && inputs.preset.value === UPLOAD_PRESET_ID && !positiveIntegerValue(uploadState.detectedBlockSize)) {
+          scheduleUpdate(INPUT_DEBOUNCE_MS);
+        }
+      });
+      uploadBlockSizeInput.addEventListener("change", () => {
+        if (!positiveIntegerValue(uploadBlockSizeInput.value)) uploadBlockSizeInput.value = String(defaultBlockSize());
+        syncBlockSizeControl();
+        if (uploadState && inputs.preset.value === UPLOAD_PRESET_ID && !positiveIntegerValue(uploadState.detectedBlockSize)) {
+          scheduleUpdate(0);
+        }
       });
     }
     if (uploadZone) {

@@ -33,11 +33,19 @@
       </div>
 
       <div class="kv-lab-field">
+        <span class="kv-lab-label-help">
+          <span id="kv-lab-block-size-label">Block size</span>
+          <button class="kv-lab-help" type="button" aria-label="Block size details" data-lab-tooltip="Token granularity used to group prompt tokens into KV cache blocks. Presets and traces with block_size keep their source value; uploads without it use this integer.">?</button>
+        </span>
+        <input data-lab-input="blockSize" data-lab-upload-blocksize type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-labelledby="kv-lab-block-size-label">
+      </div>
+
+      <div class="kv-lab-field">
         <span>Customize trace</span>
         <label class="kv-lab-upload-zone" data-lab-upload-zone>
           <input class="kv-lab-upload-input" data-lab-upload-input type="file" accept=".jsonl,.jsonl.gz,.ndjson,.gz">
           <span class="kv-lab-upload-action">Choose JSONL / JSONL.GZ</span>
-          <span class="kv-lab-upload-hint">Drop or choose a JSONL / JSONL.GZ trace. Each valid line needs <code>hash_ids</code>, <code>input_length</code>, and <code>block_size</code>. <code>hash_ids</code> must be decimal integers or decimal strings. Requests are replayed in file order, so sort production traces by timestamp first. <strong>Computed locally in your browser.</strong></span>
+          <span class="kv-lab-upload-hint">Drop or choose a JSONL / JSONL.GZ trace. Each valid line needs <code>hash_ids</code> and <code>input_length</code>; <code>block_size</code> is optional when set above. <code>hash_ids</code> must be decimal integers or decimal strings. Requests are replayed in file order, so sort production traces by timestamp first. <strong>Computed locally in your browser.</strong></span>
         </label>
         <div class="kv-lab-upload-footer">
           <span class="kv-lab-upload-status" data-lab-upload-status></span>
@@ -195,6 +203,12 @@
   .kv-lab-controls input:focus {
     outline: 2px solid rgba(37, 99, 235, 0.2);
     border-color: var(--lab-blue);
+  }
+
+  .kv-lab-controls input:disabled {
+    background: #f1f5f9;
+    color: var(--lab-muted);
+    cursor: not-allowed;
   }
 
   .kv-lab-upload-zone {
