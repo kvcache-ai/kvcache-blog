@@ -35,6 +35,9 @@ const tinyModel = {
   },
 };
 
+const tinyPrecisionOptions = [{ id: "bf16_fp16", label: "BF16 / FP16", bytes_per_element: 2 }];
+const oneBlockCapacityGiB = 6 / 1024 ** 3;
+
 test("Mooncake parser uses 512-token source blocks and partial last-block tokens", () => {
   const request = normalizeMooncakeRecord(
     { timestamp: 3, input_length: 1025, output_length: 7, hash_ids: [10, 11, 12] },
@@ -261,6 +264,55 @@ test("native full-precompute optimal uses Belady bypass admission", (t) => {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("precompute sweep optimal uses Belady bypass admission", () => {
+  const trace = buildTrace(
+    { id: "fixture", label: "Fixture", nativeBlockSize: 1, sourceKind: "hash" },
+    [
+      { timestamp: 0, inputBlocks: [{ id: "A", tokens: 1 }], appendBlocks: [] },
+      { timestamp: 1, inputBlocks: [{ id: "B", tokens: 1 }], appendBlocks: [] },
+      { timestamp: 2, inputBlocks: [{ id: "A", tokens: 1 }], appendBlocks: [] },
+    ],
+  );
+
+  const sweep = precomputeSweep(trace, tinyModel, {
+    precision: "bf16_fp16",
+    precisionOptions: tinyPrecisionOptions,
+    blockSize: 1,
+    capacityGiBValues: [oneBlockCapacityGiB],
+    warmupFraction: 0,
+    policies: ["optimal"],
+  });
+  const point = sweep.points[0];
+
+  assert.equal(point.cacheBlocks, 1);
+  assert.equal(point.results.optimal.hitTokens, 1);
+  assert.equal(point.results.optimal.totalTokens, 3);
+});
+
+test("precompute sweep includes append blocks in cache state", () => {
+  const trace = buildTrace(
+    { id: "fixture", label: "Fixture", nativeBlockSize: 1, sourceKind: "hash" },
+    [
+      { timestamp: 0, inputBlocks: [{ id: "A", tokens: 1 }], appendBlocks: [{ id: "B", tokens: 1 }] },
+      { timestamp: 1, inputBlocks: [{ id: "B", tokens: 1 }], appendBlocks: [] },
+    ],
+  );
+
+  const sweep = precomputeSweep(trace, tinyModel, {
+    precision: "bf16_fp16",
+    precisionOptions: tinyPrecisionOptions,
+    blockSize: 1,
+    capacityGiBValues: [oneBlockCapacityGiB],
+    warmupFraction: 0,
+    policies: ["lru"],
+  });
+  const point = sweep.points[0];
+
+  assert.equal(point.cacheBlocks, 1);
+  assert.equal(point.results.lru.hitTokens, 1);
+  assert.equal(point.results.lru.totalTokens, 2);
 });
 
 test("precompute sweep is deterministic and uses source-native block size", () => {

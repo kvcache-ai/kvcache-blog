@@ -856,17 +856,23 @@ function flattenTrace(trace) {
   const eventIds = [];
   const eventTokens = [];
   const eventRequest = [];
+  const eventIsInput = [];
   const requestStarts = [];
+  const uniqueBlocks = new Set();
   const requests = Array.isArray(trace.requests) ? trace.requests : [];
   requests.forEach((request, requestIndex) => {
     requestStarts.push(eventIds.length);
-    request.inputBlocks.forEach((block) => {
+    const pushEvent = (block, isInput) => {
       eventIds.push(block.id);
       eventTokens.push(toNumber(block.tokens, 0));
       eventRequest.push(requestIndex);
-    });
+      eventIsInput.push(isInput ? 1 : 0);
+      uniqueBlocks.add(block.id);
+    };
+    (request.inputBlocks || []).forEach((block) => pushEvent(block, 1));
+    (request.appendBlocks || []).forEach((block) => pushEvent(block, 0));
   });
-  return { eventIds, eventTokens, eventRequest, requestStarts, requestCount: requests.length };
+  return { eventIds, eventTokens, eventRequest, eventIsInput, requestStarts, requestCount: requests.length, uniqueBlocks: uniqueBlocks.size };
 }
 
 export function buildExecutionPlan(trace, options = {}) {
@@ -881,9 +887,12 @@ export function buildExecutionPlan(trace, options = {}) {
   let totalMeasuredTokens = 0;
   for (let index = flat.eventIds.length - 1; index >= 0; index -= 1) {
     const id = flat.eventIds[index];
+    const isInput = !flat.eventIsInput || Boolean(flat.eventIsInput[index]);
     nextPositions[index] = lastSeen.has(id) ? lastSeen.get(id) : never;
-    lastSeen.set(id, index);
-    if (flat.eventRequest[index] >= warmupRequests) totalMeasuredTokens += flat.eventTokens[index];
+    if (isInput) {
+      lastSeen.set(id, index);
+      if (flat.eventRequest[index] >= warmupRequests) totalMeasuredTokens += flat.eventTokens[index];
+    }
   }
   return { ...flat, nextPositions, warmupRequests, totalMeasuredTokens };
 }
@@ -941,6 +950,10 @@ function simulatePlanPolicy(plan, cacheBlocks, policy) {
     usefulCacheSamples += 1;
   }
 
+  function isInputEvent(index) {
+    return !plan.eventIsInput || Boolean(plan.eventIsInput[index]);
+  }
+
   function evictFifo() {
     while (cache.size >= capacity && fifoHead < fifoQueue.length) {
       const victim = fifoQueue[fifoHead];
@@ -956,7 +969,7 @@ function simulatePlanPolicy(plan, cacheBlocks, policy) {
   for (let index = 0; index < plan.eventIds.length; index += 1) {
     const id = plan.eventIds[index];
     const nextUse = plan.nextPositions[index];
-    const measured = plan.eventRequest[index] >= plan.warmupRequests;
+    const measured = isInputEvent(index) && plan.eventRequest[index] >= plan.warmupRequests;
     const previous = cache.get(id);
     const hit = previous !== undefined;
     if (measured && hit) hitTokens += plan.eventTokens[index];
@@ -1037,15 +1050,19 @@ function simulateOptimalPlan(plan, capacity) {
     heap.push({ id, nextUse, version: state.version });
   }
 
-  function evictOne() {
+  function evictForCandidate(candidateNextUse) {
     for (;;) {
       const candidate = heap.pop();
-      if (!candidate) return;
+      if (!candidate) return cache.size < capacity;
       const current = cache.get(candidate.id);
       if (!current || current.version !== candidate.version || current.nextUse !== candidate.nextUse) continue;
-      if (current.nextUse < never) usefulCount -= 1;
-      cache.delete(candidate.id);
-      return;
+      if (current.nextUse > candidateNextUse) {
+        if (current.nextUse < never) usefulCount -= 1;
+        cache.delete(candidate.id);
+        return true;
+      }
+      heap.push(candidate);
+      return false;
     }
   }
 
@@ -1057,16 +1074,24 @@ function simulateOptimalPlan(plan, capacity) {
     usefulCacheSamples += 1;
   }
 
+  function isInputEvent(index) {
+    return !plan.eventIsInput || Boolean(plan.eventIsInput[index]);
+  }
+
   for (let index = 0; index < plan.eventIds.length; index += 1) {
     const id = plan.eventIds[index];
-    const measured = plan.eventRequest[index] >= plan.warmupRequests;
+    const nextUse = plan.nextPositions[index];
+    const measured = isInputEvent(index) && plan.eventRequest[index] >= plan.warmupRequests;
     const hit = cache.has(id);
     if (measured && hit) hitTokens += plan.eventTokens[index];
     if (hit) {
-      pushState(id, plan.nextPositions[index]);
+      pushState(id, nextUse);
+    } else if (cache.size < capacity) {
+      pushState(id, nextUse);
+    } else if (evictForCandidate(nextUse)) {
+      if (cache.size < capacity) pushState(id, nextUse);
     } else {
-      while (cache.size >= capacity) evictOne();
-      if (cache.size < capacity) pushState(id, plan.nextPositions[index]);
+      // Belady-with-bypass: keep the current cache if the miss is used no sooner than every resident block.
     }
     sampleUseful(index);
   }
@@ -1115,10 +1140,10 @@ export function precomputeSweep(trace, model, setting, options = {}) {
   const plan = options.plan || buildExecutionPlan(trace, { warmupFraction });
   const simulationCache = options.simulationCache || null;
   const ceiling = options.ceiling || infiniteCacheReuse(trace, { warmupFraction });
-  const ceilingStats = options.ceilingStats || simulatePlannedPolicy(plan, Math.max(1, trace.summary && trace.summary.uniqueBlocks ? trace.summary.uniqueBlocks : 1), "lru");
-  const uniqueBlocks = trace && trace.summary && Number.isFinite(Number(trace.summary.uniqueBlocks))
-    ? Number(trace.summary.uniqueBlocks)
-    : Infinity;
+  const uniqueBlocks = Number.isFinite(Number(plan.uniqueBlocks))
+    ? Number(plan.uniqueBlocks)
+    : trace && trace.summary && Number.isFinite(Number(trace.summary.uniqueBlocks)) ? Number(trace.summary.uniqueBlocks) : Infinity;
+  const ceilingStats = options.ceilingStats || simulatePlannedPolicy(plan, Math.max(1, Number.isFinite(uniqueBlocks) ? uniqueBlocks : 1), "lru");
   function resultFromCeiling(policy, cacheBlocks) {
     const usefulCacheBlockSamples = Number(ceilingStats.usefulCacheBlockSamples) || 0;
     const usefulCacheSamples = Number(ceilingStats.usefulCacheSamples) || 0;
@@ -1196,7 +1221,7 @@ export async function precomputeCurves(options = {}) {
     const warmupFraction = options.warmupFraction ?? DEFAULT_WARMUP_FRACTION;
     const plan = lab.buildExecutionPlan(trace, { warmupFraction });
     const ceiling = infiniteCacheReuse(trace, { warmupFraction });
-    const ceilingStats = simulatePlannedPolicy(plan, Math.max(trace.summary.uniqueBlocks || 1, 1), "lru");
+    const ceilingStats = simulatePlannedPolicy(plan, Math.max(plan.uniqueBlocks || 1, 1), "lru");
     const simulationCache = new Map();
     const modelSweeps = {};
     console.error(`[precompute] ${source.id}: ${trace.summary.requests} requests, ${trace.summary.totalBlocks} blocks, ${trace.summary.uniqueBlocks} unique`);
