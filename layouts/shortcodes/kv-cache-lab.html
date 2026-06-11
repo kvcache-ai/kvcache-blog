@@ -59,7 +59,7 @@
 
       <div class="kv-lab-policy-note">
         <strong>KV Cache Eviction</strong>
-        <p>When adding a new block would exceed the selected memory budget, the simulator evicts one cached block based on the following policies: FIFO, LRU, or Optimal. </p>
+        <p>When adding a new block would exceed the selected memory budget, the simulator evicts one cached block based on the following policies: FIFO<button class="kv-lab-help kv-lab-policy-help" type="button" aria-label="FIFO eviction policy" data-lab-tooltip="First in, first out: evicts the block that entered the cache earliest.">?</button>, LRU<button class="kv-lab-help kv-lab-policy-help" type="button" aria-label="LRU eviction policy" data-lab-tooltip="Least recently used: evicts the block that has gone unused the longest.">?</button>, or Optimal<button class="kv-lab-help kv-lab-policy-help" type="button" aria-label="Optimal eviction policy" data-lab-tooltip="Evicts the block whose next reuse is farthest in the future. This is an ideal offline baseline.">?</button>.</p>
       </div>
     </form>
 
@@ -364,6 +364,11 @@
     font-weight: 800;
     line-height: 1;
     cursor: help;
+  }
+
+  .kv-lab-policy-help {
+    margin-left: 0.2rem;
+    vertical-align: 0.08rem;
   }
 
   .kv-lab-help::after {
