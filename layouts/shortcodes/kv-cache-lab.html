@@ -94,13 +94,6 @@
           </div>
           <svg class="kv-lab-chart" data-lab-throughput-chart viewBox="0 0 780 380" role="img" aria-label="Ideal prefill throughput speedup curve"></svg>
         </div>
-        <div class="kv-lab-chart-panel kv-lab-derived-panel" data-lab-useful-panel>
-          <div class="kv-lab-chart-heading">
-            <h2>Useful KV Cache Occupancy</h2>
-            <button class="kv-lab-help" type="button" aria-label="Useful KV Cache Occupancy calculation" data-lab-tooltip="This figure shows how much of the KV cache pool is useful under different KV cache budgets. A KV cache block is defined as useful if it is reused at least once before eviction.">?</button>
-          </div>
-          <svg class="kv-lab-chart" data-lab-useful-chart viewBox="0 0 780 380" role="img" aria-label="Useful KV Cache Occupancy curve"></svg>
-        </div>
       </div>
 
       <p class="kv-lab-note" data-lab-output="note"></p>
@@ -613,11 +606,12 @@
   }
 
   .kv-lab-chart-heading {
-    display: inline-flex;
+    display: flex;
     align-items: center;
+    justify-content: center;
     gap: 0.4rem;
     margin: 0.85rem 1rem 0;
-    width: fit-content;
+    width: auto;
   }
 
   .kv-lab-chart-heading h2 {

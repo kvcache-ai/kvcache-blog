@@ -2518,7 +2518,11 @@
       tooltipBlocks.setAttribute("visibility", hasSecondLine ? "visible" : "hidden");
     }
 
-    sweep.policies.forEach((policy, index) => {
+    const policies = sweep.policies || POLICIES;
+    const legendGap = 130;
+    const legendWidth = Math.max(0, policies.length - 1) * legendGap + 104;
+    const legendStartX = (width - legendWidth) / 2;
+    policies.forEach((policy, index) => {
       const points = sweep.points.map((point, pointIndex) => `${xScale(pointIndex)},${yScale(point.results[policy].hitRate)}`).join(" ");
       svg.appendChild(svgNode("polyline", { points, fill: "none", stroke: POLICY_COLORS[policy], "stroke-width": 3, "stroke-linejoin": "round", "stroke-linecap": "round" }));
       sweep.points.forEach((point, pointIndex) => {
@@ -2548,7 +2552,7 @@
         marker.addEventListener("blur", hideTooltip);
         svg.appendChild(marker);
       });
-      const legendX = margin.left + index * 130;
+      const legendX = legendStartX + index * legendGap;
       svg.appendChild(svgNode("line", { x1: legendX, y1: 22, x2: legendX + 28, y2: 22, stroke: POLICY_COLORS[policy], "stroke-width": 4, "stroke-linecap": "round" }));
       const label = svgNode("text", {
         x: legendX + 36,
@@ -2586,11 +2590,11 @@
     svg.appendChild(tooltip);
 
     const yLabelX = 13;
-    const yLabel = svgNode("text", { x: yLabelX, y: margin.top + plotHeight / 2, transform: `rotate(-90 ${yLabelX} ${margin.top + plotHeight / 2})`, "text-anchor": "middle", "font-size": 12, fill: "#475569", "font-weight": 700 });
+    const yLabel = svgNode("text", { x: yLabelX, y: margin.top + plotHeight / 2, transform: `rotate(-90 ${yLabelX} ${margin.top + plotHeight / 2})`, "text-anchor": "middle", "font-size": 14, fill: "#475569", "font-weight": 700 });
     yLabel.textContent = "KV Cache Hit Rate";
     svg.appendChild(yLabel);
 
-    const xLabel = svgNode("text", { x: margin.left + plotWidth / 2, y: height - 5, "text-anchor": "middle", "font-size": 12, fill: "#475569", "font-weight": 700 });
+    const xLabel = svgNode("text", { x: margin.left + plotWidth / 2, y: height - 6, "text-anchor": "middle", "font-size": 14, fill: "#475569", "font-weight": 700 });
     xLabel.textContent = "KV cache budget";
     svg.appendChild(xLabel);
   }
@@ -2722,6 +2726,9 @@
     }
 
     const policies = sweep.policies || POLICIES;
+    const legendGap = 130;
+    const legendWidth = Math.max(0, policies.length - 1) * legendGap + 104;
+    const legendStartX = (width - legendWidth) / 2;
     policies.forEach((policy, index) => {
       const points = sweep.points
         .map((point, pointIndex) => `${xScale(pointIndex)},${yScale(valueFor(point.results[policy], point, policy))}`)
@@ -2752,7 +2759,7 @@
         marker.addEventListener("blur", hideTooltip);
         svg.appendChild(marker);
       });
-      const legendX = margin.left + index * 130;
+      const legendX = legendStartX + index * legendGap;
       svg.appendChild(svgNode("line", { x1: legendX, y1: 22, x2: legendX + 28, y2: 22, stroke: POLICY_COLORS[policy], "stroke-width": 4, "stroke-linecap": "round" }));
       const label = svgNode("text", {
         x: legendX + 36,
@@ -2790,11 +2797,11 @@
     svg.appendChild(tooltip);
 
     const yLabelX = 15;
-    const yLabel = svgNode("text", { x: yLabelX, y: margin.top + plotHeight / 2, transform: `rotate(-90 ${yLabelX} ${margin.top + plotHeight / 2})`, "text-anchor": "middle", "font-size": 12, fill: "#475569", "font-weight": 700 });
+    const yLabel = svgNode("text", { x: yLabelX, y: margin.top + plotHeight / 2, transform: `rotate(-90 ${yLabelX} ${margin.top + plotHeight / 2})`, "text-anchor": "middle", "font-size": 14, fill: "#475569", "font-weight": 700 });
     yLabel.textContent = opts.yTitle || "";
     svg.appendChild(yLabel);
 
-    const xLabel = svgNode("text", { x: margin.left + plotWidth / 2, y: height - 5, "text-anchor": "middle", "font-size": 12, fill: "#475569", "font-weight": 700 });
+    const xLabel = svgNode("text", { x: margin.left + plotWidth / 2, y: height - 6, "text-anchor": "middle", "font-size": 14, fill: "#475569", "font-weight": 700 });
     xLabel.textContent = "KV cache budget";
     svg.appendChild(xLabel);
   }
@@ -2828,25 +2835,6 @@
         `Speedup: ${formatNumber(value, value >= 10 ? 0 : 1)}x`,
         `Hit rate: ${formatPercent(result.hitRate)}`,
         `Miss compute: ${formatPercent(1 - clamp(result.hitRate, 0, 1))}`,
-      ],
-    });
-
-    const usefulPanel = root.querySelector("[data-lab-useful-panel]");
-    if (!sweepHasUsefulCacheRate(sweep)) {
-      if (usefulPanel) usefulPanel.hidden = true;
-      clearSvg(root.querySelector("[data-lab-useful-chart]"));
-      return;
-    }
-    if (usefulPanel) usefulPanel.hidden = false;
-    renderPolicyValueChart(root.querySelector("[data-lab-useful-chart]"), sweep, {
-      yTitle: "Useful KV Cache Occupancy",
-      yMax: 1,
-      yFormat: (value) => formatPercent(value),
-      valueFor: (result) => toNumber(result.usefulCacheRate, 0),
-      tooltipLines: (result, point) => [
-        `Useful occupancy: ${formatPercent(result.usefulCacheRate)}`,
-        `Cache blocks: ${formatInteger(point.cacheBlocks)}`,
-        `Samples: ${formatInteger(result.usefulCacheSamples || 0)}`,
       ],
     });
   }
