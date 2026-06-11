@@ -2081,14 +2081,6 @@
     return sections.join(" ");
   }
 
-  function traceSourceLinkInfo(preset, metadata) {
-    if (!preset || preset.id === UPLOAD_PRESET_ID) return null;
-    const sources = metadata && metadata.sources ? metadata.sources : {};
-    const sourceId = (preset.sources || []).find((id) => sources[id]);
-    if (!sourceId) return null;
-    return { url: sources[sourceId], label: sourceLabel(sourceId) };
-  }
-
   function formatNumber(value, digits) {
     return Number(value).toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits });
   }
@@ -2855,7 +2847,9 @@
     const sources = metadata && metadata.sources ? metadata.sources : {};
     node.innerHTML = "";
     const links = (preset.sources || []).map((sourceId) => [sourceId, sources[sourceId]]).filter(([, href]) => href);
+    node.hidden = true;
     if (!links.length) return;
+    node.hidden = false;
     node.appendChild(document.createTextNode("Sources: "));
     links.forEach(([sourceId, href], index) => {
       if (index > 0) node.appendChild(document.createTextNode(", "));
@@ -3041,7 +3035,6 @@
     const metrics = root.querySelector("[data-lab-metrics]");
     const svg = root.querySelector("[data-lab-chart]");
     const derived = root.querySelector("[data-lab-derived-charts]");
-    const sources = root.querySelector("[data-lab-sources]");
     if (metrics) metrics.innerHTML = "";
     if (svg) clearSvg(svg);
     if (derived) {
@@ -3049,7 +3042,6 @@
       clearSvg(root.querySelector("[data-lab-throughput-chart]"));
       clearSvg(root.querySelector("[data-lab-useful-chart]"));
     }
-    if (sources) sources.innerHTML = "";
     const precision = settings && settings.precision ? settings.precision : "default";
     const indexer = settings && settings.indexerPrecision ? `, indexer ${settings.indexerPrecision}` : "";
     setText(
@@ -3331,26 +3323,9 @@
       help.removeAttribute("title");
     }
 
-    function syncTraceDownload() {
-      const link = root.querySelector("[data-lab-trace-download]");
-      if (!link) return;
-      const preset = selectedPreset();
-      const info = traceSourceLinkInfo(preset, metadata);
-      if (!info || !info.url) {
-        link.hidden = true;
-        link.removeAttribute("href");
-        link.removeAttribute("aria-label");
-        return;
-      }
-      link.hidden = false;
-      link.href = info.url;
-      link.removeAttribute("download");
-      link.setAttribute("aria-label", `Open ${info.label} source page`);
-    }
-
     function syncTraceControls() {
       syncTraceHelp();
-      syncTraceDownload();
+      renderSources(root, selectedPreset(), metadata);
       syncBlockSizeControl();
     }
 

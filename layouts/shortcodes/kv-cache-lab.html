@@ -27,9 +27,9 @@
             <span id="kv-lab-preset-label">Trace preset</span>
             <button class="kv-lab-help" data-lab-trace-help type="button" aria-label="Trace preset details">?</button>
           </span>
-          <a class="kv-lab-trace-download" data-lab-trace-download href="#" target="_blank" rel="noopener" hidden>Open Source</a>
         </span>
         <select data-lab-input="preset" aria-labelledby="kv-lab-preset-label"></select>
+        <p class="kv-lab-sources" data-lab-sources hidden></p>
       </div>
 
       <div class="kv-lab-field">
@@ -105,7 +105,6 @@
       </div>
 
       <p class="kv-lab-note" data-lab-output="note"></p>
-      <p class="kv-lab-sources" data-lab-sources></p>
     </div>
   </div>
 </section>
@@ -362,30 +361,6 @@
     pointer-events: auto;
   }
 
-  .kv-lab-trace-download {
-    flex: none;
-    border: 1px solid #cbd5e1;
-    border-radius: 6px;
-    background: #fff;
-    color: var(--lab-ink);
-    font-size: 0.72rem;
-    font-weight: 750;
-    line-height: 1;
-    padding: 0.35rem 0.5rem;
-    text-decoration: none;
-    white-space: nowrap;
-  }
-
-  .kv-lab-trace-download:hover {
-    border-color: var(--lab-blue);
-    color: var(--lab-blue);
-    text-decoration: none;
-  }
-
-  .kv-lab-trace-download[hidden] {
-    display: none !important;
-  }
-
   .kv-lab-controls [hidden] {
     display: none !important;
   }
@@ -553,8 +528,7 @@
   .kv-lab-shell[data-state="calculating"] .kv-lab-metrics,
   .kv-lab-shell[data-state="calculating"] .kv-lab-chart-panel,
   .kv-lab-shell[data-state="calculating"] .kv-lab-derived-charts,
-  .kv-lab-shell[data-state="calculating"] .kv-lab-note,
-  .kv-lab-shell[data-state="calculating"] .kv-lab-sources {
+  .kv-lab-shell[data-state="calculating"] .kv-lab-note {
     opacity: 0.55;
     transition: opacity 120ms ease;
   }
@@ -653,6 +627,13 @@
   .kv-lab-sources a:hover {
     color: #0c4a6e;
     text-decoration: underline;
+  }
+
+  .kv-lab-controls .kv-lab-sources {
+    font-size: 0.74rem;
+    font-weight: 500;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
   }
 
   @media (max-width: 56rem) {
