@@ -36,7 +36,7 @@ header:
     align: "center"
     fixed_to_top: true
     logo:
-      text: "KVCache.ai"
+      text: "KVCache.AI"
       # Logo filename in `assets/media/` folder
       filename: "icon_1.png"
     show_search: false

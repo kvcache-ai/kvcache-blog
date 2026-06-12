@@ -49,14 +49,14 @@
   const POLICY_LABELS = { fifo: "FIFO", lru: "LRU", optimal: "Optimal" };
   const POLICY_COLORS = { fifo: "#2563eb", lru: "#059669", optimal: "#d97706" };
   const POLICY_HELP = {
-    fifo: "Evicts the oldest cached block first.",
+    fifo: "Block-level FIFO. Evicts the oldest cached block first.",
     lru: "Evicts the least recently used cached block first.",
-    optimal: "Belady/MIN computed with full knowledge of the future trace. Evicts the block whose next use is farthest away, or a block that will never be used again. Theoretical upper bound, not an online policy.",
+    optimal: "Prefix-trie Belady/MIN with bypass. Uses the future trace to evict the leaf whose next use is farthest away, or skip admission when the new leaf has lower future value.",
   };
   const POLICY_TOOLTIP_LINES = {
-    fifo: ["Evicts the oldest cached", "block first."],
+    fifo: ["Block-level FIFO.", "Evicts the oldest cached block."],
     lru: ["Evicts the least recently used", "cached block first."],
-    optimal: ["Belady/MIN: evict farthest future/unused block; theoretical upper bound."],
+    optimal: ["Prefix-trie Belady/MIN with bypass.", "Evicts farthest future leaf or skips admission."],
   };
   const SOURCE_LABELS = {
     mooncake_fast25: "Mooncake FAST25 Tool&Agent",
@@ -522,7 +522,7 @@
       }
       return {
         presetId: UPLOAD_PRESET_ID,
-        presetLabel: opts.label || "Uploaded trace",
+        presetLabel: opts.label || "Customized trace",
         sourceKind: "hash",
         blockSize,
         __flat: stream.finalize(uniqueBlocks, requestCount),
@@ -2402,7 +2402,8 @@
       ["Warmup skipped", formatInteger(warmupRequests)],
       ["Avg input tokens", formatNumber(averageInputTokens, 0)],
     ];
-    if (Number.isFinite(Number(summary.timeSpanSeconds)) && Number(summary.timeSpanSeconds) > 0) {
+    const isUploadTrace = trace && trace.presetId === UPLOAD_PRESET_ID;
+    if (!isUploadTrace && Number.isFinite(Number(summary.timeSpanSeconds)) && Number(summary.timeSpanSeconds) > 0) {
       metrics.push(["Loaded time span", formatDuration(Number(summary.timeSpanSeconds))]);
     }
     if (Number.isFinite(Number(sweep.reuseCeiling))) metrics.push(["Hit rate ceiling", formatPercent(Number(sweep.reuseCeiling))]);
@@ -2426,7 +2427,7 @@
     clearSvg(svg);
     const width = 780;
     const height = 380;
-    const margin = { top: 42, right: 32, bottom: 54, left: 64 };
+    const margin = { top: 42, right: 36, bottom: 62, left: 76 };
     const plotWidth = width - margin.left - margin.right;
     const plotHeight = height - margin.top - margin.bottom;
     const xScale = (index) => margin.left + (index / Math.max(1, sweep.points.length - 1)) * plotWidth;
@@ -2615,12 +2616,12 @@
     svg.onmouseleave = hideTooltip;
     svg.appendChild(tooltip);
 
-    const yLabelX = 13;
-    const yLabel = svgNode("text", { x: yLabelX, y: margin.top + plotHeight / 2, transform: `rotate(-90 ${yLabelX} ${margin.top + plotHeight / 2})`, "text-anchor": "middle", "font-size": 14, fill: "#475569", "font-weight": 700 });
+    const yLabelX = 18;
+    const yLabel = svgNode("text", { x: yLabelX, y: margin.top + plotHeight / 2, transform: `rotate(-90 ${yLabelX} ${margin.top + plotHeight / 2})`, "text-anchor": "middle", "font-size": 16, fill: "#475569", "font-weight": 700 });
     yLabel.textContent = "KV Cache Hit Rate";
     svg.appendChild(yLabel);
 
-    const xLabel = svgNode("text", { x: margin.left + plotWidth / 2, y: height - 6, "text-anchor": "middle", "font-size": 14, fill: "#475569", "font-weight": 700 });
+    const xLabel = svgNode("text", { x: margin.left + plotWidth / 2, y: height - 6, "text-anchor": "middle", "font-size": 16, fill: "#475569", "font-weight": 700 });
     xLabel.textContent = "KV cache budget";
     svg.appendChild(xLabel);
   }
@@ -2641,7 +2642,7 @@
     const valueFor = opts.valueFor || (() => 0);
     const width = 780;
     const height = 380;
-    const margin = { top: 42, right: 32, bottom: 54, left: 72 };
+    const margin = { top: 42, right: 36, bottom: 62, left: 84 };
     const plotWidth = width - margin.left - margin.right;
     const plotHeight = height - margin.top - margin.bottom;
     const values = [];
@@ -2822,12 +2823,12 @@
     svg.onmouseleave = hideTooltip;
     svg.appendChild(tooltip);
 
-    const yLabelX = 15;
-    const yLabel = svgNode("text", { x: yLabelX, y: margin.top + plotHeight / 2, transform: `rotate(-90 ${yLabelX} ${margin.top + plotHeight / 2})`, "text-anchor": "middle", "font-size": 14, fill: "#475569", "font-weight": 700 });
+    const yLabelX = 20;
+    const yLabel = svgNode("text", { x: yLabelX, y: margin.top + plotHeight / 2, transform: `rotate(-90 ${yLabelX} ${margin.top + plotHeight / 2})`, "text-anchor": "middle", "font-size": 16, fill: "#475569", "font-weight": 700 });
     yLabel.textContent = opts.yTitle || "";
     svg.appendChild(yLabel);
 
-    const xLabel = svgNode("text", { x: margin.left + plotWidth / 2, y: height - 6, "text-anchor": "middle", "font-size": 14, fill: "#475569", "font-weight": 700 });
+    const xLabel = svgNode("text", { x: margin.left + plotWidth / 2, y: height - 6, "text-anchor": "middle", "font-size": 16, fill: "#475569", "font-weight": 700 });
     xLabel.textContent = "KV cache budget";
     svg.appendChild(xLabel);
   }
@@ -3287,7 +3288,7 @@
     // Keep the File itself (never read it into a string on the main thread); the
     // worker streams + gzip-decompresses + parses it incrementally.
     function loadUploadFile(file, isGzip, detected) {
-      const label = file.name || "Uploaded trace";
+      const label = file.name || "Customized trace";
       uploadState = {
         file,
         isGzip,
@@ -3299,7 +3300,7 @@
       if (uploadBlockSizeInput && !positiveIntegerValue(detected)) {
         uploadBlockSizeInput.value = String(defaultBlockSize());
       }
-      setUploadOption(`Uploaded: ${label}`);
+      setUploadOption(`Customized: ${label}`);
       if (uploadClear) uploadClear.hidden = false;
       populateFamilies(inputs.modelFamily.value);
       populateModels(inputs.model.value);

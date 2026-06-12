@@ -226,7 +226,7 @@
       wasmTraceKey = message.traceKey;
     }
     const ex = wasmExports;
-    const meta = buildWasmMeta(ex, lab, (message.uploadOptions && message.uploadOptions.label) || "Uploaded trace");
+    const meta = buildWasmMeta(ex, lab, (message.uploadOptions && message.uploadOptions.label) || "Customized trace");
     const planned = lab.planSweepTasks(meta, message.model, message.settings || {});
     const total = planned.tasks.length;
     let done = 0;

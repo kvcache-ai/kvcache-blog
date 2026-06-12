@@ -24,8 +24,8 @@
       <div class="kv-lab-field">
         <span class="kv-lab-field-heading">
           <span class="kv-lab-label-help">
-            <span id="kv-lab-preset-label">Trace preset</span>
-            <button class="kv-lab-help" data-lab-trace-help type="button" aria-label="Trace preset details">?</button>
+            <span id="kv-lab-preset-label">Trace</span>
+            <button class="kv-lab-help" data-lab-trace-help type="button" aria-label="Trace details">?</button>
           </span>
         </span>
         <select data-lab-input="preset" aria-labelledby="kv-lab-preset-label"></select>
@@ -70,7 +70,13 @@
 
       <div class="kv-lab-policy-note">
         <strong>KV Cache Eviction</strong>
-        <p>When adding a new block would exceed the selected memory budget, the simulator evicts one cached block based on the following policies: <span class="kv-lab-policy-term" tabindex="0" aria-label="FIFO eviction policy: first in, first out evicts the block that entered the cache earliest." data-lab-tooltip="First in, first out: evicts the block that entered the cache earliest.">FIFO</span>, <span class="kv-lab-policy-term" tabindex="0" aria-label="LRU eviction policy: least recently used evicts the block that has gone unused the longest." data-lab-tooltip="Least recently used: evicts the block that has gone unused the longest.">LRU</span>, or <span class="kv-lab-policy-term" tabindex="0" aria-label="Optimal eviction policy: evicts the block whose next reuse is farthest in the future." data-lab-tooltip="Evicts the block whose next reuse is farthest in the future. This is an ideal offline baseline.">Optimal</span>.</p>
+        <p>When adding a new block would exceed the selected memory budget, the simulator evicts one cached block based on the following policies: <span class="kv-lab-policy-term" tabindex="0" aria-label="FIFO eviction policy: block-level first in, first out evicts the block that entered the cache earliest." data-lab-tooltip="Block-level first in, first out: evicts the block that entered the cache earliest.">FIFO</span>, <span class="kv-lab-policy-term" tabindex="0" aria-label="LRU eviction policy: least recently used evicts the block that has gone unused the longest." data-lab-tooltip="Least recently used: evicts the block that has gone unused the longest.">LRU</span>, or <span class="kv-lab-policy-term" tabindex="0" aria-label="Optimal eviction policy: prefix-trie Belady with bypass." data-lab-tooltip="Prefix-trie Belady/MIN with bypass: evicts the farthest-future leaf or skips admission. This is an ideal offline baseline.">Optimal</span>.</p>
+      </div>
+
+      <div class="kv-lab-cta-note">
+        <p>Want to see the KV cache memory breakdown? Try our <a href="https://kvcache.ai/tools/kv-cache-calculator/">KV Cache Size Calculator</a>.</p>
+        <p>Want to scale KV cache storage across your inference cluster? Try <a href="https://github.com/kvcache-ai/Mooncake">Mooncake</a>.</p>
+        <p>Found an issue or have feedback? <a href="https://github.com/kvcache-ai/kvcache-blog/issues">Open an issue</a> and let us know.</p>
       </div>
     </form>
 
@@ -341,6 +347,35 @@
     margin: 0;
   }
 
+  .kv-lab-cta-note {
+    margin-top: 0.1rem;
+    padding-top: 0.85rem;
+    border-top: 1px solid var(--lab-line);
+    color: var(--lab-muted);
+    font-size: 0.76rem;
+    font-weight: 500;
+    line-height: 1.45;
+  }
+
+  .kv-lab-cta-note p {
+    margin: 0 0 0.4rem;
+  }
+
+  .kv-lab-cta-note p:last-child {
+    margin-bottom: 0;
+  }
+
+  .kv-lab-cta-note a {
+    color: #0369a1;
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .kv-lab-cta-note a:hover {
+    color: #0c4a6e;
+    text-decoration: underline;
+  }
+
   .kv-lab-field-heading {
     display: flex;
     align-items: center;
@@ -547,7 +582,12 @@
   }
 
   .kv-lab-metric-help::after {
+    top: calc(100% + 0.45rem);
+    right: 0;
+    left: auto;
+    width: min(21rem, calc(100vw - 2rem));
     max-width: min(21rem, calc(100vw - 2rem));
+    transform: none;
   }
 
   .kv-lab-metrics {
@@ -652,6 +692,13 @@
       width: 18rem;
       max-width: calc(100vw - 2rem);
       transform: translateX(-50%);
+    }
+
+    .kv-lab-metric-help::after {
+      right: 0;
+      left: auto;
+      width: min(18rem, calc(100vw - 2rem));
+      transform: none;
     }
   }
 
