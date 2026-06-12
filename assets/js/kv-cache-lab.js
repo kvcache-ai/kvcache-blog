@@ -1428,9 +1428,13 @@
       const cacheBlocks = cacheBlocksForGiB(gib, bytesPerBlock);
       if (uniqueBlocks > 0 && cacheBlocks > uniqueBlocks) break;
       const results = {};
+      let underfilled = false;
       policies.forEach((policy) => {
-        results[policy] = simulatePlanPolicy(plan, cacheBlocks, policy);
+        const result = simulatePlanPolicy(plan, cacheBlocks, policy);
+        results[policy] = result;
+        if (!result || result.measurementMode === "underfilled_at_window") underfilled = true;
       });
+      if (underfilled) break;
       if (typeof onProgress === "function") onProgress(pointIndex + 1, totalPoints);
       points.push({ gib, cacheBlocks, results });
     }
@@ -2171,10 +2175,37 @@
     const promise = new Promise((resolve, reject) => {
       let trace = null;
       let simulationTrace = null;
+      let plan = null;
       let point = null;
       let pointIndex = 0;
       let policyIndex = 0;
       let sweep = null;
+
+      function finish() {
+        delete sweep.values;
+        delete sweep.uniqueBlocks;
+        if (input.settings && input.settings.computeCeiling) {
+          const ceiling = infiniteCacheReuse(simulationTrace, {
+            warmupFraction: input.settings.warmupFraction,
+          });
+          sweep.reuseCeiling = ceiling.hitRate;
+          sweep.warmupRequests = ceiling.warmupRequests;
+        }
+        let timeStats = null;
+        try {
+          timeStats = computeTimeSeries(trace);
+        } catch (error) {
+          timeStats = null;
+        }
+        resolve({
+          jobId: input.jobId,
+          cacheKey: input.cacheKey,
+          preset: input.preset,
+          trace,
+          sweep,
+          timeStats,
+        });
+      }
 
       function step() {
         if (cancelled) return;
@@ -2191,6 +2222,9 @@
             simulationTrace = trace.__flat
               ? trace
               : Object.assign({}, trace, { normalizedRequests: normalizeRequests(trace) });
+            plan = buildExecutionPlan(simulationTrace, {
+              warmupFraction: input.settings && input.settings.warmupFraction,
+            });
             const blockSize = toPositiveInteger(input.settings && input.settings.blockSize, trace.blockSize || DEFAULT_BLOCK_SIZE);
             const accountingSettings = Object.assign({}, input.settings || {}, { estimateTokens: traceEstimateTokens(trace, input.model) });
             const bytesPerToken = estimateBytesPerToken(input.model, accountingSettings);
@@ -2201,21 +2235,29 @@
               points: [],
               policies: (input.settings && input.settings.policies) || POLICIES,
               values: capacityValues(input.settings || {}),
+              uniqueBlocks: plan.uniqueBlocks,
             };
           }
 
           if (!point) {
             const gib = sweep.values[pointIndex];
-            point = { gib, cacheBlocks: cacheBlocksForGiB(gib, sweep.bytesPerBlock), results: {} };
+            const cacheBlocks = cacheBlocksForGiB(gib, sweep.bytesPerBlock);
+            if (sweep.uniqueBlocks > 0 && cacheBlocks > sweep.uniqueBlocks) {
+              finish();
+              return;
+            }
+            point = { gib, cacheBlocks, results: {} };
           }
 
           const policy = sweep.policies[policyIndex];
-          point.results[policy] = simulatePolicy(simulationTrace, point.cacheBlocks, policy, {
-            warmupFraction: input.settings && input.settings.warmupFraction,
-          });
+          point.results[policy] = simulatePlanPolicy(plan, point.cacheBlocks, policy);
           policyIndex += 1;
 
           if (policyIndex >= sweep.policies.length) {
+            if (Object.values(point.results).some((result) => !result || result.measurementMode === "underfilled_at_window")) {
+              finish();
+              return;
+            }
             sweep.points.push(point);
             point = null;
             policyIndex = 0;
@@ -2224,28 +2266,7 @@
           }
 
           if (pointIndex >= sweep.values.length) {
-            delete sweep.values;
-            if (input.settings && input.settings.computeCeiling) {
-              const ceiling = infiniteCacheReuse(simulationTrace, {
-                warmupFraction: input.settings.warmupFraction,
-              });
-              sweep.reuseCeiling = ceiling.hitRate;
-              sweep.warmupRequests = ceiling.warmupRequests;
-            }
-            let timeStats = null;
-            try {
-              timeStats = computeTimeSeries(trace);
-            } catch (error) {
-              timeStats = null;
-            }
-            resolve({
-              jobId: input.jobId,
-              cacheKey: input.cacheKey,
-              preset: input.preset,
-              trace,
-              sweep,
-              timeStats,
-            });
+            finish();
             return;
           }
           timer = setTimeout(step, FALLBACK_STEP_DELAY_MS);
