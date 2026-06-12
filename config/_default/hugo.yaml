@@ -3,7 +3,7 @@
 # Hugo Documentation: https://gohugo.io/getting-started/configuration/#all-configuration-settings
 # This file is formatted using YAML syntax - learn more at https://learnxinyminutes.com/docs/yaml/
 
-title: "KVCache.ai" # Website name
+title: "KVCache.AI" # Website name
 baseURL: 'https://kvcache.ai/' # Website URL
 
 ############################

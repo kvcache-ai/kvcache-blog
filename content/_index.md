@@ -10,7 +10,7 @@ design:
 sections:
   - block: hero
     content:
-      title: KVCache.ai
+      title: KVCache.AI
       text: |
         KVCache.AI is dedicated to advancing the state of the art in Large Language Model (LLM) inference optimization. In decoder-only Transformer models, data from diverse modalities can ultimately be transformed into KVCache, making it a central component of modern LLM serving systems. As a result, KVCache has become a key focus for improving inference efficiency through techniques such as caching, scheduling, compression, offloading, and disaggregated serving architectures.
 

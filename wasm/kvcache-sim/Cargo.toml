@@ -1,0 +1,15 @@
+[package]
+name = "kvcache-sim"
+version = "0.1.0"
+edition = "2021"
+description = "WASM trace processor for the KV Cache Lab: streams JSONL, interns 64-bit block hashes, and runs FIFO/LRU/Optimal cache sweeps entirely in linear memory so multi-GB traces load fully in the browser."
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

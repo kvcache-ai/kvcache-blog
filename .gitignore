@@ -6,3 +6,11 @@ resources/
 public/
 jsconfig.json
 hugo_stats.json
+
+# WASM build cache
+wasm/kvcache-sim/target/
+
+# Local Hugo server
+.hugo_cache/
+server.log
+server.err.log

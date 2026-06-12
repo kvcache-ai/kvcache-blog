@@ -1,0 +1,766 @@
+{{ $modelsData := site.Data.kv_cache_calculator.models }}
+{{ $labData := site.Data.kv_cache_lab.presets }}
+{{ $precomputedData := site.Data.kv_cache_lab.precomputed }}
+{{ $payload := dict "models" $modelsData.models "precision_options" $modelsData.precision_options "indexer_precision_options" $modelsData.indexer_precision_options "lab" $labData }}
+{{ $precomputedJson := resources.FromString "data/kv-cache-lab-precomputed.json" ($precomputedData | jsonify) | fingerprint }}
+{{ $calculatorScript := resources.Get "js/kv-cache-calculator.js" | minify | fingerprint }}
+{{ $labScript := resources.Get "js/kv-cache-lab.js" | minify | fingerprint }}
+{{ $workerScript := resources.Get "js/kv-cache-lab-worker.js" | minify | fingerprint }}
+{{ $wasmModule := resources.Get "wasm/kvcache-sim.wasm" | fingerprint }}
+
+<section id="kv-cache-lab" class="kv-lab-shell" data-state="loading">
+  <div class="kv-lab-grid">
+    <form class="kv-lab-controls" onsubmit="return false;">
+      <div class="kv-lab-field">
+        <span class="kv-lab-field-heading">
+          <span class="kv-lab-label-help">
+            <span id="kv-lab-preset-label">Trace</span>
+            <button class="kv-lab-help" data-lab-trace-help type="button" aria-label="Trace details">?</button>
+          </span>
+        </span>
+        <select data-lab-input="preset" aria-labelledby="kv-lab-preset-label"></select>
+        <p class="kv-lab-sources" data-lab-sources hidden></p>
+      </div>
+
+      <div class="kv-lab-field">
+        <span class="kv-lab-label-help">
+          <span id="kv-lab-block-size-label">Block size</span>
+          <button class="kv-lab-help" type="button" aria-label="Block size details" data-lab-tooltip="Token granularity used to group prompt tokens into KV cache blocks. Presets and traces with block_size keep their source value; uploads without it use this integer.">?</button>
+        </span>
+        <input data-lab-input="blockSize" data-lab-upload-blocksize type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-labelledby="kv-lab-block-size-label">
+      </div>
+
+      <div class="kv-lab-field">
+        <span>Customize trace</span>
+        <label class="kv-lab-upload-zone" data-lab-upload-zone>
+          <input class="kv-lab-upload-input" data-lab-upload-input type="file" accept=".jsonl,.jsonl.gz,.ndjson,.gz">
+          <span class="kv-lab-upload-action">Choose JSONL / JSONL.GZ</span>
+          <span class="kv-lab-upload-hint">Drop or choose a JSONL / JSONL.GZ trace. Each valid line needs <code>hash_ids</code> and <code>input_length</code>; <code>block_size</code> is optional when set above. <code>hash_ids</code> must be decimal integers or decimal strings. Requests are replayed in file order, so sort production traces by timestamp first. <strong>Computed locally in your browser.</strong></span>
+        </label>
+        <div class="kv-lab-upload-footer">
+          <span class="kv-lab-upload-status" data-lab-upload-status></span>
+          <button class="kv-lab-upload-clear" data-lab-upload-clear type="button" hidden>Clear</button>
+        </div>
+        <div class="kv-lab-upload-example">
+          <p><strong>Example</strong></p>
+          <pre><code>{"block_size":64,"hash_ids":[2001,2002],"input_length":128}
+{"block_size":64,"hash_ids":[2003,2004],"input_length":128}
+{"block_size":64,"hash_ids":[2005,2006],"input_length":128}</code></pre>
+          <p>Do you know you can deploy it locally? Check our <a href="https://github.com/kvcache-ai/kvcache-blog">repo</a>.</p>
+        </div>
+      </div>
+
+      <label>
+        <span>Model family</span>
+        <select data-lab-input="modelFamily"></select>
+      </label>
+
+      <label>
+        <span>Model</span>
+        <select data-lab-input="model"></select>
+      </label>
+
+      <label>
+        <span>KV precision</span>
+        <select data-lab-input="precision"></select>
+      </label>
+
+      <label data-lab-indexer-control hidden>
+        <span>Indexer precision</span>
+        <select data-lab-input="indexerPrecision"></select>
+      </label>
+
+      <label class="kv-lab-checkbox-row" data-lab-draft-control hidden>
+        <input data-lab-input="includeDraftKvCache" type="checkbox">
+        <span>Include draft KV cache</span>
+      </label>
+
+      <div class="kv-lab-policy-note">
+        <strong>KV Cache Eviction</strong>
+        <p>When adding a new block would exceed the selected memory budget, the simulator evicts one cached block based on the following policies: <span class="kv-lab-policy-term" tabindex="0" aria-label="FIFO eviction policy: block-level first in, first out evicts the block that entered the cache earliest." data-lab-tooltip="Block-level first in, first out: evicts the block that entered the cache earliest.">FIFO</span>, <span class="kv-lab-policy-term" tabindex="0" aria-label="LRU eviction policy: least recently used evicts the block that has gone unused the longest." data-lab-tooltip="Least recently used: evicts the block that has gone unused the longest.">LRU</span>, or <span class="kv-lab-policy-term" tabindex="0" aria-label="Optimal eviction policy: prefix-trie Belady with bypass." data-lab-tooltip="Prefix-trie Belady/MIN with bypass: evicts the farthest-future leaf or skips admission. This is an ideal offline baseline.">Optimal</span>.</p>
+      </div>
+
+      <div class="kv-lab-cta-note">
+        <p>Want to see the KV cache memory breakdown? Try our <a href="https://kvcache.ai/tools/kv-cache-size-calculator/">KV Cache Size Calculator</a>.</p>
+        <p>Want to scale KV cache storage across your inference cluster? Try <a href="https://github.com/kvcache-ai/Mooncake">Mooncake</a>.</p>
+        <p>Found an issue or have feedback? <a href="https://github.com/kvcache-ai/kvcache-blog/issues">Open an issue</a> and let us know.</p>
+      </div>
+    </form>
+
+    <div class="kv-lab-results">
+      <div class="kv-lab-status" data-lab-status role="status" aria-live="polite">Calculating...</div>
+
+      <div class="kv-lab-progress" data-lab-progress hidden role="progressbar" aria-label="Trace analysis progress">
+        <div class="kv-lab-progress-track">
+          <div class="kv-lab-progress-fill" data-lab-progress-fill></div>
+        </div>
+        <span class="kv-lab-progress-text" data-lab-progress-text></span>
+      </div>
+
+      <div class="kv-lab-metrics" data-lab-metrics></div>
+
+      <div class="kv-lab-chart-panel">
+        <div class="kv-lab-chart-heading">
+          <h2>KV Cache Hit Rate</h2>
+          <button class="kv-lab-help" type="button" aria-label="KV Cache Hit Rate calculation" data-lab-tooltip="The fraction of KV cache blocks that can be reused from previous requests while processing the input prompt, reducing redundant computation.">?</button>
+        </div>
+        <svg class="kv-lab-chart" data-lab-chart viewBox="0 0 780 380" role="img" aria-label="KV cache hit-rate curve"></svg>
+      </div>
+
+      <div class="kv-lab-derived-charts" data-lab-derived-charts hidden>
+        <div class="kv-lab-chart-panel kv-lab-derived-panel">
+          <div class="kv-lab-chart-heading">
+            <h2>Ideal Prefill Throughput Speedup</h2>
+            <button class="kv-lab-help" type="button" aria-label="Ideal Prefill Throughput Speedup" data-lab-tooltip="This figure shows the ideal prefill throughput speedup. Compared with no KV cache hits, a hit rate of (r) reduces the required prefill computation to (1 - r), resulting in a theoretical speedup of (1 / (1 - r)).">?</button>
+          </div>
+          <svg class="kv-lab-chart" data-lab-throughput-chart viewBox="0 0 780 380" role="img" aria-label="Ideal prefill throughput speedup curve"></svg>
+        </div>
+      </div>
+
+      <p class="kv-lab-note" data-lab-output="note"></p>
+    </div>
+  </div>
+</section>
+
+<script type="application/json" id="kv-cache-lab-data">{{ $payload | jsonify | safeJS }}</script>
+<script src="{{ $calculatorScript.RelPermalink }}" integrity="{{ $calculatorScript.Data.Integrity }}"></script>
+<script src="{{ $labScript.RelPermalink }}" integrity="{{ $labScript.Data.Integrity }}"></script>
+<script>
+  window.KVCacheLab.mount(
+    "kv-cache-lab",
+    JSON.parse(document.getElementById("kv-cache-lab-data").textContent),
+    {
+      workerUrl: "{{ $workerScript.RelPermalink }}",
+      calculatorUrl: "{{ $calculatorScript.RelPermalink }}",
+      labUrl: "{{ $labScript.RelPermalink }}",
+      wasmUrl: "{{ $wasmModule.RelPermalink }}",
+      precomputedUrl: "{{ $precomputedJson.RelPermalink }}"
+    }
+  );
+</script>
+
+<style>
+  .kv-lab-shell {
+    --lab-ink: #111827;
+    --lab-muted: #64748b;
+    --lab-line: #dbe4ee;
+    --lab-panel: #f8fafc;
+    --lab-soft: #eef6ff;
+    --lab-blue: #2563eb;
+    width: min(100%, 86rem);
+    margin: 0 auto;
+    color: var(--lab-ink);
+  }
+
+  body:has(#kv-cache-lab) .hb-toc {
+    display: none !important;
+  }
+
+  body:has(#kv-cache-lab) article > main {
+    max-width: 94rem;
+  }
+
+  body:has(#kv-cache-lab) article h1 {
+    text-align: center;
+  }
+
+  .kv-lab-grid {
+    display: grid;
+    grid-template-columns: minmax(18rem, 25rem) minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+  }
+
+  .kv-lab-controls,
+  .kv-lab-results {
+    min-width: 0;
+    border: 1px solid var(--lab-line);
+    border-radius: 8px;
+    background: var(--lab-panel);
+  }
+
+  .kv-lab-controls {
+    display: grid;
+    gap: 0.85rem;
+    padding: 1rem;
+  }
+
+  .kv-lab-controls label,
+  .kv-lab-field {
+    display: grid;
+    gap: 0.35rem;
+    min-width: 0;
+    margin: 0;
+    color: var(--lab-muted);
+    font-size: 0.82rem;
+    font-weight: 650;
+  }
+
+  .kv-lab-controls select,
+  .kv-lab-controls input {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    min-height: 2.65rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 7px;
+    background: #fff;
+    color: var(--lab-ink);
+    font: inherit;
+    font-size: 0.94rem;
+    padding: 0.5rem 0.65rem;
+  }
+
+  .kv-lab-controls select:focus,
+  .kv-lab-controls input:focus {
+    outline: 2px solid rgba(37, 99, 235, 0.2);
+    border-color: var(--lab-blue);
+  }
+
+  .kv-lab-controls input:disabled {
+    background: #f1f5f9;
+    color: var(--lab-muted);
+    cursor: not-allowed;
+  }
+
+  .kv-lab-upload-zone {
+    position: relative;
+    display: grid;
+    gap: 0.35rem;
+    min-width: 0;
+    overflow: hidden;
+    cursor: pointer;
+    border: 1.5px dashed #c2d2e6;
+    border-radius: 8px;
+    background: #fff;
+    padding: 0.65rem;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+
+  .kv-lab-upload-zone[data-dragging="true"] {
+    border-color: var(--lab-blue);
+    background: var(--lab-soft);
+  }
+
+  .kv-lab-controls .kv-lab-upload-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    border: none;
+    padding: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .kv-lab-upload-action {
+    width: fit-content;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #fff;
+    color: var(--lab-ink);
+    font-size: 0.78rem;
+    font-weight: 700;
+    line-height: 1;
+    padding: 0.42rem 0.55rem;
+  }
+
+  .kv-lab-upload-hint {
+    min-width: 0;
+    color: var(--lab-muted);
+    font-size: 0.74rem;
+    font-weight: 500;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .kv-lab-upload-hint strong {
+    color: var(--lab-ink);
+    font-weight: 800;
+  }
+
+  .kv-lab-upload-hint code {
+    color: var(--lab-ink);
+    font-size: 0.72rem;
+    overflow-wrap: anywhere;
+  }
+
+  .kv-lab-upload-hint code::before,
+  .kv-lab-upload-hint code::after {
+    content: none;
+  }
+
+  .kv-lab-upload-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .kv-lab-upload-status {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
+    color: var(--lab-muted);
+    font-size: 0.74rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .kv-lab-upload-example {
+    display: grid;
+    gap: 0.35rem;
+    min-width: 0;
+    color: var(--lab-muted);
+    font-size: 0.74rem;
+    font-weight: 500;
+    line-height: 1.35;
+  }
+
+  .kv-lab-upload-example pre {
+    min-width: 0;
+    max-width: 100%;
+    margin: 0.1rem 0 0;
+    padding: 0.55rem;
+    overflow-x: auto;
+    border: 1px solid var(--lab-line);
+    border-radius: 6px;
+    background: #f8fafc;
+    color: var(--lab-ink);
+    font-size: 0.66rem;
+    font-weight: 500;
+    line-height: 1.35;
+  }
+
+  .kv-lab-upload-example code {
+    white-space: pre;
+  }
+
+  .kv-lab-upload-example p {
+    margin: 0;
+  }
+
+  .kv-lab-upload-example strong {
+    color: var(--lab-ink);
+    font-weight: 750;
+  }
+
+  .kv-lab-upload-example a {
+    color: #0369a1;
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .kv-lab-upload-example a:hover {
+    color: #0c4a6e;
+    text-decoration: underline;
+  }
+
+  .kv-lab-controls .kv-lab-upload-clear {
+    width: auto;
+    min-height: auto;
+    flex: none;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #fff;
+    color: var(--lab-muted);
+    font-size: 0.74rem;
+    font-weight: 650;
+    padding: 0.25rem 0.6rem;
+    cursor: pointer;
+  }
+
+  .kv-lab-controls .kv-lab-upload-clear:hover {
+    border-color: var(--lab-blue);
+    color: var(--lab-blue);
+  }
+
+  .kv-lab-policy-note {
+    margin-top: 0.25rem;
+    padding-top: 0.85rem;
+    border-top: 1px solid var(--lab-line);
+    color: var(--lab-muted);
+    font-size: 0.76rem;
+    font-weight: 500;
+    line-height: 1.45;
+  }
+
+  .kv-lab-policy-note strong {
+    display: block;
+    margin-bottom: 0.25rem;
+    color: var(--lab-ink);
+    font-size: 0.82rem;
+    font-weight: 750;
+  }
+
+  .kv-lab-policy-note p {
+    margin: 0;
+  }
+
+  .kv-lab-cta-note {
+    margin-top: 0.1rem;
+    padding-top: 0.85rem;
+    border-top: 1px solid var(--lab-line);
+    color: var(--lab-muted);
+    font-size: 0.76rem;
+    font-weight: 500;
+    line-height: 1.45;
+  }
+
+  .kv-lab-cta-note p {
+    margin: 0 0 0.4rem;
+  }
+
+  .kv-lab-cta-note p:last-child {
+    margin-bottom: 0;
+  }
+
+  .kv-lab-cta-note a {
+    color: #0369a1;
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .kv-lab-cta-note a:hover {
+    color: #0c4a6e;
+    text-decoration: underline;
+  }
+
+  .kv-lab-field-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.65rem;
+    min-width: 0;
+  }
+
+  .kv-lab-label-help {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    width: fit-content;
+    pointer-events: none;
+  }
+
+  .kv-lab-label-help .kv-lab-help {
+    pointer-events: auto;
+  }
+
+  .kv-lab-controls [hidden] {
+    display: none !important;
+  }
+
+  .kv-lab-help {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    width: 1rem;
+    height: 1rem;
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    background: #fff;
+    color: var(--lab-muted);
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 800;
+    line-height: 1;
+    cursor: help;
+  }
+
+  .kv-lab-policy-term {
+    position: relative;
+    display: inline-block;
+    border-bottom: 1px dotted #94a3b8;
+    color: var(--lab-ink);
+    font-weight: 750;
+    cursor: help;
+  }
+
+  .kv-lab-policy-term:focus-visible {
+    outline: 2px solid rgba(37, 99, 235, 0.2);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  .kv-lab-help::after,
+  .kv-lab-policy-term::after {
+    display: none;
+    position: absolute;
+    z-index: 6;
+    top: 50%;
+    left: calc(100% + 0.45rem);
+    width: max-content;
+    max-width: min(25rem, calc(100vw - 2rem));
+    padding: 0.65rem 0.75rem;
+    border: 1px solid var(--lab-line);
+    border-radius: 7px;
+    background: #fff;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+    color: var(--lab-ink);
+    content: attr(data-lab-tooltip);
+    font-family: inherit;
+    font-size: 0.78rem;
+    font-weight: 550;
+    line-height: 1.45;
+    opacity: 0;
+    pointer-events: none;
+    text-align: left;
+    transform: translateY(-50%);
+    transition: opacity 0.12s ease;
+    white-space: normal;
+  }
+
+  .kv-lab-help:hover::after,
+  .kv-lab-help:focus-visible::after,
+  .kv-lab-policy-term:hover::after,
+  .kv-lab-policy-term:focus-visible::after,
+  .kv-lab-metric-help:hover::after,
+  .kv-lab-metric-help:focus-visible::after {
+    display: block;
+    opacity: 1;
+  }
+
+  .kv-lab-checkbox-row {
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 0.55rem;
+    color: var(--lab-ink);
+  }
+
+  .kv-lab-checkbox-row input {
+    width: 1rem;
+    min-height: 1rem;
+    padding: 0;
+  }
+
+  .kv-lab-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.65rem;
+  }
+
+  .kv-lab-row label {
+    font-size: 0.74rem;
+  }
+
+  .kv-lab-results {
+    display: grid;
+    gap: 1rem;
+    padding: 1rem;
+  }
+
+  .kv-lab-status {
+    display: none;
+    width: fit-content;
+    min-height: 1.8rem;
+    align-items: center;
+    border-radius: 999px;
+    background: #dbeafe;
+    color: #1d4ed8;
+    font-size: 0.78rem;
+    font-weight: 750;
+    padding: 0.25rem 0.65rem;
+  }
+
+  .kv-lab-shell[data-state="loading"] .kv-lab-status,
+  .kv-lab-shell[data-state="calculating"] .kv-lab-status,
+  .kv-lab-shell[data-state="error"] .kv-lab-status {
+    display: inline-flex;
+  }
+
+  .kv-lab-shell[data-state="error"] .kv-lab-status {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .kv-lab-progress {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin: 0.15rem 0 -0.25rem;
+  }
+
+  .kv-lab-progress[hidden] {
+    display: none;
+  }
+
+  .kv-lab-progress-track {
+    flex: 1;
+    height: 6px;
+    border-radius: 999px;
+    background: #e2e8f0;
+    overflow: hidden;
+  }
+
+  .kv-lab-progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    background: var(--lab-blue);
+    transition: width 120ms ease;
+  }
+
+  .kv-lab-progress-text {
+    flex: none;
+    min-width: 3.2rem;
+    text-align: right;
+    color: var(--lab-muted);
+    font-size: 0.76rem;
+    font-weight: 650;
+  }
+
+  .kv-lab-shell[data-state="calculating"] .kv-lab-metrics,
+  .kv-lab-shell[data-state="calculating"] .kv-lab-chart-panel,
+  .kv-lab-shell[data-state="calculating"] .kv-lab-derived-charts,
+  .kv-lab-shell[data-state="calculating"] .kv-lab-note {
+    opacity: 0.55;
+    transition: opacity 120ms ease;
+  }
+
+  .kv-lab-metrics span {
+    color: var(--lab-muted);
+    font-size: 0.82rem;
+    font-weight: 650;
+  }
+
+  .kv-lab-metric-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    width: fit-content;
+  }
+
+  .kv-lab-metric-help::after {
+    top: calc(100% + 0.45rem);
+    right: 0;
+    left: auto;
+    width: min(21rem, calc(100vw - 2rem));
+    max-width: min(21rem, calc(100vw - 2rem));
+    transform: none;
+  }
+
+  .kv-lab-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+    gap: 0.75rem;
+  }
+
+  .kv-lab-metrics div {
+    min-height: 4.8rem;
+    padding: 0.85rem;
+    border: 1px solid var(--lab-line);
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .kv-lab-metrics strong {
+    display: block;
+    margin-top: 0.35rem;
+    font-size: 1.12rem;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+
+  .kv-lab-chart-panel {
+    position: relative;
+    min-height: 24rem;
+    border: 1px solid var(--lab-line);
+    border-radius: 8px;
+    background: #fff;
+    overflow: visible;
+  }
+
+  .kv-lab-chart {
+    display: block;
+    width: 100%;
+    height: auto;
+    min-height: 22rem;
+  }
+
+  .kv-lab-derived-charts {
+    display: grid;
+    gap: 0.9rem;
+  }
+
+  .kv-lab-chart-heading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    margin: 0.85rem 1rem 0;
+    width: auto;
+  }
+
+  .kv-lab-chart-heading h2 {
+    margin: 0;
+    color: var(--lab-ink);
+    font-size: 1rem;
+    font-weight: 750;
+    letter-spacing: 0;
+  }
+
+  .kv-lab-note,
+  .kv-lab-sources {
+    margin: 0;
+    color: var(--lab-muted);
+    font-size: 0.88rem;
+    line-height: 1.55;
+  }
+
+  .kv-lab-sources a {
+    color: #0369a1;
+    font-weight: 650;
+    text-decoration: none;
+  }
+
+  .kv-lab-sources a:hover {
+    color: #0c4a6e;
+    text-decoration: underline;
+  }
+
+  .kv-lab-controls .kv-lab-sources {
+    font-size: 0.74rem;
+    font-weight: 500;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 56rem) {
+    .kv-lab-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .kv-lab-row {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .kv-lab-help::after,
+    .kv-lab-policy-term::after {
+      top: calc(100% + 0.4rem);
+      left: 50%;
+      width: 18rem;
+      max-width: calc(100vw - 2rem);
+      transform: translateX(-50%);
+    }
+
+    .kv-lab-metric-help::after {
+      right: 0;
+      left: auto;
+      width: min(18rem, calc(100vw - 2rem));
+      transform: none;
+    }
+  }
+
+  @media (max-width: 36rem) {
+    .kv-lab-row {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
