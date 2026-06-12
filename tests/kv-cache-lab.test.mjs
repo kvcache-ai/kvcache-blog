@@ -112,6 +112,26 @@ test("FIFO, LRU, and optimal policies produce known block hit rates", () => {
   assert.equal(optimal.totalTokens, 6);
 });
 
+test("uploaded traces use precompute-style contiguous prefix hit semantics by default", () => {
+  const jsonl = [
+    JSON.stringify({ block_size: 1, input_length: 2, hash_ids: ["A", "B"] }),
+    JSON.stringify({ block_size: 1, input_length: 3, hash_ids: ["A", "C", "B"] }),
+  ].join("\n");
+  const prefixTrace = parseUploadedTrace(jsonl, { blockSize: 0 });
+  const blockTrace = parseUploadedTrace(jsonl, { blockSize: 0, cacheSemantics: "block" });
+
+  const prefix = simulatePolicy(prefixTrace, 2, "lru", { warmupRequests: 1 });
+  const block = simulatePolicy(blockTrace, 3, "lru", { warmupRequests: 1 });
+
+  assert.equal(prefixTrace.cacheSemantics, "prefix");
+  assert.equal(prefix.hitTokens, 1);
+  assert.equal(prefix.totalTokens, 3);
+  assert.equal(prefix.hitRate, 1 / 3);
+  assert.equal(block.hitTokens, 2);
+  assert.equal(block.totalTokens, 3);
+  assert.equal(block.hitRate, 2 / 3);
+});
+
 test("warmup requests affect cache state but are excluded from hit-rate stats", () => {
   const trace = {
     blockSize: 1,
@@ -510,13 +530,18 @@ test("uploaded trace parser preserves string hash ids beyond JS safe integers", 
   assert.deepEqual(Array.from(trace.__flat.eventIds), [0, 1, 0]);
 });
 
-test("uploaded trace parser rejects unsafe JSON number hash ids", () => {
-  const jsonl = '{"timestamp":1,"block_size":64,"hash_ids":[9007199254740993],"input_length":64}';
+test("uploaded trace parser preserves unsafe JSON number hash ids from raw lines", () => {
+  const jsonl = [
+    '{"timestamp":1,"block_size":64,"hash_ids":[9007199254740993],"input_length":64}',
+    '{"timestamp":2,"block_size":64,"hash_ids":[9007199254740994],"input_length":64}',
+    '{"timestamp":3,"block_size":64,"hash_ids":[9007199254740993],"input_length":64}',
+  ].join("\n");
 
-  assert.throws(
-    () => parseUploadedTrace(jsonl, { label: "unsafe number id" }),
-    /unsafe JSON number.*strings|WASM exact-u64/,
-  );
+  const trace = parseUploadedTrace(jsonl, { label: "unsafe number id" });
+
+  assert.equal(trace.summary.requests, 3);
+  assert.equal(trace.summary.uniqueBlocks, 2);
+  assert.deepEqual(Array.from(trace.__flat.eventIds), [0, 1, 0]);
 });
 
 test("uploaded trace head inspection reports schema problems early", () => {

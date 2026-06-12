@@ -373,12 +373,56 @@
     if (typeof value === "number") {
       if (!Number.isSafeInteger(value)) {
         throw new Error(
-          'Uploaded trace hash_ids include an unsafe JSON number. Store large hash ids as strings, or use the WASM exact-u64 upload path.',
+          "Uploaded trace hash_ids include an unsafe JSON number that could not be recovered from the raw JSONL line.",
         );
       }
       return String(value);
     }
     return String(value);
+  }
+
+  function extractRawHashIdTokens(line) {
+    const match = /"hash_ids"\s*:\s*\[/.exec(line);
+    if (!match) return null;
+    const tokens = [];
+    let index = match.index + match[0].length;
+    const length = line.length;
+    function skipWhitespace() {
+      while (index < length && /\s/.test(line[index])) index += 1;
+    }
+    for (;;) {
+      skipWhitespace();
+      if (index >= length || line[index] === "]") break;
+      if (line[index] === '"') {
+        const start = index;
+        index += 1;
+        while (index < length) {
+          const ch = line[index];
+          index += 1;
+          if (ch === "\\") {
+            index += 1;
+          } else if (ch === '"') {
+            break;
+          }
+        }
+        try {
+          tokens.push(JSON.parse(line.slice(start, index)));
+        } catch (error) {
+          tokens.push(line.slice(start + 1, Math.max(start + 1, index - 1)));
+        }
+      } else {
+        const start = index;
+        while (index < length && line[index] !== "," && line[index] !== "]") index += 1;
+        tokens.push(line.slice(start, index).trim());
+      }
+      skipWhitespace();
+      if (line[index] === ",") {
+        index += 1;
+        continue;
+      }
+      if (line[index] === "]") break;
+    }
+    return tokens;
   }
 
   // String-keyed fallback interner: preserves string hash ids exactly and keeps
@@ -406,6 +450,7 @@
   function createTraceIngester(options) {
     const opts = options || {};
     let blockSize = toInteger(opts.blockSize, 0);
+    const cacheSemantics = opts.cacheSemantics || "prefix";
     const maxRecords = toInteger(opts.maxRecords, 0);
     const maxEvents = toInteger(opts.maxEvents, 0);
     // When capping, pre-size near the cap so the event arrays don't grow by
@@ -464,13 +509,22 @@
       }
       const hashIds = record.hash_ids;
       const count = hashIds.length;
+      const rawHashIds = hashIds.some((id) => typeof id === "number" && !Number.isSafeInteger(id))
+        ? extractRawHashIdTokens(line)
+        : null;
       requestStarts.push(eventCount);
       const timestamp = toNumber(record.timestamp, 0);
       timestamps.push(timestamp);
       if (timestamp < tMin) tMin = timestamp;
       if (timestamp > tMax) tMax = timestamp;
       for (let blockIndex = 0; blockIndex < count; blockIndex += 1) {
-        const intId = interner.intern(hashIds[blockIndex]);
+        const parsedId = hashIds[blockIndex];
+        const recoveredRawId = rawHashIds ? rawHashIds[blockIndex] : undefined;
+        const rawId =
+          typeof parsedId === "number" && !Number.isSafeInteger(parsedId) && recoveredRawId !== undefined && recoveredRawId !== ""
+            ? recoveredRawId
+            : parsedId;
+        const intId = interner.intern(rawId);
         const tok = blockTokens(inputLength, blockSize, blockIndex, count);
         stream.push(intId, tok, requestCount, 1);
         totalInputTokens += tok;
@@ -524,8 +578,9 @@
         presetId: UPLOAD_PRESET_ID,
         presetLabel: opts.label || "Customized trace",
         sourceKind: "hash",
+        cacheSemantics,
         blockSize,
-        __flat: stream.finalize(uniqueBlocks, requestCount),
+        __flat: Object.assign(stream.finalize(uniqueBlocks, requestCount), { cacheSemantics }),
         __timestamps: Float64Array.from(timestamps),
         __requestStarts: Int32Array.from(requestStarts),
         summary,
@@ -984,8 +1039,78 @@
     return clamp(toInteger(raw, 0), 0, requestCount);
   }
 
+  function requestStartsForFlat(flat) {
+    const starts = new Int32Array(flat.requestCount + 1);
+    let eventIndex = 0;
+    for (let requestIndex = 0; requestIndex < flat.requestCount; requestIndex += 1) {
+      starts[requestIndex] = eventIndex;
+      while (eventIndex < flat.eventRequest.length && flat.eventRequest[eventIndex] === requestIndex) {
+        eventIndex += 1;
+      }
+    }
+    starts[flat.requestCount] = eventIndex;
+    return starts;
+  }
+
+  function buildPrefixPlan(flat) {
+    const eventCount = flat.eventIds.length;
+    const requestStarts = requestStartsForFlat(flat);
+    const nodeForEvent = new Int32Array(eventCount);
+    const parent = [0];
+    const edges = new Map();
+
+    function childNode(parentNode, blockId) {
+      let children = edges.get(parentNode);
+      if (!children) {
+        children = new Map();
+        edges.set(parentNode, children);
+      }
+      let node = children.get(blockId);
+      if (node === undefined) {
+        node = parent.length;
+        children.set(blockId, node);
+        parent.push(parentNode);
+      }
+      return node;
+    }
+
+    for (let requestIndex = 0; requestIndex < flat.requestCount; requestIndex += 1) {
+      let parentNode = 0;
+      const start = requestStarts[requestIndex];
+      const end = requestStarts[requestIndex + 1];
+      for (let index = start; index < end; index += 1) {
+        const node = childNode(parentNode, flat.eventIds[index]);
+        nodeForEvent[index] = node;
+        parentNode = node;
+      }
+    }
+
+    const neverRequest = flat.requestCount + 1;
+    const nextRequestForEvent = new Int32Array(eventCount);
+    const lastUse = new Int32Array(parent.length).fill(neverRequest);
+    for (let requestIndex = flat.requestCount - 1; requestIndex >= 0; requestIndex -= 1) {
+      const start = requestStarts[requestIndex];
+      const end = requestStarts[requestIndex + 1];
+      for (let index = start; index < end; index += 1) {
+        nextRequestForEvent[index] = lastUse[nodeForEvent[index]];
+      }
+      for (let index = start; index < end; index += 1) {
+        lastUse[nodeForEvent[index]] = requestIndex;
+      }
+    }
+
+    return {
+      requestStarts,
+      prefixNodeForEvent: nodeForEvent,
+      prefixNextRequest: nextRequestForEvent,
+      prefixParent: Int32Array.from(parent),
+      prefixNodeCount: parent.length,
+    };
+  }
+
   function buildExecutionPlan(trace, options) {
     const flat = trace && trace.__flat ? trace.__flat : flattenTrace(trace);
+    const cacheSemantics = (trace && trace.cacheSemantics) || flat.cacheSemantics || "block";
     const warmupRequests = planWarmupRequests(flat.requestCount, options);
     const length = flat.eventIds.length;
     const nextInput = new Int32Array(length);
@@ -1001,7 +1126,15 @@
         if (flat.eventRequest[index] >= warmupRequests) totalMeasuredTokens += flat.eventTokens[index];
       }
     }
-    return Object.assign({}, flat, { nextInput, warmupRequests, totalMeasuredTokens });
+    const plan = Object.assign({}, flat, { cacheSemantics, nextInput, warmupRequests, totalMeasuredTokens });
+    if (cacheSemantics === "prefix") {
+      const prefix = buildPrefixPlan(flat);
+      return Object.assign(plan, prefix, {
+        rawUniqueBlocks: flat.uniqueBlocks,
+        uniqueBlocks: Math.max(0, prefix.prefixNodeCount - 1),
+      });
+    }
+    return plan;
   }
 
   function emptyPlanResult(policy, capacity, plan) {
@@ -1061,6 +1194,316 @@
   function throughputFromHitRate(hitRate) {
     const missFraction = Math.max(1 - clamp(toNumber(hitRate, 0), 0, 1), THROUGHPUT_EPSILON);
     return Math.min(THROUGHPUT_DISPLAY_CAP, 1 / missFraction);
+  }
+
+  function prefixNoCacheResult(policy, capacity, plan) {
+    return Object.assign(emptyPlanResult(policy, capacity, plan), {
+      totalTokens: plan.totalMeasuredTokens,
+      measurementStartRequest: plan.warmupRequests,
+      measurementMode: "fixed_window",
+    });
+  }
+
+  function prefixUnderfilledResult(policy, capacity, plan) {
+    return Object.assign(emptyPlanResult(policy, capacity, plan), {
+      totalTokens: plan.totalMeasuredTokens,
+      measurementStartRequest: null,
+      measurementMode: "underfilled_at_window",
+    });
+  }
+
+  function finishPrefixResult(policy, capacity, plan, hitTokens, totalTokens) {
+    return Object.assign(finishPlanResult(policy, capacity, plan, hitTokens, 0, 0), {
+      totalTokens,
+      hitRate: totalTokens ? hitTokens / totalTokens : 0,
+      measurementStartRequest: plan.warmupRequests,
+      measurementMode: "fixed_window",
+    });
+  }
+
+  function simulatePrefixCeiling(plan) {
+    const nodeCount = plan.prefixNodeCount || 1;
+    const seen = new Uint8Array(nodeCount);
+    let hitTokens = 0;
+    let totalTokens = 0;
+    for (let requestIndex = 0; requestIndex < plan.requestCount; requestIndex += 1) {
+      const start = plan.requestStarts[requestIndex];
+      const end = plan.requestStarts[requestIndex + 1];
+      const measured = requestIndex >= plan.warmupRequests;
+      let prefixAlive = true;
+      for (let index = start; index < end; index += 1) {
+        const node = plan.prefixNodeForEvent[index];
+        const hit = seen[node] === 1;
+        if (measured) {
+          totalTokens += plan.eventTokens[index];
+          if (prefixAlive && hit) hitTokens += plan.eventTokens[index];
+        }
+        if (!hit) prefixAlive = false;
+      }
+      for (let index = start; index < end; index += 1) {
+        seen[plan.prefixNodeForEvent[index]] = 1;
+      }
+    }
+    return {
+      policy: "ceiling",
+      cacheBlocks: Math.max(plan.uniqueBlocks, 1),
+      warmupRequests: plan.warmupRequests,
+      hitTokens,
+      totalTokens,
+      hitRate: totalTokens ? hitTokens / totalTokens : 0,
+      usefulCacheBlockSamples: 0,
+      usefulCacheSamples: 0,
+      usefulCacheRate: 0,
+      measurementStartRequest: plan.warmupRequests,
+      measurementMode: "fixed_window",
+    };
+  }
+
+  class PrefixHeap {
+    constructor(maxHeap) {
+      this.maxHeap = Boolean(maxHeap);
+      this.items = [];
+    }
+
+    better(left, right) {
+      if (left.key === right.key) return left.node > right.node;
+      return this.maxHeap ? left.key > right.key : left.key < right.key;
+    }
+
+    push(item) {
+      this.items.push(item);
+      let index = this.items.length - 1;
+      while (index > 0) {
+        const parent = (index - 1) >> 1;
+        if (!this.better(this.items[index], this.items[parent])) break;
+        [this.items[index], this.items[parent]] = [this.items[parent], this.items[index]];
+        index = parent;
+      }
+    }
+
+    pop() {
+      if (!this.items.length) return null;
+      const top = this.items[0];
+      const last = this.items.pop();
+      if (this.items.length && last) {
+        this.items[0] = last;
+        let index = 0;
+        for (;;) {
+          const left = index * 2 + 1;
+          const right = left + 1;
+          let best = index;
+          if (left < this.items.length && this.better(this.items[left], this.items[best])) best = left;
+          if (right < this.items.length && this.better(this.items[right], this.items[best])) best = right;
+          if (best === index) break;
+          [this.items[best], this.items[index]] = [this.items[index], this.items[best]];
+          index = best;
+        }
+      }
+      return top;
+    }
+  }
+
+  function simulatePrefixFifo(plan, capacity) {
+    if (capacity <= 0 || !plan.eventIds.length) return prefixNoCacheResult("fifo", capacity, plan);
+    const inCache = new Uint8Array(plan.prefixNodeCount);
+    const queue = [];
+    let head = 0;
+    let cacheSize = 0;
+    let fullBeforeMeasurement = false;
+    let hitTokens = 0;
+    let totalTokens = 0;
+
+    for (let requestIndex = 0; requestIndex < plan.requestCount; requestIndex += 1) {
+      if (requestIndex >= plan.warmupRequests && !fullBeforeMeasurement) {
+        return prefixUnderfilledResult("fifo", capacity, plan);
+      }
+      const start = plan.requestStarts[requestIndex];
+      const end = plan.requestStarts[requestIndex + 1];
+      const measured = requestIndex >= plan.warmupRequests;
+      let prefixAlive = true;
+      for (let index = start; index < end; index += 1) {
+        const node = plan.prefixNodeForEvent[index];
+        const hit = inCache[node] === 1;
+        if (measured) {
+          totalTokens += plan.eventTokens[index];
+          if (prefixAlive && hit) hitTokens += plan.eventTokens[index];
+        }
+        if (!hit) prefixAlive = false;
+      }
+      for (let index = start; index < end; index += 1) {
+        const node = plan.prefixNodeForEvent[index];
+        if (inCache[node]) continue;
+        if (cacheSize >= capacity) {
+          while (head < queue.length) {
+            const victim = queue[head];
+            head += 1;
+            if (inCache[victim]) {
+              inCache[victim] = 0;
+              cacheSize -= 1;
+              break;
+            }
+          }
+        }
+        if (cacheSize < capacity) {
+          inCache[node] = 1;
+          cacheSize += 1;
+          queue.push(node);
+          if (cacheSize >= capacity && requestIndex < plan.warmupRequests) fullBeforeMeasurement = true;
+        }
+        if (head > 1000000 && head * 2 > queue.length) {
+          queue.splice(0, head);
+          head = 0;
+        }
+      }
+    }
+    if (!fullBeforeMeasurement || totalTokens <= 0) return prefixUnderfilledResult("fifo", capacity, plan);
+    return finishPrefixResult("fifo", capacity, plan, hitTokens, totalTokens);
+  }
+
+  function simulatePrefixTriePolicy(plan, capacity, optimal) {
+    const policy = optimal ? "optimal" : "lru";
+    if (capacity <= 0 || !plan.eventIds.length) return prefixNoCacheResult(policy, capacity, plan);
+    const nodeCount = plan.prefixNodeCount;
+    const present = new Uint8Array(nodeCount);
+    const childCount = new Int32Array(nodeCount);
+    const stateVersion = new Int32Array(nodeCount);
+    const stateKey = new Int32Array(nodeCount);
+    const protectedMark = new Int32Array(nodeCount);
+    const heap = new PrefixHeap(optimal);
+    present[0] = 1;
+    let cacheSize = 0;
+    let clock = 0;
+    let markValue = 1;
+    let fullBeforeMeasurement = false;
+    let hitTokens = 0;
+    let totalTokens = 0;
+
+    function pushLeaf(node) {
+      if (node === 0 || !present[node] || childCount[node] !== 0) return;
+      stateVersion[node] += 1;
+      heap.push({ node, key: stateKey[node], version: stateVersion[node] });
+    }
+
+    function touchLru(node) {
+      if (node === 0 || !present[node]) return;
+      stateKey[node] = ++clock;
+      pushLeaf(node);
+    }
+
+    function updateOptimal(node, nextUse) {
+      if (node === 0 || !present[node]) return;
+      stateKey[node] = nextUse;
+      pushLeaf(node);
+    }
+
+    function addNode(node, eventIndex) {
+      const parent = plan.prefixParent[node];
+      present[node] = 1;
+      cacheSize += 1;
+      childCount[parent] += 1;
+      if (optimal) updateOptimal(node, plan.prefixNextRequest[eventIndex]);
+      else touchLru(node);
+    }
+
+    function restoreSkipped(skipped) {
+      for (const item of skipped) heap.push(item);
+    }
+
+    function evictLeaf(candidateKey) {
+      const skipped = [];
+      for (;;) {
+        const top = heap.pop();
+        if (!top) {
+          restoreSkipped(skipped);
+          return false;
+        }
+        const node = top.node;
+        if (!present[node] || childCount[node] !== 0 || stateVersion[node] !== top.version || stateKey[node] !== top.key) {
+          continue;
+        }
+        if (protectedMark[node] === markValue) {
+          skipped.push(top);
+          continue;
+        }
+        if (optimal && top.key <= candidateKey) {
+          heap.push(top);
+          restoreSkipped(skipped);
+          return false;
+        }
+        present[node] = 0;
+        cacheSize -= 1;
+        const parent = plan.prefixParent[node];
+        childCount[parent] -= 1;
+        if (parent > 0 && present[parent] && childCount[parent] === 0) pushLeaf(parent);
+        restoreSkipped(skipped);
+        return true;
+      }
+    }
+
+    function markProtectedPath(start, end) {
+      markValue += 1;
+      if (markValue === 0x7fffffff) {
+        protectedMark.fill(0);
+        markValue = 1;
+      }
+      protectedMark[0] = markValue;
+      for (let index = start; index < end; index += 1) {
+        const node = plan.prefixNodeForEvent[index];
+        if (present[node]) protectedMark[node] = markValue;
+      }
+    }
+
+    for (let requestIndex = 0; requestIndex < plan.requestCount; requestIndex += 1) {
+      if (requestIndex >= plan.warmupRequests && !fullBeforeMeasurement) {
+        return prefixUnderfilledResult(policy, capacity, plan);
+      }
+      const start = plan.requestStarts[requestIndex];
+      const end = plan.requestStarts[requestIndex + 1];
+      const measured = requestIndex >= plan.warmupRequests;
+      let prefixAlive = true;
+      for (let index = start; index < end; index += 1) {
+        const node = plan.prefixNodeForEvent[index];
+        const hit = present[node] === 1;
+        if (measured) {
+          totalTokens += plan.eventTokens[index];
+          if (prefixAlive && hit) hitTokens += plan.eventTokens[index];
+        }
+        if (prefixAlive && hit) {
+          if (optimal) updateOptimal(node, plan.prefixNextRequest[index]);
+          else touchLru(node);
+        } else if (!hit) {
+          prefixAlive = false;
+        }
+      }
+
+      markProtectedPath(start, end);
+      for (let index = start; index < end; index += 1) {
+        const node = plan.prefixNodeForEvent[index];
+        if (present[node]) continue;
+        if (cacheSize >= capacity) {
+          const candidateKey = optimal ? plan.prefixNextRequest[index] : 0;
+          if (!evictLeaf(candidateKey)) break;
+        }
+        if (cacheSize < capacity && present[plan.prefixParent[node]]) {
+          addNode(node, index);
+          if (cacheSize >= capacity && requestIndex < plan.warmupRequests) fullBeforeMeasurement = true;
+        } else {
+          break;
+        }
+      }
+    }
+    if (!fullBeforeMeasurement || totalTokens <= 0) return prefixUnderfilledResult(policy, capacity, plan);
+    return finishPrefixResult(policy, capacity, plan, hitTokens, totalTokens);
+  }
+
+  function simulatePrefixPlanPolicy(plan, capacity, policy) {
+    if (policy === "fifo") return simulatePrefixFifo(plan, capacity);
+    return simulatePrefixTriePolicy(plan, capacity, policy === "optimal");
+  }
+
+  function ceilingForPlan(plan) {
+    if (plan.cacheSemantics === "prefix") return simulatePrefixCeiling(plan);
+    return simulatePlanPolicy(plan, Math.max(plan.uniqueBlocks, 1), "lru");
   }
 
   // Belady/optimal with bypass over interned ids. Block membership and the
@@ -1218,6 +1661,9 @@
     const normalizedPolicy = policy || "lru";
     const capacity = Math.max(0, Math.floor(toNumber(cacheBlocks, 0)));
     if (!plan.eventIds.length || capacity <= 0) return emptyPlanResult(normalizedPolicy, capacity, plan);
+    if (plan.cacheSemantics === "prefix") {
+      return simulatePrefixPlanPolicy(plan, capacity, normalizedPolicy);
+    }
     if (normalizedPolicy === "optimal") {
       const result = simulateOptimalPlan(plan, capacity);
       result.policy = normalizedPolicy;
@@ -1417,7 +1863,7 @@
     // (no evictions ever happen), so compute it once with a cheap LRU pass.
     let ceilingResult = null;
     function ceilingFor(cacheBlocks) {
-      if (!ceilingResult) ceilingResult = simulatePlanPolicy(plan, Math.max(uniqueBlocks, 1), "lru");
+      if (!ceilingResult) ceilingResult = ceilingForPlan(plan);
       return cloneCeilingResult(ceilingResult, "lru", cacheBlocks);
     }
     const capValues = capacityValues(settings || {});
@@ -1434,7 +1880,17 @@
         results[policy] = result;
         if (!result || result.measurementMode === "underfilled_at_window") underfilled = true;
       });
-      if (underfilled) break;
+      if (underfilled) {
+        const c = ceilingFor(cacheBlocks);
+        const ceilingResults = {};
+        policies.forEach((policy) => {
+          ceilingResults[policy] = Object.assign(cloneCeilingResult(c, policy, cacheBlocks), {
+            measurementMode: "ceiling_no_pressure",
+          });
+        });
+        points.push({ gib, cacheBlocks, results: ceilingResults });
+        break;
+      }
       if (typeof onProgress === "function") onProgress(pointIndex + 1, totalPoints);
       points.push({ gib, cacheBlocks, results });
     }
@@ -1459,17 +1915,27 @@
   // is byte-identical to the single-threaded path.
 
   function extractPlanBuffers(plan) {
+    const buffers = {
+      eventIds: plan.eventIds,
+      eventTokens: plan.eventTokens,
+      eventRequest: plan.eventRequest,
+      eventIsInput: plan.eventIsInput,
+      nextInput: plan.nextInput,
+    };
+    if (plan.cacheSemantics === "prefix") {
+      buffers.requestStarts = plan.requestStarts;
+      buffers.prefixNodeForEvent = plan.prefixNodeForEvent;
+      buffers.prefixNextRequest = plan.prefixNextRequest;
+      buffers.prefixParent = plan.prefixParent;
+    }
     return {
-      buffers: {
-        eventIds: plan.eventIds,
-        eventTokens: plan.eventTokens,
-        eventRequest: plan.eventRequest,
-        eventIsInput: plan.eventIsInput,
-        nextInput: plan.nextInput,
-      },
+      buffers,
       scalars: {
+        cacheSemantics: plan.cacheSemantics,
         requestCount: plan.requestCount,
+        rawUniqueBlocks: plan.rawUniqueBlocks,
         uniqueBlocks: plan.uniqueBlocks,
+        prefixNodeCount: plan.prefixNodeCount,
         warmupRequests: plan.warmupRequests,
         totalMeasuredTokens: plan.totalMeasuredTokens,
       },
@@ -1487,7 +1953,7 @@
   function analyzeTrace(trace, options) {
     const opts = options || {};
     const plan = buildExecutionPlan(trace, { warmupFraction: opts.warmupFraction });
-    const ceilingRaw = simulatePlanPolicy(plan, Math.max(plan.uniqueBlocks, 1), "lru");
+    const ceilingRaw = ceilingForPlan(plan);
     const ceiling = {
       hitTokens: ceilingRaw.hitTokens,
       totalTokens: ceilingRaw.totalTokens,
@@ -1503,7 +1969,10 @@
     } catch (error) {
       timeStats = null;
     }
-    const summary = trace.summary || {};
+    const summary =
+      plan.cacheSemantics === "prefix" && trace.summary
+        ? Object.assign({}, trace.summary, { rawUniqueBlocks: trace.summary.uniqueBlocks, uniqueBlocks: plan.uniqueBlocks })
+        : trace.summary || {};
     const meta = {
       requestCount: plan.requestCount,
       eventCount: plan.eventIds.length,
@@ -1571,6 +2040,7 @@
     for (const { gib, cacheBlocks } of planned.points) {
       if (uniqueBlocks > 0 && cacheBlocks > uniqueBlocks) break;
       const results = {};
+      let missingResult = false;
       let underfilled = false;
       planned.policies.forEach((policy) => {
         if (cacheBlocks <= 0) {
@@ -1588,10 +2058,21 @@
         } else {
           const result = simLookup(policy, cacheBlocks);
           results[policy] = result;
-          if (!result || result.measurementMode === "underfilled_at_window") underfilled = true;
+          if (!result) missingResult = true;
+          else if (result.measurementMode === "underfilled_at_window") underfilled = true;
         }
       });
-      if (underfilled) break;
+      if (missingResult) break;
+      if (underfilled) {
+        const ceilingResults = {};
+        planned.policies.forEach((policy) => {
+          ceilingResults[policy] = Object.assign(cloneCeilingResult(ceiling, policy, cacheBlocks), {
+            measurementMode: "ceiling_no_pressure",
+          });
+        });
+        points.push({ gib, cacheBlocks, results: ceilingResults });
+        break;
+      }
       points.push({ gib, cacheBlocks, results });
     }
     const sweep = {
@@ -1696,11 +2177,11 @@
       if (input.uploadFile) {
         const file = input.uploadFile;
         const uploadOptions = input.uploadOptions || {};
-        return `upf|${file.name}|${file.size}|${file.lastModified}|bs=${uploadOptions.blockSize || ""}|cap=${cap}|wf=${wf}`;
+        return `upf|${file.name}|${file.size}|${file.lastModified}|bs=${uploadOptions.blockSize || ""}|cap=${cap}|sem=${uploadOptions.cacheSemantics || ""}|wf=${wf}`;
       }
       if (input.uploadText != null) {
         const uploadOptions = input.uploadOptions || {};
-        return `up|${uploadOptions.label || ""}|${input.uploadText.length}|bs=${uploadOptions.blockSize || ""}|cap=${cap}|wf=${wf}`;
+        return `up|${uploadOptions.label || ""}|${input.uploadText.length}|bs=${uploadOptions.blockSize || ""}|cap=${cap}|sem=${uploadOptions.cacheSemantics || ""}|wf=${wf}`;
       }
       return `gen|${input.preset && input.preset.id}|${createCacheKey(input.params || {})}|seed=${input.seed || DEFAULT_SEED}|wf=${wf}`;
     }
@@ -2255,6 +2736,14 @@
 
           if (policyIndex >= sweep.policies.length) {
             if (Object.values(point.results).some((result) => !result || result.measurementMode === "underfilled_at_window")) {
+              const ceiling = ceilingForPlan(plan);
+              point.results = {};
+              sweep.policies.forEach((ceilingPolicy) => {
+                point.results[ceilingPolicy] = Object.assign(cloneCeilingResult(ceiling, ceilingPolicy, point.cacheBlocks), {
+                  measurementMode: "ceiling_no_pressure",
+                });
+              });
+              sweep.points.push(point);
               finish();
               return;
             }
@@ -3550,11 +4039,12 @@
       const blockSize = currentUploadBlockSize();
       const settings = Object.assign(readSettings(blockSize), { computeCeiling: true });
       const maxEvents = UPLOAD_MAX_EVENTS;
-      const useWasm =
-        !!runtimeOptions.wasmUrl &&
-        typeof WebAssembly === "object" &&
-        typeof WebAssembly.instantiate === "function";
-      const cacheKey = `upload:${uploadState.token}|bs=${blockSize}|cap=${maxEvents}|wasm=${useWasm ? 1 : 0}|${modelSweepKey(model, settings)}`;
+      const uploadCacheSemantics = "prefix";
+      // The committed upload WASM currently implements the legacy block-cache
+      // simulator. Keep Customize trace on the JS path so it matches the
+      // full-precompute prefix-trie semantics until the WASM artifact is rebuilt.
+      const useWasm = false;
+      const cacheKey = `upload:${uploadState.token}|bs=${blockSize}|cap=${maxEvents}|sem=${uploadCacheSemantics}|wasm=${useWasm ? 1 : 0}|${modelSweepKey(model, settings)}`;
       const jobId = latestJobId + 1;
       latestJobId = jobId;
       if (activeJob) {
@@ -3579,7 +4069,7 @@
           gzip: uploadState.isGzip,
           useWasm,
           wasmUrl: runtimeOptions.wasmUrl,
-          uploadOptions: { blockSize, sourceId: "upload", label: uploadState.fileName, maxEvents },
+          uploadOptions: { blockSize, sourceId: "upload", label: uploadState.fileName, maxEvents, cacheSemantics: uploadCacheSemantics },
         },
         (completed, total, phase) => {
           if (jobId === latestJobId) setProgress(completed, total, phase);

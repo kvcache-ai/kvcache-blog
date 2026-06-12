@@ -80,7 +80,7 @@ test("wasm sim matches JS on summary + every policy/capacity hit count", { skip:
   ]) {
     const jsonl = makeJsonl(seed, n, pool, bs, skew);
     driveWasm(ex, jsonl, { warmupFraction: wf });
-    const trace = lab.parseUploadedTrace(jsonl, { blockSize: 0 });
+    const trace = lab.parseUploadedTrace(jsonl, { blockSize: 0, cacheSemantics: "block" });
     const plan = lab.buildExecutionPlan(trace, { warmupFraction: wf });
 
     assert.equal(ex.requests(), trace.summary.requests, "requests");
@@ -142,7 +142,7 @@ test("wasm engine path (worker) equals sweepCapacity for plain + gzip uploads", 
   };
   const engine = lab.createLabEngine({ createWorker, poolSize: 1 });
   const jsonl = makeJsonl(42, 4000, 8000, 512, 2.0);
-  const jsTrace = lab.parseUploadedTrace(jsonl, { blockSize: 0 });
+  const jsTrace = lab.parseUploadedTrace(jsonl, { blockSize: 0, cacheSemantics: "block" });
   const jsSweep = lab.sweepCapacity(jsTrace, model, settings);
   const jsTimeStats = lab.computeTimeSeries(jsTrace);
 
@@ -161,7 +161,7 @@ test("wasm engine path (worker) equals sweepCapacity for plain + gzip uploads", 
           gzip,
           useWasm: true,
           wasmUrl: WASM_PATH,
-          uploadOptions: { blockSize: 0, label: file.name, maxEvents: 40000000 },
+          uploadOptions: { blockSize: 0, label: file.name, maxEvents: 40000000, cacheSemantics: "block" },
         },
         () => {},
       ).promise;
