@@ -290,9 +290,14 @@ test("precompute sweep is deterministic and uses source-native block size", () =
 
   assert.deepEqual(first, second);
   assert.equal(first.blockSize, 16);
-  assert.equal(first.points.length, 2);
+  assert.equal(first.points.length, 1);
   assert.equal(first.points[0].results.lru.hitRate, 0);
-  assert.equal(first.points[1].results.lru.hitRate, 1);
+  assert.equal(first.reuseCeiling, 1);
+  assert.ok(
+    first.points.every((point) =>
+      Object.values(point.results).every((result) => result.measurementMode !== "ceiling_no_pressure"),
+    ),
+  );
 });
 
 test("model sweep keys encode model and precision settings", () => {

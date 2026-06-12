@@ -1422,19 +1422,18 @@
     }
     const capValues = capacityValues(settings || {});
     const totalPoints = capValues.length;
-    const points = capValues.map((gib, pointIndex) => {
+    const points = [];
+    for (let pointIndex = 0; pointIndex < capValues.length; pointIndex += 1) {
+      const gib = capValues[pointIndex];
       const cacheBlocks = cacheBlocksForGiB(gib, bytesPerBlock);
+      if (uniqueBlocks > 0 && cacheBlocks > uniqueBlocks) break;
       const results = {};
       policies.forEach((policy) => {
-        if (uniqueBlocks > 0 && cacheBlocks >= uniqueBlocks) {
-          results[policy] = cloneCeilingResult(ceilingFor(cacheBlocks), policy, cacheBlocks);
-        } else {
-          results[policy] = simulatePlanPolicy(plan, cacheBlocks, policy);
-        }
+        results[policy] = simulatePlanPolicy(plan, cacheBlocks, policy);
       });
       if (typeof onProgress === "function") onProgress(pointIndex + 1, totalPoints);
-      return { gib, cacheBlocks, results };
-    });
+      points.push({ gib, cacheBlocks, results });
+    }
     const sweep = { blockSize, bytesPerToken, bytesPerBlock, points, policies };
     if (settings && settings.computeCeiling) {
       const c = ceilingFor(0);
@@ -1564,12 +1563,13 @@
   // identical to sweepCapacity's output.
   function assembleSweep(planned, meta, settings, simLookup, ceiling) {
     const uniqueBlocks = meta.uniqueBlocks;
-    const points = planned.points.map(({ gib, cacheBlocks }) => {
+    const points = [];
+    for (const { gib, cacheBlocks } of planned.points) {
+      if (uniqueBlocks > 0 && cacheBlocks > uniqueBlocks) break;
       const results = {};
+      let underfilled = false;
       planned.policies.forEach((policy) => {
-        if (uniqueBlocks > 0 && cacheBlocks >= uniqueBlocks) {
-          results[policy] = cloneCeilingResult(ceiling, policy, cacheBlocks);
-        } else if (cacheBlocks <= 0) {
+        if (cacheBlocks <= 0) {
           results[policy] = {
             policy,
             cacheBlocks,
@@ -1582,11 +1582,14 @@
             usefulCacheRate: 0,
           };
         } else {
-          results[policy] = simLookup(policy, cacheBlocks);
+          const result = simLookup(policy, cacheBlocks);
+          results[policy] = result;
+          if (!result || result.measurementMode === "underfilled_at_window") underfilled = true;
         }
       });
-      return { gib, cacheBlocks, results };
-    });
+      if (underfilled) break;
+      points.push({ gib, cacheBlocks, results });
+    }
     const sweep = {
       blockSize: planned.blockSize,
       bytesPerToken: planned.bytesPerToken,

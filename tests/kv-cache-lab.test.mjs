@@ -282,7 +282,7 @@ test("capacity sweep derives token-dependent accounting from the trace", () => {
   assert.equal(sweep.points[0].cacheBlocks, 1);
 });
 
-test("capacity sweep recomputes useful occupancy denominator above the unique working set", () => {
+test("capacity sweep truncates budgets above the unique working set", () => {
   const trace = {
     blockSize: 1,
     summary: { averageInputTokens: 1, uniqueBlocks: 1 },
@@ -299,13 +299,11 @@ test("capacity sweep recomputes useful occupancy denominator above the unique wo
     maxGiB: 16 / BYTES_PER_GIB,
     steps: 2,
     warmupFraction: 0,
+    computeCeiling: true,
   });
 
-  assert.equal(sweep.points[0].cacheBlocks, 4);
-  assert.equal(sweep.points[0].results.lru.hitRate, 0.5);
-  assert.equal(sweep.points[0].results.lru.usefulCacheBlockSamples, 1);
-  assert.equal(sweep.points[0].results.lru.usefulCacheSamples, 2);
-  assert.equal(sweep.points[0].results.lru.usefulCacheRate, 1 / 8);
+  assert.equal(sweep.points.length, 0);
+  assert.equal(sweep.reuseCeiling, 0.5);
 });
 
 test("capacity sweep returns one result set per GiB point and policy", () => {
@@ -334,6 +332,39 @@ test("capacity sweep returns one result set per GiB point and policy", () => {
 });
 
 test("capacity sweep defaults to fixed GiB points", () => {
+  const hugeBlockModel = {
+    ...tinyModel,
+    fields: {
+      ...tinyModel.fields,
+      head_dim: 4294967296,
+    },
+  };
+  const trace = {
+    blockSize: 1,
+    requests: Array.from({ length: 1100 }, (_, index) => ({
+      inputBlocks: [{ id: `B${index}`, tokens: 1 }],
+      appendBlocks: [],
+    })),
+  };
+  trace.requests.push({
+    inputBlocks: [{ id: "B0", tokens: 1 }],
+    appendBlocks: [],
+  });
+
+  const sweep = sweepCapacity(trace, hugeBlockModel, {
+    precision: "bf16_fp16",
+    blockSize: 1,
+    warmupFraction: 0,
+    computeCeiling: true,
+  });
+
+  assert.deepEqual(
+    sweep.points.map((point) => point.gib),
+    DEFAULT_CAPACITY_GIB_VALUES,
+  );
+});
+
+test("capacity sweep omits no-pressure ceiling policy points", () => {
   const trace = {
     blockSize: 1,
     requests: ["A", "A"].map((id) => ({
@@ -346,12 +377,11 @@ test("capacity sweep defaults to fixed GiB points", () => {
     precision: "bf16_fp16",
     blockSize: 1,
     warmupFraction: 0,
+    computeCeiling: true,
   });
 
-  assert.deepEqual(
-    sweep.points.map((point) => point.gib),
-    DEFAULT_CAPACITY_GIB_VALUES,
-  );
+  assert.equal(sweep.points.length, 0);
+  assert.equal(sweep.reuseCeiling, 0.5);
 });
 
 test("cache keys are stable for identical settings and change for capacity inputs", () => {

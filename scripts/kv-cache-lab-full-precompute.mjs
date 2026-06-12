@@ -1014,43 +1014,6 @@ function maxSweepHitRate(points) {
   return maxHitRate === -Infinity ? undefined : maxHitRate;
 }
 
-function applyCeilingPlateau(points, ceilingHitRate) {
-  const hitRate = Number(ceilingHitRate);
-  if (!Number.isFinite(hitRate)) return points;
-  for (const point of points || []) {
-    for (const result of Object.values(point.results || {})) {
-      if (!result || result.measurementMode !== "ceiling_no_pressure") continue;
-      result.hitRate = hitRate;
-      const totalTokens = Number(result.totalTokens);
-      if (Number.isFinite(totalTokens)) result.hitTokens = Math.round(totalTokens * hitRate);
-    }
-  }
-  return points;
-}
-
-function cloneCeilingResult(ceiling, policy, cacheBlocks) {
-  return {
-    policy,
-    cacheBlocks,
-    warmupRequests: Number.isFinite(Number(ceiling && ceiling.warmupRequests)) ? Number(ceiling.warmupRequests) : 0,
-    measurementStartRequest: Number.isFinite(Number(ceiling && ceiling.measurementStartRequest))
-      ? Number(ceiling.measurementStartRequest)
-      : null,
-    measurementMode: "ceiling_no_pressure",
-    hitTokens: Number(ceiling && ceiling.hitTokens) || 0,
-    totalTokens: Number(ceiling && ceiling.totalTokens) || 0,
-    hitRate: Number(ceiling && ceiling.hitRate) || 0,
-  };
-}
-
-function ceilingPoint(gib, cacheBlocks, ceiling) {
-  const results = {};
-  POLICIES.forEach((policy) => {
-    results[policy] = cloneCeilingResult(ceiling, policy, cacheBlocks);
-  });
-  return { gib, cacheBlocks, results };
-}
-
 function modelSettingFor(model) {
   return {
     modelId: model.id,
@@ -1186,7 +1149,6 @@ async function precomputeBlockCurveTrace(source, options, metadata, ceiling) {
   const points = [];
   for (const capacity of capacities) {
     if (POLICIES.some((policy) => capacity > policyWorkingSet(metadata, policy))) {
-      points.push(ceilingPoint(null, capacity, ceiling));
       break;
     }
     const results = {};
@@ -1197,7 +1159,6 @@ async function precomputeBlockCurveTrace(source, options, metadata, ceiling) {
       if (!result || result.measurementMode === "underfilled_at_window") underfilled = true;
     });
     if (underfilled) {
-      points.push(ceilingPoint(null, capacity, ceiling));
       break;
     }
     points.push({ cacheBlocks: capacity, results });
@@ -1376,7 +1337,6 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
         const workingSet = policyWorkingSet(metadata, policy);
         return workingSet > 0 && point.cacheBlocks > workingSet;
       })) {
-        points.push(ceilingPoint(point.gib, point.cacheBlocks, ceiling));
         break;
       }
       const results = {};
@@ -1388,7 +1348,6 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
         if (!result || result.measurementMode === "underfilled_at_window") underfilled = true;
       });
       if (underfilled) {
-        points.push(ceilingPoint(point.gib, point.cacheBlocks, ceiling));
         break;
       }
       points.push({ gib: point.gib, cacheBlocks: point.cacheBlocks, results });

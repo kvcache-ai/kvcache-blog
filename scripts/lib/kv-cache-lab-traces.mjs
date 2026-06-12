@@ -1177,25 +1177,8 @@ export function precomputeBlockCapacityCurve(trace, options = {}) {
   const capacities = options.capacities || blockCapacityGrid(maxCapacity, options);
   const simulationCache = options.simulationCache || new Map();
   const points = [];
-  function pushCeilingPoint(capacity) {
-    const results = {};
-    policies.forEach((policy) => {
-      results[policy] = {
-        policy,
-        cacheBlocks: capacity,
-        warmupRequests: analysis.ceiling.warmupRequests || analysis.meta.warmupRequests || 0,
-        measurementStartRequest: analysis.ceiling.measurementStartRequest ?? analysis.meta.warmupRequests ?? null,
-        measurementMode: "ceiling_no_pressure",
-        hitTokens: analysis.ceiling.hitTokens || 0,
-        totalTokens: analysis.ceiling.totalTokens || 0,
-        hitRate: analysis.ceiling.hitRate || 0,
-      };
-    });
-    points.push({ cacheBlocks: capacity, results });
-  }
   for (const capacity of capacities) {
     if (policies.some((policy) => capacity > lab.policyWorkingSet(analysis.meta, policy))) {
-      pushCeilingPoint(capacity);
       break;
     }
     const results = {};
@@ -1210,7 +1193,6 @@ export function precomputeBlockCapacityCurve(trace, options = {}) {
       if (!result || result.measurementMode === "underfilled_at_window") underfilled = true;
     }
     if (underfilled) {
-      pushCeilingPoint(capacity);
       break;
     }
     points.push({ cacheBlocks: capacity, results });
