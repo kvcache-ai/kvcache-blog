@@ -19,10 +19,14 @@ import {
   SOURCE_LINKS,
   TRACE_SOURCES,
   allModelSettings,
+  blockCapacityGrid,
   downloadFile,
+  filterPrecisionOptions,
+  kvArchitectureGroups,
   loadModelsData,
   modelSweepKey,
   parseArgs as parseCommonArgs,
+  selectModels,
 } from "./lib/kv-cache-lab-traces.mjs";
 
 const require = createRequire(import.meta.url);
@@ -43,7 +47,7 @@ const HF_EXPECTED_ROWS = {
 
 const UINT32_MAX = 0xffffffff;
 const EVENT_CHUNK = 1_000_000;
-const SIMULATION_RESULT_CACHE_DIR = "results-useful-v1";
+const SIMULATION_RESULT_CACHE_DIR = "results-context-window-v1";
 
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -75,6 +79,8 @@ function parseArgs(argv) {
     else if (arg === "--force-next") args.forceNext = true;
     else if (arg === "--events-only") args.eventsOnly = true;
     else if (arg === "--default-settings") args.defaultSettings = true;
+    else if (arg === "--block-curve") args.blockCurve = true;
+    else if (arg === "--curve-points") args.curvePoints = Math.max(2, Math.floor(Number(argv[++index])));
     else if (arg === "--native-sim") args.nativeSimPath = argv[++index];
     else if (arg === "--native-jobs") args.nativeJobs = Math.max(1, Math.floor(Number(argv[++index])));
     else if (arg === "--native-serial-capacity-threshold") args.nativeSerialCapacityThreshold = Math.max(0, Math.floor(Number(argv[++index])));
@@ -109,7 +115,120 @@ async function countLines(filePath) {
   return count;
 }
 
+async function appendFileToStream(filePath, writer) {
+  await new Promise((resolve, reject) => {
+    const reader = fs.createReadStream(filePath);
+    reader.on("error", reject);
+    reader.on("data", (chunk) => {
+      if (!writer.write(chunk)) {
+        reader.pause();
+        writer.once("drain", () => reader.resume());
+      }
+    });
+    reader.on("end", resolve);
+  });
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = 30_000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function sqlLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+async function fetchHfParquetRowsToCache(source, options) {
+  const cacheDir = options.cacheDir || DEFAULT_TRACE_CACHE_DIR;
+  await fsp.mkdir(cacheDir, { recursive: true });
+  const cachePath = path.join(cacheDir, `${source.id}.hf-rows.jsonl`);
+  const expectedRows = HF_EXPECTED_ROWS[source.id] || 0;
+  if (!options.force && expectedRows > 0 && await countLines(cachePath) >= expectedRows) {
+    return cachePath;
+  }
+
+  const parquetApi = new URL("https://datasets-server.huggingface.co/parquet");
+  parquetApi.searchParams.set("dataset", source.hfDataset);
+  const payload = await fetchJsonWithTimeout(parquetApi);
+  const files = (Array.isArray(payload.parquet_files) ? payload.parquet_files : [])
+    .filter((file) =>
+      file.config === (source.hfConfig || "default") &&
+      file.split === (source.hfSplit || "train") &&
+      file.url,
+    );
+  if (!files.length) throw new Error(`No parquet files found for ${source.id}`);
+
+  const parquetDir = path.join(cacheDir, `${source.id}-parquet`);
+  const duckTmpDir = path.join(parquetDir, "duckdb-tmp");
+  await fsp.mkdir(parquetDir, { recursive: true });
+  await fsp.mkdir(duckTmpDir, { recursive: true });
+  const writer = fs.createWriteStream(cachePath, { flags: "w" });
+  try {
+    for (const file of files) {
+      const shardName = file.filename || path.basename(new URL(file.url).pathname);
+      const parquetPath = path.join(parquetDir, shardName);
+      const jsonPath = `${parquetPath}.jsonl`;
+      if (!fs.existsSync(parquetPath) || options.force) {
+        console.error(`[fetch] ${source.id}: download parquet ${shardName}`);
+        await downloadFile(file.url, parquetPath, { force: options.force });
+      }
+      if (!fs.existsSync(jsonPath) || options.force) {
+        const temporaryJsonPath = `${jsonPath}.${process.pid}.tmp`;
+        await fsp.rm(temporaryJsonPath, { force: true });
+        console.error(`[fetch] ${source.id}: convert parquet ${shardName}`);
+        execFileSync(
+          "npx",
+          [
+            "-y",
+            "-p",
+            "parquetlens",
+            "-p",
+            "@parquetlens/sql",
+            "parquetlens",
+            parquetPath,
+            "--sql",
+            [
+              `SET temp_directory=${sqlLiteral(duckTmpDir)}`,
+              "SET preserve_insertion_order=false",
+              "SET threads=1",
+              "SET memory_limit='8GB'",
+              `COPY (SELECT * FROM data) TO ${sqlLiteral(temporaryJsonPath)} (FORMAT JSON)`,
+            ].join("; "),
+          ],
+          { stdio: "inherit", maxBuffer: 20 * 1024 * 1024 },
+        );
+        const actualJsonPath = fs.existsSync(temporaryJsonPath)
+          ? temporaryJsonPath
+          : temporaryJsonPath.endsWith(".tmp") && fs.existsSync(temporaryJsonPath.slice(0, -4))
+            ? temporaryJsonPath.slice(0, -4)
+            : temporaryJsonPath;
+        await fsp.rename(actualJsonPath, jsonPath);
+      }
+      await appendFileToStream(jsonPath, writer);
+      await writeBuffer(writer, Buffer.from("\n"));
+    }
+  } finally {
+    await new Promise((resolve) => writer.end(resolve));
+  }
+
+  const rows = await countLines(cachePath);
+  if (expectedRows > 0 && rows < expectedRows) {
+    throw new Error(`Parquet conversion for ${source.id} produced ${rows} rows, expected ${expectedRows}`);
+  }
+  return cachePath;
+}
+
 async function fetchHfRowsToCache(source, options) {
+  if (source.parser === "weka_session" && !options.forceRowsApi) {
+    return fetchHfParquetRowsToCache(source, options);
+  }
   const cacheDir = options.cacheDir || DEFAULT_TRACE_CACHE_DIR;
   await fsp.mkdir(cacheDir, { recursive: true });
   const cachePath = path.join(cacheDir, `${source.id}.hf-rows.jsonl`);
@@ -119,18 +238,34 @@ async function fetchHfRowsToCache(source, options) {
     return cachePath;
   }
   const writer = fs.createWriteStream(cachePath, { flags: offset > 0 && !options.force ? "a" : "w" });
+  let singleRowMode = false;
   for (;;) {
+    if (expectedRows > 0 && offset >= expectedRows) break;
     const url = new URL("https://datasets-server.huggingface.co/rows");
     url.searchParams.set("dataset", source.hfDataset);
     url.searchParams.set("config", source.hfConfig || "default");
     url.searchParams.set("split", source.hfSplit || "train");
+    const remainingRows = expectedRows > 0 ? Math.max(1, expectedRows - offset) : 100;
+    const pageSize = Math.min(
+      remainingRows,
+      singleRowMode ? 1 : Math.max(1, Math.floor(Number(source.hfPageSize || 0)) > 1 ? Number(source.hfPageSize) : 25),
+    );
     url.searchParams.set("offset", String(offset));
-    url.searchParams.set("length", "1");
     let response = null;
     let fetchError = null;
+    let attemptPageSize = pageSize;
     for (let attempt = 0; attempt < 12; attempt += 1) {
+      attemptPageSize = attempt >= 3 ? 1 : pageSize;
+      const requestUrl = new URL(url);
+      requestUrl.searchParams.set("length", String(attemptPageSize));
       try {
-        response = await fetch(url);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30_000);
+        try {
+          response = await fetch(requestUrl, { signal: controller.signal });
+        } finally {
+          clearTimeout(timeout);
+        }
         fetchError = null;
       } catch (error) {
         response = null;
@@ -143,7 +278,7 @@ async function fetchHfRowsToCache(source, options) {
         : Number.isFinite(retryAfter)
           ? Math.max(1000, retryAfter * 1000)
           : Math.min(120_000, 1000 * 2 ** attempt);
-      console.error(`[fetch] ${source.id}: row ${offset} HTTP ${response ? response.status : "network"}, retry in ${Math.round(delayMs / 1000)}s`);
+      console.error(`[fetch] ${source.id}: row ${offset} length ${attemptPageSize} HTTP ${response ? response.status : (fetchError && fetchError.name) || "network"}, retry in ${Math.round(delayMs / 1000)}s`);
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
     if (!response || !response.ok) {
@@ -154,9 +289,12 @@ async function fetchHfRowsToCache(source, options) {
     const payload = await response.json();
     const rows = Array.isArray(payload.rows) ? payload.rows : [];
     if (!rows.length) break;
-    await writeBuffer(writer, Buffer.from(`${JSON.stringify(rows[0].row)}\n`));
-    offset += 1;
-    if (offset % 25 === 0) console.error(`[fetch] ${source.id}: cached ${offset} rows`);
+    for (const item of rows) {
+      await writeBuffer(writer, Buffer.from(`${JSON.stringify(item.row)}\n`));
+    }
+    if (attemptPageSize === 1 && pageSize > 1) singleRowMode = true;
+    offset += rows.length;
+    console.error(`[fetch] ${source.id}: cached ${offset} rows`);
   }
   await new Promise((resolve) => writer.end(resolve));
   return cachePath;
@@ -375,6 +513,7 @@ async function createSortedEventFiles(writer, traceDir, options) {
     sources: writer.source.sources || [],
     requestCount: writer.descriptors.length,
     warmupRequests,
+    warmupFraction: toNumber(options.warmupFraction, DEFAULT_WARMUP_FRACTION),
     warmupEventStart,
     totalBlocks,
     totalInputTokens,
@@ -393,8 +532,17 @@ async function createSortedEventFiles(writer, traceDir, options) {
 async function ensureEventStream(source, options) {
   const traceDir = path.join(options.fullCacheDir || path.join(os.tmpdir(), "kv-cache-lab-full"), source.id);
   const metadataPath = path.join(traceDir, "events.json");
+  const applyWarmup = (metadata) => {
+    const warmupRequests = Math.min(
+      metadata.requestCount,
+      Math.max(0, Math.floor(metadata.requestCount * toNumber(options.warmupFraction, DEFAULT_WARMUP_FRACTION))),
+    );
+    metadata.warmupRequests = warmupRequests;
+    metadata.warmupFraction = toNumber(options.warmupFraction, DEFAULT_WARMUP_FRACTION);
+    return metadata;
+  };
   if (!options.forceEvents && fs.existsSync(metadataPath)) {
-    const metadata = JSON.parse(await fsp.readFile(metadataPath, "utf8"));
+    const metadata = applyWarmup(JSON.parse(await fsp.readFile(metadataPath, "utf8")));
     if (metadata.requestEndsPath && fs.existsSync(metadata.requestEndsPath)) return metadata;
   }
   await fsp.rm(traceDir, { recursive: true, force: true });
@@ -402,7 +550,7 @@ async function ensureEventStream(source, options) {
   console.error(`[full] ${source.id}: building request store`);
   const writer = await buildRequestStore(source, options, traceDir);
   console.error(`[full] ${source.id}: ${writer.requestCount} requests, ${writer.rawEventCount} raw block events, ${writer.uniqueIdCount} unique`);
-  return createSortedEventFiles(writer, traceDir, options);
+  return applyWarmup(await createSortedEventFiles(writer, traceDir, options));
 }
 
 async function scanEvents(metadata, withNext, onChunk) {
@@ -438,6 +586,18 @@ async function readRequestEnds(metadata) {
   return ends;
 }
 
+function makeRequestCursor(requestEnds) {
+  let requestIndex = 0;
+  return {
+    current(eventIndex) {
+      while (requestIndex < requestEnds.length && eventIndex >= requestEnds[requestIndex]) {
+        requestIndex += 1;
+      }
+      return requestIndex;
+    },
+  };
+}
+
 function makeRequestSampler(metadata, requestEnds, capacity) {
   let requestIndex = 0;
   let usefulCacheBlockSamples = 0;
@@ -470,35 +630,35 @@ async function computeCeiling(metadata, options = {}) {
   if (options.nativeSimPath) {
     console.error(`[full] ${metadata.id}: computing infinite-cache ceiling with native helper`);
     const nativeResult = await simulateNativePolicy(metadata, Math.max(1, metadata.uniqueBlocks), "ceiling", options);
+    if (Number.isFinite(Number(nativeResult.trieNodeCount))) {
+      metadata.trieNodeCount = Number(nativeResult.trieNodeCount);
+      metadata.uniqueBlocks = Math.max(0, metadata.trieNodeCount - 1);
+    }
     return { warmupRequests: metadata.warmupRequests, ...nativeResult };
   }
 
   await ensureNextFile(metadata, options);
-  const requestEnds = await readRequestEnds(metadata);
-  const capacity = Math.max(1, metadata.uniqueBlocks);
   const seen = new Map();
-  const sampler = makeRequestSampler(metadata, requestEnds, capacity);
-  let usefulCount = 0;
   let hitTokens = 0;
   let totalTokens = 0;
   await scanEvents(metadata, true, ({ start, count, ids, tokens, next }) => {
     for (let index = 0; index < count; index += 1) {
-      const eventIndex = start + index;
       const id = ids.readUInt32LE(index * 4);
       const tokenCount = tokens.readUInt16LE(index * 2);
       const nextUse = next.readUInt32LE(index * 4);
       const hit = seen.has(id);
-      if (eventIndex >= metadata.warmupEventStart) {
-        totalTokens += tokenCount;
-        if (hit) hitTokens += tokenCount;
-      }
-      if (hit && seen.get(id) < metadata.totalBlocks + 1) usefulCount -= 1;
-      if (nextUse < metadata.totalBlocks + 1) usefulCount += 1;
+      totalTokens += tokenCount;
+      if (hit) hitTokens += tokenCount;
       seen.set(id, nextUse);
-      sampler.sample(eventIndex, usefulCount);
     }
   });
-  return { warmupRequests: metadata.warmupRequests, ...sampler.finish(hitTokens, totalTokens) };
+  return { warmupRequests: 0, hitTokens, totalTokens, hitRate: totalTokens ? hitTokens / totalTokens : 0 };
+}
+
+function policyWorkingSet(metadata, policy) {
+  const trieNodeCount = Number(metadata.trieNodeCount);
+  if (Number.isFinite(trieNodeCount) && trieNodeCount > 0) return Math.max(0, trieNodeCount - 1);
+  return Math.max(0, Number(metadata.uniqueBlocks) || 0);
 }
 
 async function ensureNextFile(metadata, options) {
@@ -596,110 +756,97 @@ class MaxHeap {
 }
 
 async function simulateFifo(metadata, capacity) {
-  if (capacity <= 0) return { hitTokens: 0, totalTokens: 0, hitRate: 0 };
+  if (capacity <= 0) return { hitTokens: 0, totalTokens: metadata.totalInputTokens || 0, hitRate: 0 };
   await ensureNextFile(metadata, {});
   const requestEnds = await readRequestEnds(metadata);
-  const sampler = makeRequestSampler(metadata, requestEnds, capacity);
-  const cache = new Map();
+  const requestCursor = makeRequestCursor(requestEnds);
+  const cache = new Set();
   let queue = [];
   let head = 0;
   let hitTokens = 0;
   let totalTokens = 0;
-  let usefulCount = 0;
+  let measurementStartRequest = -1;
   await scanEvents(metadata, true, ({ start, count, ids, tokens, next }) => {
     for (let index = 0; index < count; index += 1) {
       const eventIndex = start + index;
+      const requestIndex = requestCursor.current(eventIndex);
       const id = ids.readUInt32LE(index * 4);
       const tokenCount = tokens.readUInt16LE(index * 2);
-      const nextUse = next.readUInt32LE(index * 4);
       const hit = cache.has(id);
-      if (eventIndex >= metadata.warmupEventStart) {
+      if (measurementStartRequest >= 0 && requestIndex >= measurementStartRequest) {
         totalTokens += tokenCount;
         if (hit) hitTokens += tokenCount;
       }
       if (!hit) {
         while (cache.size >= capacity && head < queue.length) {
+          if (measurementStartRequest < 0) measurementStartRequest = requestIndex + 1;
           const victim = queue[head];
           head += 1;
-          const victimNextUse = cache.get(victim);
-          if (cache.delete(victim)) {
-            if (victimNextUse < metadata.totalBlocks + 1) usefulCount -= 1;
-            break;
-          }
+          if (cache.delete(victim)) break;
         }
         if (cache.size < capacity) {
-          if (nextUse < metadata.totalBlocks + 1) usefulCount += 1;
-          cache.set(id, nextUse);
+          cache.add(id);
           queue.push(id);
         }
-      } else {
-        if (cache.get(id) < metadata.totalBlocks + 1) usefulCount -= 1;
-        if (nextUse < metadata.totalBlocks + 1) usefulCount += 1;
-        cache.set(id, nextUse);
       }
-      sampler.sample(eventIndex, usefulCount);
       if (head > 1_000_000 && head * 2 > queue.length) {
         queue = queue.slice(head);
         head = 0;
       }
     }
   });
-  return sampler.finish(hitTokens, totalTokens);
+  if (measurementStartRequest < 0 || totalTokens <= 0) return computeCeiling(metadata);
+  return { hitTokens, totalTokens, hitRate: totalTokens ? hitTokens / totalTokens : 0 };
 }
 
 async function simulateLru(metadata, capacity) {
-  if (capacity <= 0) return { hitTokens: 0, totalTokens: 0, hitRate: 0 };
+  if (capacity <= 0) return { hitTokens: 0, totalTokens: metadata.totalInputTokens || 0, hitRate: 0 };
   await ensureNextFile(metadata, {});
   const requestEnds = await readRequestEnds(metadata);
-  const sampler = makeRequestSampler(metadata, requestEnds, capacity);
+  const requestCursor = makeRequestCursor(requestEnds);
   const cache = new Map();
   let hitTokens = 0;
   let totalTokens = 0;
-  let usefulCount = 0;
+  let measurementStartRequest = -1;
   await scanEvents(metadata, true, ({ start, count, ids, tokens, next }) => {
     for (let index = 0; index < count; index += 1) {
       const eventIndex = start + index;
+      const requestIndex = requestCursor.current(eventIndex);
       const id = ids.readUInt32LE(index * 4);
       const tokenCount = tokens.readUInt16LE(index * 2);
-      const nextUse = next.readUInt32LE(index * 4);
       const hit = cache.has(id);
-      if (eventIndex >= metadata.warmupEventStart) {
+      if (measurementStartRequest >= 0 && requestIndex >= measurementStartRequest) {
         totalTokens += tokenCount;
         if (hit) hitTokens += tokenCount;
       }
       if (hit) {
-        if (cache.get(id) < metadata.totalBlocks + 1) usefulCount -= 1;
         cache.delete(id);
       } else {
         while (cache.size >= capacity) {
+          if (measurementStartRequest < 0) measurementStartRequest = requestIndex + 1;
           const victim = cache.keys().next().value;
-          const victimNextUse = cache.get(victim);
           cache.delete(victim);
-          if (victimNextUse < metadata.totalBlocks + 1) usefulCount -= 1;
         }
       }
-      if (nextUse < metadata.totalBlocks + 1) usefulCount += 1;
-      cache.set(id, nextUse);
-      sampler.sample(eventIndex, usefulCount);
+      cache.set(id, true);
     }
   });
-  return sampler.finish(hitTokens, totalTokens);
+  if (measurementStartRequest < 0 || totalTokens <= 0) return computeCeiling(metadata);
+  return { hitTokens, totalTokens, hitRate: totalTokens ? hitTokens / totalTokens : 0 };
 }
 
 async function simulateOptimal(metadata, capacity, options) {
-  if (capacity <= 0) return { hitTokens: 0, totalTokens: 0, hitRate: 0 };
+  if (capacity <= 0) return { hitTokens: 0, totalTokens: metadata.totalInputTokens || 0, hitRate: 0 };
   await ensureNextFile(metadata, options);
   const requestEnds = await readRequestEnds(metadata);
-  const sampler = makeRequestSampler(metadata, requestEnds, capacity);
+  const requestCursor = makeRequestCursor(requestEnds);
   const cache = new Map();
   const heap = new MaxHeap();
   let hitTokens = 0;
   let totalTokens = 0;
-  let usefulCount = 0;
+  let measurementStartRequest = -1;
   function pushState(id, nextUse) {
     const previous = cache.get(id);
-    if (previous && previous.nextUse < metadata.totalBlocks + 1) usefulCount -= 1;
-    if (nextUse < metadata.totalBlocks + 1) usefulCount += 1;
     const state = { nextUse, version: (previous?.version || 0) + 1 };
     cache.set(id, state);
     heap.push({ id, nextUse, version: state.version });
@@ -711,7 +858,6 @@ async function simulateOptimal(metadata, capacity, options) {
       const current = cache.get(candidate.id);
       if (!current || current.version !== candidate.version || current.nextUse !== candidate.nextUse) continue;
       if (current.nextUse > candidateNextUse) {
-        if (current.nextUse < metadata.totalBlocks + 1) usefulCount -= 1;
         cache.delete(candidate.id);
         return true;
       }
@@ -722,11 +868,12 @@ async function simulateOptimal(metadata, capacity, options) {
   await scanEvents(metadata, true, ({ start, count, ids, tokens, next }) => {
     for (let index = 0; index < count; index += 1) {
       const eventIndex = start + index;
+      const requestIndex = requestCursor.current(eventIndex);
       const id = ids.readUInt32LE(index * 4);
       const tokenCount = tokens.readUInt16LE(index * 2);
       const nextUse = next.readUInt32LE(index * 4);
       const hit = cache.has(id);
-      if (eventIndex >= metadata.warmupEventStart) {
+      if (measurementStartRequest >= 0 && requestIndex >= measurementStartRequest) {
         totalTokens += tokenCount;
         if (hit) hitTokens += tokenCount;
       }
@@ -734,16 +881,19 @@ async function simulateOptimal(metadata, capacity, options) {
         pushState(id, nextUse);
       } else if (cache.size < capacity) {
         pushState(id, nextUse);
-      } else if (evictForCandidate(nextUse)) {
-        if (cache.size < capacity) pushState(id, nextUse);
       } else {
-        // Belady-with-bypass: do not admit a miss that would be used no sooner
-        // than every resident block.
+        if (measurementStartRequest < 0) measurementStartRequest = requestIndex + 1;
+        if (evictForCandidate(nextUse)) {
+          if (cache.size < capacity) pushState(id, nextUse);
+        } else {
+          // Belady-with-bypass: do not admit a miss that would be used no sooner
+          // than every resident block.
+        }
       }
-      sampler.sample(eventIndex, usefulCount);
     }
   });
-  return sampler.finish(hitTokens, totalTokens);
+  if (measurementStartRequest < 0 || totalTokens <= 0) return computeCeiling(metadata);
+  return { hitTokens, totalTokens, hitRate: totalTokens ? hitTokens / totalTokens : 0 };
 }
 
 async function simulateNativePolicy(metadata, capacity, policy, options) {
@@ -778,39 +928,71 @@ async function simulateNativePolicy(metadata, capacity, policy, options) {
   return JSON.parse(stdout);
 }
 
+function normalizePolicyResult(policy, cacheBlocks, result) {
+  const measurementStartRequest = Number.isFinite(Number(result.measurementStartRequest))
+    ? Number(result.measurementStartRequest)
+    : null;
+  return {
+    policy,
+    cacheBlocks,
+    warmupRequests: Number.isFinite(Number(result.warmupRequests)) ? Number(result.warmupRequests) : 0,
+    measurementStartRequest: measurementStartRequest != null && measurementStartRequest >= 0 ? measurementStartRequest : null,
+    measurementMode: measurementStartRequest === -2
+      ? "underfilled_at_window"
+      : measurementStartRequest != null && measurementStartRequest >= 0
+        ? "fixed_window"
+        : "fixed_window_ceiling",
+    hitTokens: result.hitTokens,
+    totalTokens: result.totalTokens,
+    hitRate: result.hitRate,
+  };
+}
+
+async function simulateNativeAllPolicies(metadata, capacity, options) {
+  if (!options.nativeSimPath) return null;
+  await ensureNextFile(metadata, options);
+  const args = [
+    "--policy",
+    "all",
+    "--ids",
+    metadata.idsPath,
+    "--tokens",
+    metadata.tokensPath,
+    "--total-blocks",
+    String(metadata.totalBlocks),
+    "--warmup-event-start",
+    String(metadata.warmupEventStart),
+    "--capacity",
+    String(capacity),
+    "--request-ends",
+    metadata.requestEndsPath,
+    "--request-count",
+    String(metadata.requestCount),
+    "--warmup-requests",
+    String(metadata.warmupRequests),
+    "--next",
+    metadata.nextPath,
+  ];
+  const { stdout } = await execFileAsync(path.resolve(options.nativeSimPath), args, {
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  });
+  const parsed = JSON.parse(stdout);
+  return {
+    fifo: normalizePolicyResult("fifo", capacity, parsed.fifo),
+    lru: normalizePolicyResult("lru", capacity, parsed.lru),
+    optimal: normalizePolicyResult("optimal", capacity, parsed.optimal),
+  };
+}
+
 async function simulatePolicy(metadata, capacity, policy, ceiling, options) {
   const cacheBlocks = Math.max(0, Math.floor(capacity));
-  if (cacheBlocks >= metadata.uniqueBlocks) {
-    return {
-      policy,
-      cacheBlocks,
-      warmupRequests: metadata.warmupRequests,
-      hitTokens: ceiling.hitTokens,
-      totalTokens: ceiling.totalTokens,
-      hitRate: ceiling.hitRate,
-      usefulCacheBlockSamples: ceiling.usefulCacheBlockSamples || 0,
-      usefulCacheSamples: ceiling.usefulCacheSamples || 0,
-      usefulCacheRate: cacheBlocks > 0 && ceiling.usefulCacheSamples
-        ? (ceiling.usefulCacheBlockSamples || 0) / (ceiling.usefulCacheSamples * cacheBlocks)
-        : 0,
-    };
-  }
+  const workingSet = policyWorkingSet(metadata, policy);
+  if (workingSet > 0 && cacheBlocks > workingSet) return null;
   console.error(`[full] ${metadata.id}: simulate ${policy} capacity=${cacheBlocks}`);
   const nativeResult = await simulateNativePolicy(metadata, cacheBlocks, policy, options);
   if (nativeResult) {
-    return {
-      policy,
-      cacheBlocks,
-      warmupRequests: metadata.warmupRequests,
-      hitTokens: nativeResult.hitTokens,
-      totalTokens: nativeResult.totalTokens,
-      hitRate: nativeResult.hitRate,
-      usefulCacheBlockSamples: nativeResult.usefulCacheBlockSamples || 0,
-      usefulCacheSamples: nativeResult.usefulCacheSamples || 0,
-      usefulCacheRate: Number.isFinite(Number(nativeResult.usefulCacheRate))
-        ? Number(nativeResult.usefulCacheRate)
-        : 0,
-    };
+    return normalizePolicyResult(policy, cacheBlocks, nativeResult);
   }
   const result =
     policy === "fifo"
@@ -818,7 +1000,55 @@ async function simulatePolicy(metadata, capacity, policy, ceiling, options) {
       : policy === "lru"
         ? await simulateLru(metadata, cacheBlocks)
         : await simulateOptimal(metadata, cacheBlocks, options);
-  return { policy, cacheBlocks, warmupRequests: metadata.warmupRequests, ...result };
+  return { policy, cacheBlocks, warmupRequests: 0, ...result };
+}
+
+function maxSweepHitRate(points) {
+  let maxHitRate = -Infinity;
+  for (const point of points || []) {
+    for (const result of Object.values(point.results || {})) {
+      const hitRate = Number(result && result.hitRate);
+      if (Number.isFinite(hitRate)) maxHitRate = Math.max(maxHitRate, hitRate);
+    }
+  }
+  return maxHitRate === -Infinity ? undefined : maxHitRate;
+}
+
+function applyCeilingPlateau(points, ceilingHitRate) {
+  const hitRate = Number(ceilingHitRate);
+  if (!Number.isFinite(hitRate)) return points;
+  for (const point of points || []) {
+    for (const result of Object.values(point.results || {})) {
+      if (!result || result.measurementMode !== "ceiling_no_pressure") continue;
+      result.hitRate = hitRate;
+      const totalTokens = Number(result.totalTokens);
+      if (Number.isFinite(totalTokens)) result.hitTokens = Math.round(totalTokens * hitRate);
+    }
+  }
+  return points;
+}
+
+function cloneCeilingResult(ceiling, policy, cacheBlocks) {
+  return {
+    policy,
+    cacheBlocks,
+    warmupRequests: Number.isFinite(Number(ceiling && ceiling.warmupRequests)) ? Number(ceiling.warmupRequests) : 0,
+    measurementStartRequest: Number.isFinite(Number(ceiling && ceiling.measurementStartRequest))
+      ? Number(ceiling.measurementStartRequest)
+      : null,
+    measurementMode: "ceiling_no_pressure",
+    hitTokens: Number(ceiling && ceiling.hitTokens) || 0,
+    totalTokens: Number(ceiling && ceiling.totalTokens) || 0,
+    hitRate: Number(ceiling && ceiling.hitRate) || 0,
+  };
+}
+
+function ceilingPoint(gib, cacheBlocks, ceiling) {
+  const results = {};
+  POLICIES.forEach((policy) => {
+    results[policy] = cloneCeilingResult(ceiling, policy, cacheBlocks);
+  });
+  return { gib, cacheBlocks, results };
 }
 
 function modelSettingFor(model) {
@@ -835,28 +1065,14 @@ function modelSettingFor(model) {
 }
 
 function seedSimulationResults(existingTrace, metadata) {
-  const seeded = new Map();
-  if (!existingTrace || !existingTrace.modelSweeps) return seeded;
-  Object.values(existingTrace.modelSweeps).forEach((sweep) => {
-    (sweep.points || []).forEach((point) => {
-      const cacheBlocks = Math.max(0, Math.floor(Number(point.cacheBlocks)));
-      if (!Number.isFinite(cacheBlocks) || cacheBlocks >= metadata.uniqueBlocks) return;
-      POLICIES.forEach((policy) => {
-        const result = point.results && point.results[policy];
-        if (!result) return;
-        if (!Number.isFinite(Number(result.usefulCacheRate))) return;
-        seeded.set(`${policy}|${cacheBlocks}`, { ...result });
-      });
-    });
-  });
-  return seeded;
+  return new Map();
 }
 
-function simulationResultHasUsefulStats(result) {
+function simulationResultHasCurrentStats(result) {
   return Boolean(result)
     && Number.isFinite(Number(result.hitRate))
-    && Number.isFinite(Number(result.usefulCacheRate))
-    && Number.isFinite(Number(result.usefulCacheSamples));
+    && Number.isFinite(Number(result.hitTokens))
+    && Number.isFinite(Number(result.totalTokens));
 }
 
 function simulationResultCacheDir(metadata) {
@@ -868,36 +1084,23 @@ function simulationResultCachePath(metadata, policy, capacity) {
 }
 
 async function seedCachedSimulationResults(simulationResults, metadata) {
-  let files;
-  try {
-    files = await fsp.readdir(simulationResultCacheDir(metadata));
-  } catch {
-    return 0;
-  }
-  let loaded = 0;
+  const dir = simulationResultCacheDir(metadata);
+  if (!fs.existsSync(dir)) return 0;
+  let count = 0;
+  const files = await fsp.readdir(dir);
   for (const file of files) {
-    if (!file.endsWith(".json")) continue;
     const match = /^(fifo|lru|optimal)-(\d+)\.json$/.exec(file);
     if (!match) continue;
-    const [, policy, rawCapacity] = match;
-    const capacity = Number(rawCapacity);
-    if (!Number.isSafeInteger(capacity) || capacity < 0 || capacity >= metadata.uniqueBlocks) continue;
-    const key = `${policy}|${capacity}`;
-    if (simulationResults.has(key)) continue;
-    try {
-      const result = JSON.parse(await fsp.readFile(simulationResultCachePath(metadata, policy, capacity), "utf8"));
-      if (!simulationResultHasUsefulStats(result)) continue;
-      simulationResults.set(key, result);
-      loaded += 1;
-    } catch {
-      // Ignore corrupt partial caches; they will be recomputed.
-    }
+    const result = JSON.parse(await fsp.readFile(path.join(dir, file), "utf8"));
+    if (!simulationResultHasCurrentStats(result)) continue;
+    simulationResults.set(`${match[1]}|${match[2]}`, result);
+    count += 1;
   }
-  return loaded;
+  return count;
 }
 
 async function writeCachedSimulationResult(metadata, policy, capacity, result) {
-  if (!simulationResultHasUsefulStats(result)) return;
+  if (!simulationResultHasCurrentStats(result)) return;
   await fsp.mkdir(simulationResultCacheDir(metadata), { recursive: true });
   const destination = simulationResultCachePath(metadata, policy, capacity);
   const temporary = `${destination}.${process.pid}.tmp`;
@@ -905,65 +1108,44 @@ async function writeCachedSimulationResult(metadata, policy, capacity, result) {
   await fsp.rename(temporary, destination);
 }
 
-async function precomputeTrace(source, options, modelsData, existingTrace = null) {
-  const metadata = await ensureEventStream(source, options);
-  console.error(`[full] ${source.id}: computing infinite-cache ceiling`);
-  const ceiling = await computeCeiling(metadata, options);
-  const defaultSettings = options.defaultSettings
-    ? modelsData.models.map(modelSettingFor)
-    : allModelSettings(modelsData.models, {
-        precisionOptions: modelsData.precision_options,
-        indexerPrecisionOptions: modelsData.indexer_precision_options,
-      });
-  const modelSettings = options.modelIds && options.modelIds.length
-    ? defaultSettings.filter((setting) => options.modelIds.includes(setting.modelId))
-    : defaultSettings;
-  const modelById = new Map(modelsData.models.map((model) => [model.id, model]));
-  const capacityByKey = new Map();
-  const sweepInputs = [];
-
-  for (const rawSetting of modelSettings) {
-    const model = modelById.get(rawSetting.modelId);
-    if (!model) continue;
-    const accountingSettings = {
-      estimateTokens: positiveInteger(metadata.averageInputTokens, model.default_tokens || 4096),
-      precision: rawSetting.precision,
-      indexerPrecision: rawSetting.indexerPrecision,
-      includeDraftKvCache: Boolean(rawSetting.includeDraftKvCache),
-      precisionOptions: modelsData.precision_options,
-      indexerPrecisionOptions: modelsData.indexer_precision_options,
-    };
-    const bytesPerToken = lab.estimateBytesPerToken(model, accountingSettings);
-    const bytesPerBlock = bytesPerToken * metadata.blockSize;
-    const capacities = options.capacityGiBValues.map((gib) => ({
-      gib,
-      cacheBlocks: lab.cacheBlocksForGiB(gib, bytesPerBlock),
-    }));
-    capacities.forEach((point) => {
-      if (point.cacheBlocks < metadata.uniqueBlocks) capacityByKey.set(point.cacheBlocks, point.cacheBlocks);
-    });
-    sweepInputs.push({ rawSetting, model, bytesPerToken, bytesPerBlock, capacities });
-  }
-
-  const simulationResults = seedSimulationResults(existingTrace, metadata);
-  const outputSeedCount = simulationResults.size;
-  const localSeedCount = await seedCachedSimulationResults(simulationResults, metadata);
-  const capacities = Array.from(capacityByKey.values()).sort((left, right) => left - right);
-  const missingCapacities = capacities.filter((capacity) => POLICIES.some((policy) => !simulationResults.has(`${policy}|${capacity}`)));
+async function runCapacitySimulations(metadata, capacities, simulationResults, options) {
+  const missingCapacities = capacities.filter((capacity) =>
+    POLICIES.some((policy) => capacity <= policyWorkingSet(metadata, policy) && !simulationResults.has(`${policy}|${capacity}`)),
+  );
   console.error(
-    `[full] ${source.id}: ${capacities.length} finite capacities below unique working set, ${capacities.length - missingCapacities.length} reused (${outputSeedCount} output, ${localSeedCount} local), ${missingCapacities.length} missing`,
+    `[full] ${metadata.id}: ${capacities.length} curve capacities below working set, ${capacities.length - missingCapacities.length} reused, ${missingCapacities.length} missing`,
   );
   if (options.nativeSimPath && missingCapacities.length) {
     await ensureNextFile(metadata, options);
   }
   const tasks = [];
-  for (const capacity of missingCapacities) {
-    for (const policy of POLICIES) {
-      if (simulationResults.has(`${policy}|${capacity}`)) continue;
-      tasks.push({ capacity, policy });
+  if (options.nativeSimPath) {
+    for (const capacity of missingCapacities) tasks.push({ capacity });
+  } else {
+    for (const capacity of missingCapacities) {
+      for (const policy of POLICIES) {
+        if (simulationResults.has(`${policy}|${capacity}`)) continue;
+        tasks.push({ capacity, policy });
+      }
     }
   }
   const nativeJobs = options.nativeSimPath ? Math.max(1, Math.floor(options.nativeJobs || 1)) : 1;
+  async function runTask(task) {
+    if (task.policy) {
+      const result = await simulatePolicy(metadata, task.capacity, task.policy, null, options);
+      simulationResults.set(`${task.policy}|${task.capacity}`, result);
+      await writeCachedSimulationResult(metadata, task.policy, task.capacity, result);
+      return;
+    }
+    console.error(`[full] ${metadata.id}: simulate all policies capacity=${task.capacity}`);
+    const results = await simulateNativeAllPolicies(metadata, task.capacity, options);
+    for (const policy of POLICIES) {
+      if (simulationResults.has(`${policy}|${task.capacity}`)) continue;
+      const result = results[policy];
+      simulationResults.set(`${policy}|${task.capacity}`, result);
+      await writeCachedSimulationResult(metadata, policy, task.capacity, result);
+    }
+  }
   async function runTaskList(taskList, jobs) {
     let nextTask = 0;
     async function worker() {
@@ -971,10 +1153,7 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
         const index = nextTask;
         nextTask += 1;
         if (index >= taskList.length) return;
-        const task = taskList[index];
-        const result = await simulatePolicy(metadata, task.capacity, task.policy, ceiling, options);
-        simulationResults.set(`${task.policy}|${task.capacity}`, result);
-        await writeCachedSimulationResult(metadata, task.policy, task.capacity, result);
+        await runTask(taskList[index]);
       }
     }
     await Promise.all(Array.from({ length: Math.min(jobs, taskList.length) }, () => worker()));
@@ -987,60 +1166,254 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
     const serialTasks = tasks.filter((task) => task.capacity > serialThreshold);
     if (concurrentTasks.length) await runTaskList(concurrentTasks, nativeJobs);
     for (const task of serialTasks) {
-      const result = await simulatePolicy(metadata, task.capacity, task.policy, ceiling, options);
-      simulationResults.set(`${task.policy}|${task.capacity}`, result);
-      await writeCachedSimulationResult(metadata, task.policy, task.capacity, result);
+      await runTask(task);
     }
   } else {
     for (const task of tasks) {
+      await runTask(task);
+    }
+  }
+}
+
+async function precomputeBlockCurveTrace(source, options, metadata, ceiling) {
+  const simulationResults = new Map();
+  const localSeedCount = await seedCachedSimulationResults(simulationResults, metadata);
+  const maxCapacity = Math.max(...POLICIES.map((policy) => policyWorkingSet(metadata, policy)), 1);
+  const capacities = blockCapacityGrid(maxCapacity, { curvePoints: options.curvePoints || 64 });
+  console.error(`[full] ${source.id}: block-capacity curve grid has ${capacities.length} candidate points (${localSeedCount} cached results loaded)`);
+  await runCapacitySimulations(metadata, capacities, simulationResults, options);
+
+  const points = [];
+  for (const capacity of capacities) {
+    if (POLICIES.some((policy) => capacity > policyWorkingSet(metadata, policy))) {
+      points.push(ceilingPoint(null, capacity, ceiling));
+      break;
+    }
+    const results = {};
+    let underfilled = false;
+    POLICIES.forEach((policy) => {
+      const result = simulationResults.get(`${policy}|${capacity}`);
+      results[policy] = result;
+      if (!result || result.measurementMode === "underfilled_at_window") underfilled = true;
+    });
+    if (underfilled) {
+      points.push(ceilingPoint(null, capacity, ceiling));
+      break;
+    }
+    points.push({ cacheBlocks: capacity, results });
+  }
+
+  const generatedAt = new Date().toISOString();
+  const totalMeasuredTokens = Number.isFinite(Number(ceiling.totalTokens))
+    ? Number(ceiling.totalTokens)
+    : Number(metadata.totalMeasuredTokens) || 0;
+  return {
+    id: source.id,
+    label: source.label,
+    scenario: source.scenario,
+    sourceKind: source.sourceKind,
+    nativeBlockSize: metadata.blockSize,
+    sourceBlockSizeNote: source.sourceBlockSizeNote,
+    sources: source.sources || [],
+    summary: {
+      requests: metadata.requestCount,
+      totalInputTokens: metadata.totalInputTokens,
+      averageInputTokens: metadata.averageInputTokens,
+      uniqueBlocks: metadata.uniqueBlocks,
+      totalBlocks: metadata.totalBlocks,
+      warmupRequests: metadata.warmupRequests,
+      totalMeasuredTokens,
+      infiniteHitRate: ceiling.hitRate,
+    },
+    blockCapacityCurve: {
+      blockSize: metadata.blockSize,
+      policies: POLICIES,
+      capacityBlocks: points.map((point) => point.cacheBlocks),
+      points,
+      warmupRequests: metadata.warmupRequests,
+      totalTokens: totalMeasuredTokens,
+      reuseCeiling: ceiling.hitRate,
+      interpolation: "log_linear_cache_blocks",
+      generatedAt,
+    },
+  };
+}
+
+async function precomputeTrace(source, options, modelsData, existingTrace = null) {
+  const metadata = await ensureEventStream(source, options);
+  console.error(`[full] ${source.id}: computing infinite-cache ceiling`);
+  const ceiling = await computeCeiling(metadata, options);
+  if (options.blockCurve) {
+    return precomputeBlockCurveTrace(source, options, metadata, ceiling);
+  }
+  const selectedModels = selectModels(modelsData.models, options);
+  const precisionOptions = filterPrecisionOptions(modelsData.precision_options, options.precisionIds);
+  const indexerPrecisionOptions = filterPrecisionOptions(modelsData.indexer_precision_options, options.indexerPrecisionIds);
+  const modelGroups = options.dedupeKvArchitecture
+    ? kvArchitectureGroups(selectedModels)
+    : selectedModels.map((model) => ({ key: null, models: [model] }));
+  console.error(
+    `[full] ${source.id}: selected ${selectedModels.length} models across ${modelGroups.length} KV architecture groups`,
+  );
+  const capacityByKey = new Map();
+  const sweepInputs = [];
+
+  for (const group of modelGroups) {
+    const model = group.models[0];
+    const rawSettings = options.defaultSettings && !options.allPrecisions
+      ? [modelSettingFor(model)]
+      : allModelSettings([model], {
+          precisionOptions,
+          indexerPrecisionOptions,
+          includeDraftKvCache: !options.noDraft,
+        });
+    for (const rawSetting of rawSettings) {
+      const accountingSettings = {
+        estimateTokens: positiveInteger(metadata.averageInputTokens, model.default_tokens || 4096),
+        precision: rawSetting.precision,
+        indexerPrecision: rawSetting.indexerPrecision,
+        includeDraftKvCache: Boolean(rawSetting.includeDraftKvCache),
+        precisionOptions,
+        indexerPrecisionOptions,
+      };
+      const bytesPerToken = lab.estimateBytesPerToken(model, accountingSettings);
+      const bytesPerBlock = bytesPerToken * metadata.blockSize;
+      const capacities = options.capacityGiBValues.map((gib) => ({
+        gib,
+        cacheBlocks: lab.cacheBlocksForGiB(gib, bytesPerBlock),
+      }));
+      capacities.forEach((point) => {
+        if (POLICIES.some((policy) => point.cacheBlocks <= policyWorkingSet(metadata, policy))) {
+          capacityByKey.set(point.cacheBlocks, point.cacheBlocks);
+        }
+      });
+      const aliases = group.models.map((aliasModel) => ({
+        model: aliasModel,
+        rawSetting: {
+          ...rawSetting,
+          modelId: aliasModel.id,
+        },
+      }));
+      sweepInputs.push({ rawSetting, model, aliases, kvArchitectureKey: group.key, bytesPerToken, bytesPerBlock, capacities });
+    }
+  }
+
+  const simulationResults = seedSimulationResults(existingTrace, metadata);
+  const outputSeedCount = simulationResults.size;
+  const localSeedCount = await seedCachedSimulationResults(simulationResults, metadata);
+  const capacities = Array.from(capacityByKey.values()).sort((left, right) => left - right);
+  const missingCapacities = capacities.filter((capacity) =>
+    POLICIES.some((policy) => capacity <= policyWorkingSet(metadata, policy) && !simulationResults.has(`${policy}|${capacity}`)),
+  );
+  console.error(
+    `[full] ${source.id}: ${capacities.length} finite capacities below unique working set, ${capacities.length - missingCapacities.length} reused (${outputSeedCount} output, ${localSeedCount} local), ${missingCapacities.length} missing`,
+  );
+  if (options.nativeSimPath && missingCapacities.length) {
+    await ensureNextFile(metadata, options);
+  }
+  const tasks = [];
+  if (options.nativeSimPath) {
+    for (const capacity of missingCapacities) tasks.push({ capacity });
+  } else {
+    for (const capacity of missingCapacities) {
+      for (const policy of POLICIES) {
+        if (simulationResults.has(`${policy}|${capacity}`)) continue;
+        tasks.push({ capacity, policy });
+      }
+    }
+  }
+  const nativeJobs = options.nativeSimPath ? Math.max(1, Math.floor(options.nativeJobs || 1)) : 1;
+  async function runTask(task) {
+    if (task.policy) {
       const result = await simulatePolicy(metadata, task.capacity, task.policy, ceiling, options);
       simulationResults.set(`${task.policy}|${task.capacity}`, result);
       await writeCachedSimulationResult(metadata, task.policy, task.capacity, result);
+      return;
+    }
+    console.error(`[full] ${metadata.id}: simulate all policies capacity=${task.capacity}`);
+    const results = await simulateNativeAllPolicies(metadata, task.capacity, options);
+    for (const policy of POLICIES) {
+      if (simulationResults.has(`${policy}|${task.capacity}`)) continue;
+      const result = results[policy];
+      simulationResults.set(`${policy}|${task.capacity}`, result);
+      await writeCachedSimulationResult(metadata, policy, task.capacity, result);
+    }
+  }
+  async function runTaskList(taskList, jobs) {
+    let nextTask = 0;
+    async function worker() {
+      for (;;) {
+        const index = nextTask;
+        nextTask += 1;
+        if (index >= taskList.length) return;
+        await runTask(taskList[index]);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(jobs, taskList.length) }, () => worker()));
+  }
+  if (nativeJobs > 1) {
+    const serialThreshold = Number.isFinite(options.nativeSerialCapacityThreshold)
+      ? options.nativeSerialCapacityThreshold
+      : Infinity;
+    const concurrentTasks = tasks.filter((task) => task.capacity <= serialThreshold);
+    const serialTasks = tasks.filter((task) => task.capacity > serialThreshold);
+    if (concurrentTasks.length) await runTaskList(concurrentTasks, nativeJobs);
+    for (const task of serialTasks) {
+      await runTask(task);
+    }
+  } else {
+    for (const task of tasks) {
+      await runTask(task);
     }
   }
 
   const generatedAt = new Date().toISOString();
   const modelSweeps = {};
   for (const input of sweepInputs) {
-    const points = input.capacities.map((point) => {
+    const points = [];
+    for (const point of input.capacities) {
+      if (POLICIES.some((policy) => {
+        const workingSet = policyWorkingSet(metadata, policy);
+        return workingSet > 0 && point.cacheBlocks > workingSet;
+      })) {
+        points.push(ceilingPoint(point.gib, point.cacheBlocks, ceiling));
+        break;
+      }
       const results = {};
+      let underfilled = false;
       POLICIES.forEach((policy) => {
         const key = `${policy}|${point.cacheBlocks}`;
-        results[policy] =
-          point.cacheBlocks >= metadata.uniqueBlocks
-            ? {
-                policy,
-                cacheBlocks: point.cacheBlocks,
-                warmupRequests: metadata.warmupRequests,
-                hitTokens: ceiling.hitTokens,
-                totalTokens: ceiling.totalTokens,
-                hitRate: ceiling.hitRate,
-                usefulCacheBlockSamples: ceiling.usefulCacheBlockSamples || 0,
-                usefulCacheSamples: ceiling.usefulCacheSamples || 0,
-                usefulCacheRate: point.cacheBlocks > 0 && ceiling.usefulCacheSamples
-                  ? (ceiling.usefulCacheBlockSamples || 0) / (ceiling.usefulCacheSamples * point.cacheBlocks)
-                  : 0,
-              }
-            : simulationResults.get(key);
+        const result = simulationResults.get(key);
+        results[policy] = result;
+        if (!result || result.measurementMode === "underfilled_at_window") underfilled = true;
       });
-      return { gib: point.gib, cacheBlocks: point.cacheBlocks, results };
-    });
-    modelSweeps[modelSweepKey(input.rawSetting)] = {
-      modelId: input.model.id,
-      modelLabel: input.model.label,
-      precision: input.rawSetting.precision,
-      indexerPrecision: input.rawSetting.indexerPrecision || null,
-      includeDraftKvCache: Boolean(input.rawSetting.includeDraftKvCache),
-      blockSize: metadata.blockSize,
-      bytesPerToken: input.bytesPerToken,
-      bytesPerBlock: input.bytesPerBlock,
-      points,
-      policies: POLICIES,
-      reuseCeiling: ceiling.hitRate,
-      warmupRequests: metadata.warmupRequests,
-      sourceKind: metadata.sourceKind,
-      generatedAt,
-    };
+      if (underfilled) {
+        points.push(ceilingPoint(point.gib, point.cacheBlocks, ceiling));
+        break;
+      }
+      points.push({ gib: point.gib, cacheBlocks: point.cacheBlocks, results });
+    }
+    const reuseCeiling = ceiling.hitRate;
+    for (const alias of input.aliases) {
+      modelSweeps[modelSweepKey(alias.rawSetting)] = {
+        modelId: alias.model.id,
+        modelLabel: alias.model.label,
+        kvArchitectureKey: input.kvArchitectureKey,
+        kvArchitectureModelIds: input.aliases.map((item) => item.model.id),
+        precision: alias.rawSetting.precision,
+        indexerPrecision: alias.rawSetting.indexerPrecision || null,
+        includeDraftKvCache: Boolean(alias.rawSetting.includeDraftKvCache),
+        blockSize: metadata.blockSize,
+        bytesPerToken: input.bytesPerToken,
+        bytesPerBlock: input.bytesPerBlock,
+        points,
+        policies: POLICIES,
+        reuseCeiling,
+        warmupRequests: metadata.warmupRequests,
+        sourceKind: metadata.sourceKind,
+        generatedAt,
+      };
+    }
   }
 
   return {
@@ -1069,12 +1442,25 @@ function refreshOutputMetadata(output, options) {
     ...(output.metadata || {}),
     mode: "precomputed_real_traces",
     note: "Raw traces are downloaded into a local cache and are not committed. This file contains derived hit-rate curves and provenance.",
-    setting_mode: options.defaultSettings ? "default_model_settings" : "all_model_precision_indexer_draft_settings",
+    setting_mode: options.blockCurve
+      ? "model_independent_block_capacity_curve"
+      : options.dedupeKvArchitecture
+        ? "deduped_kv_architecture_precision_indexer_settings"
+      : options.defaultSettings && options.modelIds && options.modelIds.length === 1
+        ? "default_model_default_precision_only"
+        : options.defaultSettings
+          ? "default_model_settings"
+          : "all_model_precision_indexer_draft_settings",
     capacity_gib_values: options.capacityGiBValues,
-    warmup_fraction: options.warmupFraction ?? DEFAULT_WARMUP_FRACTION,
+    curve_points: options.blockCurve ? (options.curvePoints || 64) : output.metadata?.curve_points,
+    warmup_fraction: DEFAULT_WARMUP_FRACTION,
     policies: POLICIES,
     sources: { ...(output.metadata && output.metadata.sources ? output.metadata.sources : {}), ...SOURCE_LINKS },
     reference_sources: output.metadata?.reference_sources || REFERENCE_SOURCES,
+    include_families: options.includeFamilies,
+    exclude_families: options.excludeFamilies,
+    dedupe_kv_architecture: Boolean(options.dedupeKvArchitecture),
+    include_draft_kv_cache: !options.noDraft,
     full_trace_updated_at: new Date().toISOString(),
   };
 }

@@ -13,7 +13,7 @@ const lab = require("../../assets/js/kv-cache-lab.js");
 export const DEFAULT_TRACE_CACHE_DIR = path.join(os.tmpdir(), "kvcache-lab-traces");
 export const DEFAULT_OUTPUT_PATH = path.resolve("data/kv_cache_lab/precomputed.json");
 export const DEFAULT_CAPACITY_GIB_VALUES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384];
-export const DEFAULT_WARMUP_FRACTION = 0.3;
+export const DEFAULT_WARMUP_FRACTION = 0.5;
 export const POLICIES = ["fifo", "lru", "optimal"];
 
 export const TRACE_SOURCES = [
@@ -175,7 +175,7 @@ function isDeepSeekV4(model) {
   return Boolean(model && model.formula === "deepseek_v4_hybrid");
 }
 
-function hasIndexerCache(model) {
+export function hasIndexerCache(model) {
   return Number.isFinite(modelFieldNumber(model, "index_head_dim", NaN));
 }
 
@@ -244,11 +244,12 @@ export function allDefaultModelSettings(models) {
 export function allModelSettings(models, options = {}) {
   const precisionIds = optionIds(options.precisionOptions, ["bf16_fp16", "fp8_int8", "fp4_int4"]);
   const indexerPrecisionIds = optionIds(options.indexerPrecisionOptions, precisionIds);
+  const includeDraft = options.includeDraftKvCache !== false && options.noDraft !== true;
   const settings = [];
   (models || []).forEach((model) => {
     const preferredPrecision = defaultPrecisionId(model, precisionIds);
     const precisions = orderedValues(precisionIds, preferredPrecision);
-    const includeDraftValues = hasDraftKvCache(model) ? [false, true] : [false];
+    const includeDraftValues = includeDraft && hasDraftKvCache(model) ? [false, true] : [false];
     precisions.forEach((precision) => {
       if (hasIndexerCache(model)) {
         const preferredIndexerPrecision = defaultIndexerPrecisionId(model, indexerPrecisionIds, precision);
@@ -265,6 +266,66 @@ export function allModelSettings(models, options = {}) {
     });
   });
   return settings;
+}
+
+export function filterPrecisionOptions(options, ids) {
+  const selectedIds = normalizeList(ids);
+  if (!selectedIds.length) return options || [];
+  const byId = new Map((options || []).map((option) => [option.id, option]));
+  const selected = selectedIds.map((id) => byId.get(id)).filter(Boolean);
+  if (selected.length !== selectedIds.length) {
+    const missing = selectedIds.filter((id) => !byId.has(id));
+    throw new Error(`Unknown precision option(s): ${missing.join(", ")}`);
+  }
+  return selected;
+}
+
+function normalizeList(value) {
+  if (!value) return [];
+  return Array.isArray(value) ? value.filter(Boolean) : [value].filter(Boolean);
+}
+
+export function modelMatchesFilters(model, options = {}) {
+  const includeFamilies = normalizeList(options.includeFamilies);
+  const excludeFamilies = normalizeList(options.excludeFamilies);
+  const includeModels = normalizeList(options.modelIds);
+  const excludeModels = normalizeList(options.excludeModelIds);
+  if (includeFamilies.length && !includeFamilies.includes(model.family)) return false;
+  if (excludeFamilies.includes(model.family)) return false;
+  if (includeModels.length && !includeModels.includes(model.id)) return false;
+  if (excludeModels.includes(model.id)) return false;
+  return true;
+}
+
+export function selectModels(models, options = {}) {
+  return (models || []).filter((model) => modelMatchesFilters(model, options));
+}
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, stableValue(value[key])]),
+  );
+}
+
+export function kvArchitectureKey(model) {
+  return JSON.stringify({
+    formula: model && model.formula,
+    fields: stableValue((model && model.fields) || {}),
+  });
+}
+
+export function kvArchitectureGroups(models) {
+  const groups = new Map();
+  (models || []).forEach((model) => {
+    const key = kvArchitectureKey(model);
+    if (!groups.has(key)) groups.set(key, { key, models: [] });
+    groups.get(key).models.push(model);
+  });
+  return Array.from(groups.values());
 }
 
 export function modelSweepKey(setting) {
@@ -791,25 +852,7 @@ export function buildTrace(source, requests) {
 }
 
 export function infiniteCacheReuse(trace, options = {}) {
-  const requests = Array.isArray(trace.requests) ? trace.requests : [];
-  const warmupRequests = Math.min(requests.length, Math.max(0, Math.floor(toNumber(options.warmupRequests, requests.length * toNumber(options.warmupFraction, DEFAULT_WARMUP_FRACTION)))));
-  const cache = new Set();
-  let hitTokens = 0;
-  let totalTokens = 0;
-  requests.forEach((request, requestIndex) => {
-    const measured = requestIndex >= warmupRequests;
-    request.inputBlocks.forEach((block) => {
-      const tokens = toNumber(block.tokens, 0);
-      const hit = cache.has(block.id);
-      if (measured) {
-        totalTokens += tokens;
-        if (hit) hitTokens += tokens;
-      }
-      cache.add(block.id);
-    });
-    (request.appendBlocks || []).forEach((block) => cache.add(block.id));
-  });
-  return { warmupRequests, hitTokens, totalTokens, hitRate: totalTokens ? hitTokens / totalTokens : 0 };
+  return lab.infiniteCacheReuse(trace, options);
 }
 
 class MaxHeap {
@@ -856,58 +899,30 @@ function flattenTrace(trace) {
   const eventIds = [];
   const eventTokens = [];
   const eventRequest = [];
-  const eventIsInput = [];
   const requestStarts = [];
-  const uniqueBlocks = new Set();
   const requests = Array.isArray(trace.requests) ? trace.requests : [];
   requests.forEach((request, requestIndex) => {
     requestStarts.push(eventIds.length);
-    const pushEvent = (block, isInput) => {
+    request.inputBlocks.forEach((block) => {
       eventIds.push(block.id);
       eventTokens.push(toNumber(block.tokens, 0));
       eventRequest.push(requestIndex);
-      eventIsInput.push(isInput ? 1 : 0);
-      uniqueBlocks.add(block.id);
-    };
-    (request.inputBlocks || []).forEach((block) => pushEvent(block, 1));
-    (request.appendBlocks || []).forEach((block) => pushEvent(block, 0));
+    });
   });
-  return { eventIds, eventTokens, eventRequest, eventIsInput, requestStarts, requestCount: requests.length, uniqueBlocks: uniqueBlocks.size };
+  return { eventIds, eventTokens, eventRequest, requestStarts, requestCount: requests.length };
 }
 
 export function buildExecutionPlan(trace, options = {}) {
-  const flat = flattenTrace(trace);
-  const warmupRequests = Math.min(
-    flat.requestCount,
-    Math.max(0, Math.floor(toNumber(options.warmupRequests, flat.requestCount * toNumber(options.warmupFraction, DEFAULT_WARMUP_FRACTION)))),
-  );
-  const nextPositions = new Float64Array(flat.eventIds.length);
-  const lastSeen = new Map();
-  const never = flat.eventIds.length + 1;
-  let totalMeasuredTokens = 0;
-  for (let index = flat.eventIds.length - 1; index >= 0; index -= 1) {
-    const id = flat.eventIds[index];
-    const isInput = !flat.eventIsInput || Boolean(flat.eventIsInput[index]);
-    nextPositions[index] = lastSeen.has(id) ? lastSeen.get(id) : never;
-    if (isInput) {
-      lastSeen.set(id, index);
-      if (flat.eventRequest[index] >= warmupRequests) totalMeasuredTokens += flat.eventTokens[index];
-    }
-  }
-  return { ...flat, nextPositions, warmupRequests, totalMeasuredTokens };
+  return lab.buildExecutionPlan(trace, options);
 }
 
 function simulateFinitePolicy(trace, cacheBlocks, policy, options = {}) {
-  if (options.plan && options.plan.nextInput) return lab.simulatePlanPolicy(options.plan, cacheBlocks, policy);
-  if (options.plan) return simulatePlanPolicy(options.plan, cacheBlocks, policy);
-  if (policy === "optimal") return simulateOptimalPolicy(trace, cacheBlocks, options);
-  return lab.simulatePolicy(trace, cacheBlocks, policy, options);
+  const plan = options.plan || lab.buildExecutionPlan(trace, options);
+  return lab.simulatePlanPolicy(plan, cacheBlocks, policy);
 }
 
 function simulatePlannedPolicy(plan, cacheBlocks, policy) {
-  return plan && plan.nextInput
-    ? lab.simulatePlanPolicy(plan, cacheBlocks, policy)
-    : simulatePlanPolicy(plan, cacheBlocks, policy);
+  return lab.simulatePlanPolicy(plan, cacheBlocks, policy);
 }
 
 function simulatePlanPolicy(plan, cacheBlocks, policy) {
@@ -950,10 +965,6 @@ function simulatePlanPolicy(plan, cacheBlocks, policy) {
     usefulCacheSamples += 1;
   }
 
-  function isInputEvent(index) {
-    return !plan.eventIsInput || Boolean(plan.eventIsInput[index]);
-  }
-
   function evictFifo() {
     while (cache.size >= capacity && fifoHead < fifoQueue.length) {
       const victim = fifoQueue[fifoHead];
@@ -969,7 +980,7 @@ function simulatePlanPolicy(plan, cacheBlocks, policy) {
   for (let index = 0; index < plan.eventIds.length; index += 1) {
     const id = plan.eventIds[index];
     const nextUse = plan.nextPositions[index];
-    const measured = isInputEvent(index) && plan.eventRequest[index] >= plan.warmupRequests;
+    const measured = plan.eventRequest[index] >= plan.warmupRequests;
     const previous = cache.get(id);
     const hit = previous !== undefined;
     if (measured && hit) hitTokens += plan.eventTokens[index];
@@ -1050,19 +1061,15 @@ function simulateOptimalPlan(plan, capacity) {
     heap.push({ id, nextUse, version: state.version });
   }
 
-  function evictForCandidate(candidateNextUse) {
+  function evictOne() {
     for (;;) {
       const candidate = heap.pop();
-      if (!candidate) return cache.size < capacity;
+      if (!candidate) return;
       const current = cache.get(candidate.id);
       if (!current || current.version !== candidate.version || current.nextUse !== candidate.nextUse) continue;
-      if (current.nextUse > candidateNextUse) {
-        if (current.nextUse < never) usefulCount -= 1;
-        cache.delete(candidate.id);
-        return true;
-      }
-      heap.push(candidate);
-      return false;
+      if (current.nextUse < never) usefulCount -= 1;
+      cache.delete(candidate.id);
+      return;
     }
   }
 
@@ -1074,24 +1081,16 @@ function simulateOptimalPlan(plan, capacity) {
     usefulCacheSamples += 1;
   }
 
-  function isInputEvent(index) {
-    return !plan.eventIsInput || Boolean(plan.eventIsInput[index]);
-  }
-
   for (let index = 0; index < plan.eventIds.length; index += 1) {
     const id = plan.eventIds[index];
-    const nextUse = plan.nextPositions[index];
-    const measured = isInputEvent(index) && plan.eventRequest[index] >= plan.warmupRequests;
+    const measured = plan.eventRequest[index] >= plan.warmupRequests;
     const hit = cache.has(id);
     if (measured && hit) hitTokens += plan.eventTokens[index];
     if (hit) {
-      pushState(id, nextUse);
-    } else if (cache.size < capacity) {
-      pushState(id, nextUse);
-    } else if (evictForCandidate(nextUse)) {
-      if (cache.size < capacity) pushState(id, nextUse);
+      pushState(id, plan.nextPositions[index]);
     } else {
-      // Belady-with-bypass: keep the current cache if the miss is used no sooner than every resident block.
+      while (cache.size >= capacity) evictOne();
+      if (cache.size < capacity) pushState(id, plan.nextPositions[index]);
     }
     sampleUseful(index);
   }
@@ -1124,69 +1123,107 @@ export function modelSettingFor(model, setting) {
 
 export function precomputeSweep(trace, model, setting, options = {}) {
   const blockSize = positiveInteger(setting.blockSize, trace.blockSize || 64);
-  const accountingSettings = {
-    estimateTokens: positiveInteger(trace.summary && trace.summary.averageInputTokens, model.default_tokens || 4096),
-    precision: setting.precision,
-    indexerPrecision: setting.indexerPrecision,
-    includeDraftKvCache: Boolean(setting.includeDraftKvCache),
+  const analysis = options.analysis || lab.analyzeTrace(trace, { warmupFraction: setting.warmupFraction ?? DEFAULT_WARMUP_FRACTION });
+  const sweepSettings = {
+    ...setting,
+    blockSize,
+    capacityGiBValues: setting.capacityGiBValues || DEFAULT_CAPACITY_GIB_VALUES,
+    warmupFraction: setting.warmupFraction ?? DEFAULT_WARMUP_FRACTION,
+    policies: setting.policies || POLICIES,
+    computeCeiling: true,
     precisionOptions: setting.precisionOptions,
     indexerPrecisionOptions: setting.indexerPrecisionOptions,
   };
-  const bytesPerToken = lab.estimateBytesPerToken(model, accountingSettings);
-  const bytesPerBlock = bytesPerToken * blockSize;
-  const capacityGiBValues = setting.capacityGiBValues || DEFAULT_CAPACITY_GIB_VALUES;
-  const warmupFraction = setting.warmupFraction ?? DEFAULT_WARMUP_FRACTION;
-  const policies = setting.policies || POLICIES;
-  const plan = options.plan || buildExecutionPlan(trace, { warmupFraction });
-  const simulationCache = options.simulationCache || null;
-  const ceiling = options.ceiling || infiniteCacheReuse(trace, { warmupFraction });
-  const uniqueBlocks = Number.isFinite(Number(plan.uniqueBlocks))
-    ? Number(plan.uniqueBlocks)
-    : trace && trace.summary && Number.isFinite(Number(trace.summary.uniqueBlocks)) ? Number(trace.summary.uniqueBlocks) : Infinity;
-  const ceilingStats = options.ceilingStats || simulatePlannedPolicy(plan, Math.max(1, Number.isFinite(uniqueBlocks) ? uniqueBlocks : 1), "lru");
-  function resultFromCeiling(policy, cacheBlocks) {
-    const usefulCacheBlockSamples = Number(ceilingStats.usefulCacheBlockSamples) || 0;
-    const usefulCacheSamples = Number(ceilingStats.usefulCacheSamples) || 0;
-    return {
-      policy,
-      cacheBlocks,
-      warmupRequests: ceiling.warmupRequests,
-      hitTokens: ceiling.hitTokens,
-      totalTokens: ceiling.totalTokens,
-      hitRate: ceiling.hitRate,
-      usefulCacheBlockSamples,
-      usefulCacheSamples,
-      usefulCacheRate: cacheBlocks > 0 && usefulCacheSamples > 0 ? usefulCacheBlockSamples / (usefulCacheSamples * cacheBlocks) : 0,
-    };
+  const planned = lab.planSweepTasks(analysis.meta, model, sweepSettings);
+  const simulationCache = options.simulationCache || new Map();
+  for (const task of planned.tasks) {
+    const key = `${task.policy}|${task.cacheBlocks}`;
+    if (!simulationCache.has(key)) {
+      simulationCache.set(key, lab.simulatePlanPolicy(analysis.plan, task.cacheBlocks, task.policy));
+    }
   }
-  const points = capacityGiBValues.map((gib) => {
-    const cacheBlocks = lab.cacheBlocksForGiB(gib, bytesPerBlock);
+  const sweep = lab.assembleSweep(
+    planned,
+    analysis.meta,
+    sweepSettings,
+    (policy, cacheBlocks) => simulationCache.get(`${policy}|${cacheBlocks}`),
+    analysis.ceiling,
+  );
+  return {
+    ...sweep,
+    warmupRequests: analysis.meta.warmupRequests || 0,
+    sourceKind: trace.sourceKind,
+    generatedAt: options.generatedAt || new Date().toISOString(),
+  };
+}
+
+export function blockCapacityGrid(maxCapacity, options = {}) {
+  const maxBlocks = Math.max(1, Math.floor(Number(maxCapacity) || 1));
+  const pointCount = Math.max(2, Math.floor(Number(options.curvePoints) || 64));
+  const values = new Set([1, maxBlocks]);
+  const maxExponent = Math.log2(maxBlocks);
+  for (let index = 0; index < pointCount; index += 1) {
+    const ratio = pointCount === 1 ? 1 : index / (pointCount - 1);
+    values.add(Math.max(1, Math.round(2 ** (maxExponent * ratio))));
+  }
+  return Array.from(values).filter((value) => value > 0 && value <= maxBlocks).sort((left, right) => left - right);
+}
+
+export function precomputeBlockCapacityCurve(trace, options = {}) {
+  const warmupFraction = options.warmupFraction ?? DEFAULT_WARMUP_FRACTION;
+  const analysis = options.analysis || lab.analyzeTrace(trace, { warmupFraction });
+  const policies = options.policies || POLICIES;
+  const maxCapacity = Math.max(...policies.map((policy) => lab.policyWorkingSet(analysis.meta, policy)), 1);
+  const capacities = options.capacities || blockCapacityGrid(maxCapacity, options);
+  const simulationCache = options.simulationCache || new Map();
+  const points = [];
+  function pushCeilingPoint(capacity) {
     const results = {};
     policies.forEach((policy) => {
-      if (cacheBlocks >= uniqueBlocks) {
-        results[policy] = resultFromCeiling(policy, cacheBlocks);
-        return;
-      }
-      const cacheKey = `${policy}|${cacheBlocks}`;
-      if (simulationCache && simulationCache.has(cacheKey)) {
-        results[policy] = Object.assign({}, simulationCache.get(cacheKey));
-      } else {
-        const result = simulateFinitePolicy(trace, cacheBlocks, policy, { warmupFraction, plan });
-        if (simulationCache) simulationCache.set(cacheKey, result);
-        results[policy] = Object.assign({}, result);
-      }
+      results[policy] = {
+        policy,
+        cacheBlocks: capacity,
+        warmupRequests: analysis.ceiling.warmupRequests || analysis.meta.warmupRequests || 0,
+        measurementStartRequest: analysis.ceiling.measurementStartRequest ?? analysis.meta.warmupRequests ?? null,
+        measurementMode: "ceiling_no_pressure",
+        hitTokens: analysis.ceiling.hitTokens || 0,
+        totalTokens: analysis.ceiling.totalTokens || 0,
+        hitRate: analysis.ceiling.hitRate || 0,
+      };
     });
-    return { gib, cacheBlocks, results };
-  });
+    points.push({ cacheBlocks: capacity, results });
+  }
+  for (const capacity of capacities) {
+    if (policies.some((policy) => capacity > lab.policyWorkingSet(analysis.meta, policy))) {
+      pushCeilingPoint(capacity);
+      break;
+    }
+    const results = {};
+    let underfilled = false;
+    for (const policy of policies) {
+      const key = `${policy}|${capacity}`;
+      if (!simulationCache.has(key)) {
+        simulationCache.set(key, lab.simulatePlanPolicy(analysis.plan, capacity, policy));
+      }
+      const result = simulationCache.get(key);
+      results[policy] = result;
+      if (!result || result.measurementMode === "underfilled_at_window") underfilled = true;
+    }
+    if (underfilled) {
+      pushCeilingPoint(capacity);
+      break;
+    }
+    points.push({ cacheBlocks: capacity, results });
+  }
   return {
-    blockSize,
-    bytesPerToken,
-    bytesPerBlock,
-    points,
+    blockSize: trace.blockSize,
     policies,
-    reuseCeiling: ceiling.hitRate,
-    warmupRequests: ceiling.warmupRequests,
-    sourceKind: trace.sourceKind,
+    capacityBlocks: points.map((point) => point.cacheBlocks),
+    points,
+    warmupRequests: analysis.meta.warmupRequests || 0,
+    totalTokens: analysis.meta.totalMeasuredTokens || 0,
+    reuseCeiling: analysis.ceiling.hitRate,
+    interpolation: "log_linear_cache_blocks",
     generatedAt: options.generatedAt || new Date().toISOString(),
   };
 }
@@ -1204,14 +1241,26 @@ export async function precomputeCurves(options = {}) {
   const modelsData = loadModelsData(options.modelsPath);
   const modelById = new Map(modelsData.models.map((model) => [model.id, model]));
   const traceIds = new Set(options.traceIds || TRACE_SOURCES.map((source) => source.id));
-  const modelSettings = options.allModels
+  const selectedModels = selectModels(modelsData.models, options);
+  const precisionOptions = filterPrecisionOptions(modelsData.precision_options, options.precisionIds);
+  const indexerPrecisionOptions = filterPrecisionOptions(modelsData.indexer_precision_options, options.indexerPrecisionIds);
+  const useSelectedModelSettings = options.allModels || options.allPrecisions || options.includeFamilies || options.excludeFamilies || options.excludeModelIds || options.precisionIds || options.indexerPrecisionIds;
+  const modelSettings = useSelectedModelSettings
+    ? null
+    : options.allModels
     ? allModelSettings(modelsData.models, {
-        precisionOptions: modelsData.precision_options,
-        indexerPrecisionOptions: modelsData.indexer_precision_options,
+        precisionOptions,
+        indexerPrecisionOptions,
+        includeDraftKvCache: !options.noDraft,
       })
     : options.modelIds && options.modelIds.length
     ? FEATURED_MODEL_SETTINGS.filter((setting) => options.modelIds.includes(setting.modelId))
     : options.modelSettings || FEATURED_MODEL_SETTINGS;
+  const modelGroups = useSelectedModelSettings
+    ? options.dedupeKvArchitecture
+      ? kvArchitectureGroups(selectedModels)
+      : selectedModels.map((model) => ({ key: null, models: [model] }))
+    : [];
   const generatedAt = new Date().toISOString();
   const traces = {};
   for (const source of TRACE_SOURCES) {
@@ -1219,31 +1268,76 @@ export async function precomputeCurves(options = {}) {
     console.error(`[precompute] normalize ${source.id}`);
     const trace = await normalizeTraceSource(source, options);
     const warmupFraction = options.warmupFraction ?? DEFAULT_WARMUP_FRACTION;
-    const plan = lab.buildExecutionPlan(trace, { warmupFraction });
-    const ceiling = infiniteCacheReuse(trace, { warmupFraction });
-    const ceilingStats = simulatePlannedPolicy(plan, Math.max(plan.uniqueBlocks || 1, 1), "lru");
+    const analysis = lab.analyzeTrace(trace, { warmupFraction });
+    const plan = analysis.plan;
     const simulationCache = new Map();
     const modelSweeps = {};
+    let blockCapacityCurve = null;
     console.error(`[precompute] ${source.id}: ${trace.summary.requests} requests, ${trace.summary.totalBlocks} blocks, ${trace.summary.uniqueBlocks} unique`);
-    for (const rawSetting of modelSettings) {
-      const model = modelById.get(rawSetting.modelId);
-      if (!model) continue;
-      const setting = {
-        ...rawSetting,
-        blockSize: trace.blockSize,
-        capacityGiBValues: options.capacityGiBValues || DEFAULT_CAPACITY_GIB_VALUES,
+    if (options.blockCurve) {
+      blockCapacityCurve = precomputeBlockCapacityCurve(trace, {
+        generatedAt,
+        analysis,
+        simulationCache,
+        curvePoints: options.curvePoints,
         warmupFraction,
-        precisionOptions: modelsData.precision_options,
-        indexerPrecisionOptions: modelsData.indexer_precision_options,
-      };
-      modelSweeps[modelSweepKey(rawSetting)] = {
-        modelId: model.id,
-        modelLabel: model.label,
-        precision: rawSetting.precision,
-        indexerPrecision: rawSetting.indexerPrecision || null,
-        includeDraftKvCache: Boolean(rawSetting.includeDraftKvCache),
-        ...precomputeSweep(trace, model, setting, { generatedAt, plan, simulationCache, ceiling, ceilingStats }),
-      };
+      });
+    } else if (useSelectedModelSettings) {
+      for (const group of modelGroups) {
+        const model = group.models[0];
+        const rawSettings = options.defaultSettings && !options.allPrecisions
+          ? [defaultModelSetting(model)]
+          : allModelSettings([model], {
+              precisionOptions,
+              indexerPrecisionOptions,
+              includeDraftKvCache: !options.noDraft,
+            });
+        for (const rawSetting of rawSettings) {
+          const setting = {
+            ...rawSetting,
+            blockSize: trace.blockSize,
+            capacityGiBValues: options.capacityGiBValues || DEFAULT_CAPACITY_GIB_VALUES,
+            warmupFraction,
+            precisionOptions,
+            indexerPrecisionOptions,
+          };
+          const sweep = precomputeSweep(trace, model, setting, { generatedAt, analysis, simulationCache });
+          for (const aliasModel of group.models) {
+            const aliasSetting = { ...rawSetting, modelId: aliasModel.id };
+            modelSweeps[modelSweepKey(aliasSetting)] = {
+              modelId: aliasModel.id,
+              modelLabel: aliasModel.label,
+              kvArchitectureKey: group.key,
+              kvArchitectureModelIds: group.models.map((item) => item.id),
+              precision: aliasSetting.precision,
+              indexerPrecision: aliasSetting.indexerPrecision || null,
+              includeDraftKvCache: Boolean(aliasSetting.includeDraftKvCache),
+              ...sweep,
+            };
+          }
+        }
+      }
+    } else {
+      for (const rawSetting of modelSettings) {
+        const model = modelById.get(rawSetting.modelId);
+        if (!model) continue;
+        const setting = {
+          ...rawSetting,
+          blockSize: trace.blockSize,
+          capacityGiBValues: options.capacityGiBValues || DEFAULT_CAPACITY_GIB_VALUES,
+          warmupFraction,
+          precisionOptions,
+          indexerPrecisionOptions,
+        };
+        modelSweeps[modelSweepKey(rawSetting)] = {
+          modelId: model.id,
+          modelLabel: model.label,
+          precision: rawSetting.precision,
+          indexerPrecision: rawSetting.indexerPrecision || null,
+          includeDraftKvCache: Boolean(rawSetting.includeDraftKvCache),
+          ...precomputeSweep(trace, model, setting, { generatedAt, analysis, simulationCache }),
+        };
+      }
     }
     traces[source.id] = {
       id: source.id,
@@ -1255,10 +1349,12 @@ export async function precomputeCurves(options = {}) {
       sources: source.sources || [],
       summary: {
         ...trace.summary,
-        warmupRequests: ceiling.warmupRequests,
-        infiniteHitRate: ceiling.hitRate,
+        uniqueBlocks: plan.uniqueBlocks,
+        warmupRequests: plan.warmupRequests,
+        infiniteHitRate: analysis.ceiling.hitRate,
+        totalMeasuredTokens: analysis.meta.totalMeasuredTokens,
       },
-      modelSweeps,
+      ...(options.blockCurve ? { blockCapacityCurve } : { modelSweeps }),
     };
   }
   return {
@@ -1266,12 +1362,25 @@ export async function precomputeCurves(options = {}) {
       generated_at: generatedAt,
       mode: "precomputed_real_traces",
       note: "Raw traces are downloaded into a local cache and are not committed. This file contains derived hit-rate curves and provenance.",
-      setting_mode: options.allModels ? "all_model_precision_indexer_draft_settings" : "selected_model_settings",
+      setting_mode: options.blockCurve
+        ? "model_independent_block_capacity_curve"
+        : options.dedupeKvArchitecture
+          ? "deduped_kv_architecture_precision_indexer_settings"
+        : options.allModels
+          ? "all_model_precision_indexer_draft_settings"
+        : options.modelIds && options.modelIds.length === 1
+          ? "default_model_default_precision_only"
+          : "selected_model_settings",
       capacity_gib_values: options.capacityGiBValues || DEFAULT_CAPACITY_GIB_VALUES,
-      warmup_fraction: options.warmupFraction ?? DEFAULT_WARMUP_FRACTION,
+      curve_points: options.blockCurve ? (options.curvePoints || 64) : undefined,
+        warmup_fraction: DEFAULT_WARMUP_FRACTION,
       policies: POLICIES,
       sources: SOURCE_LINKS,
       reference_sources: REFERENCE_SOURCES,
+      include_families: options.includeFamilies,
+      exclude_families: options.excludeFamilies,
+      dedupe_kv_architecture: Boolean(options.dedupeKvArchitecture),
+      include_draft_kv_cache: !options.noDraft,
     },
     traces,
   };
@@ -1286,19 +1395,38 @@ export async function writePrecomputedCurves(options = {}) {
 }
 
 export function parseArgs(argv) {
-  const args = { traceIds: [], modelIds: [] };
+  const args = { traceIds: [], modelIds: [], includeFamilies: [], excludeFamilies: [], excludeModelIds: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--trace") args.traceIds.push(argv[++index]);
     else if (arg === "--model") args.modelIds.push(argv[++index]);
+    else if (arg === "--precision") {
+      if (!args.precisionIds) args.precisionIds = [];
+      args.precisionIds.push(argv[++index]);
+    }
+    else if (arg === "--indexer-precision") {
+      if (!args.indexerPrecisionIds) args.indexerPrecisionIds = [];
+      args.indexerPrecisionIds.push(argv[++index]);
+    }
+    else if (arg === "--exclude-model") args.excludeModelIds.push(argv[++index]);
+    else if (arg === "--include-family") args.includeFamilies.push(argv[++index]);
+    else if (arg === "--exclude-family") args.excludeFamilies.push(argv[++index]);
     else if (arg === "--all-models") args.allModels = true;
+    else if (arg === "--all-precisions") args.allPrecisions = true;
+    else if (arg === "--no-draft") args.noDraft = true;
+    else if (arg === "--dedupe-kv-architecture") args.dedupeKvArchitecture = true;
     else if (arg === "--cache-dir") args.cacheDir = argv[++index];
     else if (arg === "--output") args.outputPath = argv[++index];
     else if (arg === "--force") args.force = true;
     else if (arg === "--request-limit") args.requestLimit = Number(argv[++index]);
     else if (arg === "--warmup-fraction") args.warmupFraction = Number(argv[++index]);
+    else if (arg === "--block-curve") args.blockCurve = true;
+    else if (arg === "--curve-points") args.curvePoints = Number(argv[++index]);
   }
   if (!args.traceIds.length) delete args.traceIds;
   if (!args.modelIds.length) delete args.modelIds;
+  if (!args.excludeModelIds.length) delete args.excludeModelIds;
+  if (!args.includeFamilies.length) delete args.includeFamilies;
+  if (!args.excludeFamilies.length) delete args.excludeFamilies;
   return args;
 }

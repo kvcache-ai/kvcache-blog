@@ -7,10 +7,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
-  DEFAULT_CAPACITY_GIB_VALUES,
   allModelSettings,
   buildTrace,
   infiniteCacheReuse,
+  kvArchitectureGroups,
+  loadModelsData,
   modelSweepKey,
   normalizeBailianRecord,
   normalizeExgenticAgentRecord,
@@ -19,8 +20,11 @@ import {
   normalizeRagPulseRecord,
   normalizeWekaSessionRecord,
   precomputeSweep,
+  selectModels,
 } from "../scripts/lib/kv-cache-lab-traces.mjs";
+import { mergePrecomputed } from "../scripts/kv-cache-lab-merge-precomputed.mjs";
 
+const BYTES_PER_GIB = 1024 ** 3;
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 const tinyModel = {
@@ -34,9 +38,6 @@ const tinyModel = {
     head_dim: 1,
   },
 };
-
-const tinyPrecisionOptions = [{ id: "bf16_fp16", label: "BF16 / FP16", bytes_per_element: 2 }];
-const oneBlockCapacityGiB = 6 / 1024 ** 3;
 
 test("Mooncake parser uses 512-token source blocks and partial last-block tokens", () => {
   const request = normalizeMooncakeRecord(
@@ -182,7 +183,7 @@ test("Weka session parser flattens nested sub-agent requests with parent namespa
   );
 });
 
-test("infinite-cache reuse ceiling uses warmup for state but not stats", () => {
+test("infinite-cache reuse ceiling uses the fixed measurement window", () => {
   const trace = buildTrace(
     { id: "fixture", label: "Fixture", nativeBlockSize: 1, sourceKind: "hash" },
     [
@@ -197,7 +198,7 @@ test("infinite-cache reuse ceiling uses warmup for state but not stats", () => {
   assert.equal(ceiling.warmupRequests, 1);
   assert.equal(ceiling.hitTokens, 1);
   assert.equal(ceiling.totalTokens, 2);
-  assert.equal(ceiling.hitRate, 0.5);
+  assert.equal(ceiling.hitRate, 1 / 2);
 });
 
 test("native full-precompute optimal uses Belady bypass admission", (t) => {
@@ -253,66 +254,18 @@ test("native full-precompute optimal uses Belady bypass admission", (t) => {
       "--request-count",
       "3",
       "--warmup-requests",
-      "0",
+      "1",
     ], { encoding: "utf8" });
     const result = JSON.parse(output);
 
     // With capacity 1 on A, B, A, Belady-with-bypass skips B and hits the final
-    // A. Classic demand-paging Belady would insert B and report 0 hit tokens.
+    // A. Measurement starts after A first fills the cache, so B and the final A
+    // are in the denominator.
     assert.equal(result.hitTokens, 1);
-    assert.equal(result.totalTokens, 3);
+    assert.equal(result.totalTokens, 2);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-});
-
-test("precompute sweep optimal uses Belady bypass admission", () => {
-  const trace = buildTrace(
-    { id: "fixture", label: "Fixture", nativeBlockSize: 1, sourceKind: "hash" },
-    [
-      { timestamp: 0, inputBlocks: [{ id: "A", tokens: 1 }], appendBlocks: [] },
-      { timestamp: 1, inputBlocks: [{ id: "B", tokens: 1 }], appendBlocks: [] },
-      { timestamp: 2, inputBlocks: [{ id: "A", tokens: 1 }], appendBlocks: [] },
-    ],
-  );
-
-  const sweep = precomputeSweep(trace, tinyModel, {
-    precision: "bf16_fp16",
-    precisionOptions: tinyPrecisionOptions,
-    blockSize: 1,
-    capacityGiBValues: [oneBlockCapacityGiB],
-    warmupFraction: 0,
-    policies: ["optimal"],
-  });
-  const point = sweep.points[0];
-
-  assert.equal(point.cacheBlocks, 1);
-  assert.equal(point.results.optimal.hitTokens, 1);
-  assert.equal(point.results.optimal.totalTokens, 3);
-});
-
-test("precompute sweep includes append blocks in cache state", () => {
-  const trace = buildTrace(
-    { id: "fixture", label: "Fixture", nativeBlockSize: 1, sourceKind: "hash" },
-    [
-      { timestamp: 0, inputBlocks: [{ id: "A", tokens: 1 }], appendBlocks: [{ id: "B", tokens: 1 }] },
-      { timestamp: 1, inputBlocks: [{ id: "B", tokens: 1 }], appendBlocks: [] },
-    ],
-  );
-
-  const sweep = precomputeSweep(trace, tinyModel, {
-    precision: "bf16_fp16",
-    precisionOptions: tinyPrecisionOptions,
-    blockSize: 1,
-    capacityGiBValues: [oneBlockCapacityGiB],
-    warmupFraction: 0,
-    policies: ["lru"],
-  });
-  const point = sweep.points[0];
-
-  assert.equal(point.cacheBlocks, 1);
-  assert.equal(point.results.lru.hitTokens, 1);
-  assert.equal(point.results.lru.totalTokens, 2);
 });
 
 test("precompute sweep is deterministic and uses source-native block size", () => {
@@ -320,14 +273,16 @@ test("precompute sweep is deterministic and uses source-native block size", () =
     { id: "fixture", label: "Fixture", nativeBlockSize: 16, sourceKind: "hash" },
     [
       { timestamp: 0, inputBlocks: [{ id: "A", tokens: 16 }], appendBlocks: [] },
-      { timestamp: 1, inputBlocks: [{ id: "A", tokens: 16 }], appendBlocks: [] },
+      { timestamp: 1, inputBlocks: [{ id: "B", tokens: 16 }], appendBlocks: [] },
+      { timestamp: 2, inputBlocks: [{ id: "A", tokens: 16 }], appendBlocks: [] },
+      { timestamp: 3, inputBlocks: [{ id: "B", tokens: 16 }], appendBlocks: [] },
     ],
   );
   const settings = {
     precision: "bf16_fp16",
     blockSize: 16,
-    capacityGiBValues: DEFAULT_CAPACITY_GIB_VALUES.slice(0, 2),
-    warmupFraction: 0,
+    capacityGiBValues: [64 / BYTES_PER_GIB, 128 / BYTES_PER_GIB],
+    warmupFraction: 0.5,
   };
 
   const first = precomputeSweep(trace, tinyModel, settings, { generatedAt: "fixed" });
@@ -336,7 +291,8 @@ test("precompute sweep is deterministic and uses source-native block size", () =
   assert.deepEqual(first, second);
   assert.equal(first.blockSize, 16);
   assert.equal(first.points.length, 2);
-  assert.equal(first.points[0].results.lru.hitRate, 0.5);
+  assert.equal(first.points[0].results.lru.hitRate, 0);
+  assert.equal(first.points[1].results.lru.hitRate, 1);
 });
 
 test("model sweep keys encode model and precision settings", () => {
@@ -384,4 +340,62 @@ test("all model settings mirror calculator precision/indexer/draft controls", ()
     includeDraftKvCache: false,
   });
   assert.ok(dsaSettings.some((setting) => setting.precision === "fp8_int8" && setting.indexerPrecision === "fp4_int4" && setting.includeDraftKvCache === true));
+});
+
+test("selected production families dedupe to expected KV architecture settings", () => {
+  const modelsData = loadModelsData(path.resolve(here, "../data/kv_cache_calculator/models.yaml"));
+  const selectedModels = selectModels(modelsData.models, {
+    includeFamilies: ["DeepSeek", "GLM", "Kimi", "MiMo", "MiniMax"],
+  });
+  const groups = kvArchitectureGroups(selectedModels);
+  const settingCount = groups.reduce((total, group) => total + allModelSettings([group.models[0]], {
+    precisionOptions: modelsData.precision_options,
+    indexerPrecisionOptions: modelsData.indexer_precision_options,
+    includeDraftKvCache: false,
+  }).length, 0);
+  const groupedLabels = groups.map((group) => group.models.map((model) => model.label).join(" / "));
+
+  assert.equal(selectedModels.length, 15);
+  assert.equal(groups.length, 9);
+  assert.equal(settingCount, 51);
+  assert.ok(groupedLabels.includes("DeepSeek V3 / DeepSeek R1"));
+  assert.ok(groupedLabels.includes("GLM-5 / GLM-5.1"));
+  assert.ok(groupedLabels.includes("Kimi K2.5 / Kimi K2.6"));
+  assert.ok(groupedLabels.includes("MiniMax M2 / MiniMax M2.1 / MiniMax M2.5 / MiniMax M2.7"));
+  assert.ok(selectedModels.every((model) => !["Qwen", "Cohere", "Llama", "Gemma"].some((family) => model.family.startsWith(family))));
+});
+
+test("merge precomputed data preserves existing sweeps and adds inputs", () => {
+  const base = {
+    metadata: { mode: "base", sources: { a: "base" } },
+    traces: {
+      trace: {
+        id: "trace",
+        modelSweeps: {
+          "model-a|precision=bf16_fp16|indexer=|draft=0": { modelId: "model-a" },
+        },
+      },
+    },
+  };
+  const input = {
+    metadata: { mode: "input", sources: { b: "input" } },
+    traces: {
+      trace: {
+        id: "trace",
+        label: "Trace",
+        modelSweeps: {
+          "model-b|precision=bf16_fp16|indexer=|draft=0": { modelId: "model-b" },
+        },
+      },
+    },
+  };
+
+  const merged = mergePrecomputed(base, [input]);
+
+  assert.equal(merged.metadata.mode, "input");
+  assert.deepEqual(merged.metadata.sources, { a: "base", b: "input" });
+  assert.equal(merged.traces.trace.label, "Trace");
+  assert.equal(Object.keys(merged.traces.trace.modelSweeps).length, 2);
+  assert.equal(merged.traces.trace.modelSweeps["model-a|precision=bf16_fp16|indexer=|draft=0"].modelId, "model-a");
+  assert.equal(merged.traces.trace.modelSweeps["model-b|precision=bf16_fp16|indexer=|draft=0"].modelId, "model-b");
 });

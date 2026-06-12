@@ -4,7 +4,6 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <list>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -34,6 +33,7 @@ struct Result {
   std::uint64_t total_tokens = 0;
   std::uint64_t useful_cache_block_samples = 0;
   std::uint64_t useful_cache_samples = 0;
+  std::int64_t measurement_start_request = -1;
 
   double hit_rate() const {
     return total_tokens == 0 ? 0.0 : static_cast<double>(hit_tokens) / static_cast<double>(total_tokens);
@@ -47,14 +47,10 @@ struct Result {
 };
 
 std::uint64_t parse_u64(const char* value, const std::string& name) {
-  if (!value || *value == '\0') {
-    throw std::runtime_error("Invalid integer for " + name);
-  }
+  if (!value || *value == '\0') throw std::runtime_error("Invalid integer for " + name);
   char* end = nullptr;
   const unsigned long long parsed = std::strtoull(value, &end, 10);
-  if (end && *end != '\0') {
-    throw std::runtime_error("Invalid integer for " + name);
-  }
+  if (end && *end != '\0') throw std::runtime_error("Invalid integer for " + name);
   return static_cast<std::uint64_t>(parsed);
 }
 
@@ -79,13 +75,13 @@ Options parse_args(int argc, char** argv) {
     else throw std::runtime_error("Unknown argument: " + arg);
   }
   if (options.policy.empty() || options.ids_path.empty() || options.tokens_path.empty() || options.total_blocks == 0) {
-    throw std::runtime_error("Usage: kv-cache-lab-native-sim --policy fifo|lru|optimal --ids PATH --tokens PATH --total-blocks N --warmup-event-start N --capacity N [--next PATH]");
-  }
-  if (options.policy != "build-next" && options.next_path.empty()) {
-    throw std::runtime_error("--next is required");
+    throw std::runtime_error("Usage: kv-cache-lab-native-sim --policy fifo|lru|optimal|all|ceiling --ids PATH --tokens PATH --total-blocks N --request-ends PATH --request-count N --capacity N [--next PATH]");
   }
   if (options.policy != "build-next" && (options.request_ends_path.empty() || options.request_count == 0)) {
     throw std::runtime_error("--request-ends and --request-count are required");
+  }
+  if (options.policy != "build-next" && options.next_path.empty()) {
+    throw std::runtime_error("--next is required");
   }
   return options;
 }
@@ -101,57 +97,40 @@ std::vector<std::uint32_t> load_request_ends(const Options& options) {
   return request_ends;
 }
 
-struct RequestSampler {
-  const Options& options;
-  const std::vector<std::uint32_t>& request_ends;
-  std::uint64_t request_index = 0;
-  std::uint64_t useful_sum = 0;
-  std::uint64_t samples = 0;
-
-  void sample(std::uint64_t event_index, std::uint64_t useful_count) {
-    const std::uint64_t event_end = event_index + 1;
-    while (request_index < request_ends.size() && event_end >= request_ends[request_index]) {
-      if (request_index >= options.warmup_requests) {
-        useful_sum += useful_count;
-        samples += 1;
-      }
-      request_index += 1;
-    }
+std::vector<std::uint32_t> load_ids_all(const Options& options) {
+  std::vector<std::uint32_t> ids(options.total_blocks);
+  std::ifstream in(options.ids_path, std::ios::binary);
+  if (!in) throw std::runtime_error("Failed to open ids file");
+  in.read(reinterpret_cast<char*>(ids.data()), static_cast<std::streamsize>(ids.size() * sizeof(std::uint32_t)));
+  if (in.gcount() != static_cast<std::streamsize>(ids.size() * sizeof(std::uint32_t))) {
+    throw std::runtime_error("Short read while reading ids file");
   }
+  return ids;
+}
 
-  void fill(Result& result) const {
-    result.useful_cache_block_samples = useful_sum;
-    result.useful_cache_samples = samples;
+std::vector<std::uint16_t> load_tokens_all(const Options& options) {
+  std::vector<std::uint16_t> tokens(options.total_blocks);
+  std::ifstream in(options.tokens_path, std::ios::binary);
+  if (!in) throw std::runtime_error("Failed to open tokens file");
+  in.read(reinterpret_cast<char*>(tokens.data()), static_cast<std::streamsize>(tokens.size() * sizeof(std::uint16_t)));
+  if (in.gcount() != static_cast<std::streamsize>(tokens.size() * sizeof(std::uint16_t))) {
+    throw std::runtime_error("Short read while reading tokens file");
   }
-};
+  return tokens;
+}
 
 template <typename ChunkFn>
-void scan_chunks(const Options& options, bool with_next, ChunkFn&& fn) {
+void scan_chunks(const Options& options, ChunkFn&& fn) {
   std::ifstream ids(options.ids_path, std::ios::binary);
-  std::ifstream tokens(options.tokens_path, std::ios::binary);
-  std::ifstream next;
-  if (with_next) next.open(options.next_path, std::ios::binary);
   if (!ids) throw std::runtime_error("Failed to open ids file");
-  if (!tokens) throw std::runtime_error("Failed to open tokens file");
-  if (with_next && !next) throw std::runtime_error("Failed to open next file");
-
   std::vector<std::uint32_t> id_buffer(kChunkEvents);
-  std::vector<std::uint16_t> token_buffer(kChunkEvents);
-  std::vector<std::uint32_t> next_buffer(with_next ? kChunkEvents : 0);
-
   for (std::uint64_t start = 0; start < options.total_blocks; start += kChunkEvents) {
     const std::size_t count = static_cast<std::size_t>(std::min<std::uint64_t>(kChunkEvents, options.total_blocks - start));
     ids.read(reinterpret_cast<char*>(id_buffer.data()), static_cast<std::streamsize>(count * sizeof(std::uint32_t)));
-    tokens.read(reinterpret_cast<char*>(token_buffer.data()), static_cast<std::streamsize>(count * sizeof(std::uint16_t)));
-    if (with_next) {
-      next.read(reinterpret_cast<char*>(next_buffer.data()), static_cast<std::streamsize>(count * sizeof(std::uint32_t)));
-    }
-    if (ids.gcount() != static_cast<std::streamsize>(count * sizeof(std::uint32_t)) ||
-        tokens.gcount() != static_cast<std::streamsize>(count * sizeof(std::uint16_t)) ||
-        (with_next && next.gcount() != static_cast<std::streamsize>(count * sizeof(std::uint32_t)))) {
+    if (ids.gcount() != static_cast<std::streamsize>(count * sizeof(std::uint32_t))) {
       throw std::runtime_error("Short read while scanning event stream");
     }
-    fn(start, count, id_buffer.data(), token_buffer.data(), with_next ? next_buffer.data() : nullptr);
+    fn(start, count, id_buffer.data());
   }
 }
 
@@ -194,251 +173,422 @@ void build_next_file(const Options& options) {
   }
 }
 
-Result simulate_fifo(const Options& options) {
-  Result result;
-  if (options.capacity == 0) return result;
+struct PrefixPlan {
+  std::vector<std::uint32_t> node_for_event;
+  std::vector<std::uint32_t> next_request_for_event;
+  std::vector<std::uint32_t> parent;
+};
 
-  const std::vector<std::uint32_t> request_ends = load_request_ends(options);
-  RequestSampler sampler{options, request_ends};
-  const std::uint32_t never = static_cast<std::uint32_t>(options.total_blocks + 1ULL);
-  std::unordered_map<std::uint32_t, std::uint32_t> cache;
-  cache.reserve(options.capacity * 2ULL + 1ULL);
-  std::vector<std::uint32_t> queue;
-  queue.reserve(std::min<std::uint64_t>(options.total_blocks, static_cast<std::uint64_t>(options.capacity) * 4ULL + 1024ULL));
-  std::size_t head = 0;
-  std::uint64_t useful_count = 0;
+struct SimulationInput {
+  std::vector<std::uint32_t> ids;
+  std::vector<std::uint16_t> tokens;
+  std::vector<std::uint32_t> request_ends;
+  PrefixPlan prefix;
+  std::uint32_t unique_blocks = 0;
+};
 
-  scan_chunks(options, true, [&](std::uint64_t start, std::size_t count, const std::uint32_t* ids, const std::uint16_t* tokens, const std::uint32_t* next_values) {
-    for (std::size_t index = 0; index < count; index += 1) {
-      const std::uint64_t event_index = start + index;
-      const std::uint32_t id = ids[index];
-      const std::uint16_t token_count = tokens[index];
-      const std::uint32_t next_use = next_values[index];
-      const auto found = cache.find(id);
-      const bool hit = found != cache.end();
-      if (event_index >= options.warmup_event_start) {
-        result.total_tokens += token_count;
-        if (hit) result.hit_tokens += token_count;
+PrefixPlan build_prefix_plan(const std::vector<std::uint32_t>& ids,
+                             const std::vector<std::uint32_t>& request_ends) {
+  PrefixPlan plan;
+  plan.node_for_event.resize(ids.size());
+  plan.next_request_for_event.resize(ids.size());
+  plan.parent.push_back(0);
+
+  std::unordered_map<std::uint64_t, std::uint32_t> edge_to_node;
+  edge_to_node.reserve(std::min<std::size_t>(ids.size(), 8'000'000ULL));
+
+  std::uint64_t start = 0;
+  for (std::uint32_t end : request_ends) {
+    std::uint32_t parent = 0;
+    for (std::uint64_t index = start; index < end; index += 1) {
+      const std::uint64_t key = (static_cast<std::uint64_t>(parent) << 32) | ids[index];
+      auto found = edge_to_node.find(key);
+      std::uint32_t node = 0;
+      if (found == edge_to_node.end()) {
+        node = static_cast<std::uint32_t>(plan.parent.size());
+        edge_to_node.emplace(key, node);
+        plan.parent.push_back(parent);
+      } else {
+        node = found->second;
       }
-      if (!hit) {
-        while (cache.size() >= options.capacity && head < queue.size()) {
+      plan.node_for_event[index] = node;
+      parent = node;
+    }
+    start = end;
+  }
+
+  const std::uint32_t never_request = static_cast<std::uint32_t>(request_ends.size() + 1ULL);
+  std::vector<std::uint32_t> last_use(plan.parent.size(), never_request);
+  for (std::uint64_t reverse = request_ends.size(); reverse > 0; reverse -= 1) {
+    const std::uint64_t request = reverse - 1;
+    const std::uint64_t request_start = request == 0 ? 0 : request_ends[request - 1];
+    const std::uint64_t request_end = request_ends[request];
+    for (std::uint64_t index = request_start; index < request_end; index += 1) {
+      plan.next_request_for_event[index] = last_use[plan.node_for_event[index]];
+    }
+    for (std::uint64_t index = request_start; index < request_end; index += 1) {
+      last_use[plan.node_for_event[index]] = static_cast<std::uint32_t>(request);
+    }
+  }
+  return plan;
+}
+
+SimulationInput load_simulation_input(const Options& options) {
+  SimulationInput input;
+  input.ids = load_ids_all(options);
+  input.tokens = load_tokens_all(options);
+  input.request_ends = load_request_ends(options);
+  input.prefix = build_prefix_plan(input.ids, input.request_ends);
+  input.unique_blocks = static_cast<std::uint32_t>(input.prefix.parent.size() - 1);
+  return input;
+}
+
+std::uint64_t total_tokens(const SimulationInput& input, std::uint64_t start_request = 0) {
+  std::uint64_t total = 0;
+  const std::uint64_t request_count = input.request_ends.size();
+  for (std::uint64_t request = std::min(start_request, request_count); request < request_count; request += 1) {
+    const std::uint64_t start = request == 0 ? 0 : input.request_ends[request - 1];
+    const std::uint64_t end = input.request_ends[request];
+    for (std::uint64_t index = start; index < end; index += 1) total += input.tokens[index];
+  }
+  return total;
+}
+
+Result no_cache_result(const SimulationInput& input, const Options& options) {
+  Result result;
+  result.total_tokens = total_tokens(input, options.warmup_requests);
+  result.measurement_start_request = static_cast<std::int64_t>(options.warmup_requests);
+  return result;
+}
+
+Result underfilled_result(const SimulationInput& input, const Options& options) {
+  Result result;
+  result.total_tokens = total_tokens(input, options.warmup_requests);
+  result.measurement_start_request = -2;
+  return result;
+}
+
+Result simulate_ceiling(const SimulationInput& input, const Options& options) {
+  Result result;
+  std::vector<std::uint8_t> seen(input.prefix.parent.size(), 0);
+  std::uint64_t start = 0;
+  for (std::uint64_t request = 0; request < input.request_ends.size(); request += 1) {
+    const std::uint64_t end = input.request_ends[request];
+    const bool measured = request >= options.warmup_requests;
+    bool prefix_alive = true;
+    for (std::uint64_t index = start; index < end; index += 1) {
+      const std::uint32_t node = input.prefix.node_for_event[index];
+      const bool hit = seen[node] != 0;
+      if (measured) result.total_tokens += input.tokens[index];
+      if (measured && prefix_alive && hit) {
+        result.hit_tokens += input.tokens[index];
+      } else if (!hit) {
+        prefix_alive = false;
+      }
+    }
+    for (std::uint64_t index = start; index < end; index += 1) {
+      seen[input.prefix.node_for_event[index]] = 1;
+    }
+    start = end;
+  }
+  result.measurement_start_request = static_cast<std::int64_t>(options.warmup_requests);
+  return result;
+}
+
+Result simulate_fifo(const SimulationInput& input, std::uint32_t capacity, const Options& options) {
+  if (capacity == 0 || input.ids.empty()) return no_cache_result(input, options);
+  Result result;
+  std::vector<std::uint8_t> in_cache(input.prefix.parent.size(), 0);
+  std::vector<std::uint32_t> queue;
+  queue.reserve(std::min<std::size_t>(input.ids.size(), static_cast<std::size_t>(capacity) * 4ULL + 1024ULL));
+  std::size_t head = 0;
+  std::uint32_t cache_size = 0;
+  bool full_before_measurement = false;
+
+  std::uint64_t start = 0;
+  for (std::uint64_t request = 0; request < input.request_ends.size(); request += 1) {
+    if (request >= options.warmup_requests && !full_before_measurement) return underfilled_result(input, options);
+    const std::uint64_t end = input.request_ends[request];
+    const bool measured = request >= options.warmup_requests;
+    bool prefix_alive = true;
+    for (std::uint64_t index = start; index < end; index += 1) {
+      const std::uint32_t id = input.prefix.node_for_event[index];
+      const bool hit = in_cache[id] != 0;
+      if (measured) {
+        result.total_tokens += input.tokens[index];
+        if (prefix_alive && hit) result.hit_tokens += input.tokens[index];
+      }
+      if (!hit) prefix_alive = false;
+    }
+    for (std::uint64_t index = start; index < end; index += 1) {
+      const std::uint32_t id = input.prefix.node_for_event[index];
+      if (in_cache[id]) continue;
+      if (cache_size >= capacity) {
+        while (head < queue.size()) {
           const std::uint32_t victim = queue[head++];
-          const auto victim_found = cache.find(victim);
-          if (victim_found != cache.end()) {
-            if (victim_found->second < never) useful_count -= 1;
-            cache.erase(victim_found);
+          if (in_cache[victim]) {
+            in_cache[victim] = 0;
+            cache_size -= 1;
             break;
           }
         }
-        if (cache.size() < options.capacity) {
-          if (next_use < never) useful_count += 1;
-          cache[id] = next_use;
-          queue.push_back(id);
-        }
-      } else {
-        if (found->second < never) useful_count -= 1;
-        if (next_use < never) useful_count += 1;
-        found->second = next_use;
       }
-      sampler.sample(event_index, useful_count);
+      if (cache_size < capacity) {
+        in_cache[id] = 1;
+        cache_size += 1;
+        queue.push_back(id);
+        if (cache_size >= capacity && request < options.warmup_requests) full_before_measurement = true;
+      }
       if (head > 1'000'000 && head * 2 > queue.size()) {
         queue.erase(queue.begin(), queue.begin() + static_cast<std::ptrdiff_t>(head));
         head = 0;
       }
     }
-  });
-  sampler.fill(result);
-  return result;
-}
-
-Result simulate_ceiling(const Options& options) {
-  Result result;
-  const std::vector<std::uint32_t> request_ends = load_request_ends(options);
-  RequestSampler sampler{options, request_ends};
-  const std::uint32_t never = static_cast<std::uint32_t>(options.total_blocks + 1ULL);
-  std::unordered_map<std::uint32_t, std::uint32_t> seen;
-  seen.reserve(static_cast<std::size_t>(options.capacity) + 1ULL);
-  std::uint64_t useful_count = 0;
-  scan_chunks(options, true, [&](std::uint64_t start, std::size_t count, const std::uint32_t* ids, const std::uint16_t* tokens, const std::uint32_t* next_values) {
-    for (std::size_t index = 0; index < count; index += 1) {
-      const std::uint64_t event_index = start + index;
-      const std::uint32_t id = ids[index];
-      const std::uint16_t token_count = tokens[index];
-      const std::uint32_t next_use = next_values[index];
-      const auto found = seen.find(id);
-      const bool hit = found != seen.end();
-      if (event_index >= options.warmup_event_start) {
-        result.total_tokens += token_count;
-        if (hit) result.hit_tokens += token_count;
-      }
-      if (hit && found->second < never) useful_count -= 1;
-      if (next_use < never) useful_count += 1;
-      seen[id] = next_use;
-      sampler.sample(event_index, useful_count);
-    }
-  });
-  sampler.fill(result);
-  return result;
-}
-
-Result simulate_lru(const Options& options) {
-  Result result;
-  if (options.capacity == 0) return result;
-
-  const std::vector<std::uint32_t> request_ends = load_request_ends(options);
-  RequestSampler sampler{options, request_ends};
-  const std::uint32_t never = static_cast<std::uint32_t>(options.total_blocks + 1ULL);
-  std::list<std::uint32_t> order;
-  struct LruEntry {
-    std::list<std::uint32_t>::iterator it;
-    std::uint32_t next_use = 0;
-  };
-  std::unordered_map<std::uint32_t, LruEntry> cache;
-  cache.reserve(options.capacity * 2ULL + 1ULL);
-  std::uint64_t useful_count = 0;
-
-  scan_chunks(options, true, [&](std::uint64_t start, std::size_t count, const std::uint32_t* ids, const std::uint16_t* tokens, const std::uint32_t* next_values) {
-    for (std::size_t index = 0; index < count; index += 1) {
-      const std::uint64_t event_index = start + index;
-      const std::uint32_t id = ids[index];
-      const std::uint16_t token_count = tokens[index];
-      const std::uint32_t next_use = next_values[index];
-      const auto found = cache.find(id);
-      const bool hit = found != cache.end();
-      if (event_index >= options.warmup_event_start) {
-        result.total_tokens += token_count;
-        if (hit) result.hit_tokens += token_count;
-      }
-      if (hit) {
-        if (found->second.next_use < never) useful_count -= 1;
-        order.splice(order.end(), order, found->second.it);
-        found->second.it = std::prev(order.end());
-        found->second.next_use = next_use;
-      } else {
-        while (cache.size() >= options.capacity && !order.empty()) {
-          const std::uint32_t victim = order.front();
-          order.pop_front();
-          const auto victim_found = cache.find(victim);
-          if (victim_found != cache.end() && victim_found->second.next_use < never) useful_count -= 1;
-          cache.erase(victim);
-        }
-        if (cache.size() < options.capacity) {
-          order.push_back(id);
-          cache[id] = {std::prev(order.end()), next_use};
-        }
-      }
-      if (next_use < never) useful_count += 1;
-      sampler.sample(event_index, useful_count);
-    }
-  });
-  sampler.fill(result);
-  return result;
-}
-
-struct OptimalState {
-  std::uint32_t next_use = 0;
-  std::uint32_t version = 0;
-};
-
-struct HeapEntry {
-  std::uint32_t next_use = 0;
-  std::uint32_t id = 0;
-  std::uint32_t version = 0;
-  bool operator<(const HeapEntry& other) const {
-    return next_use < other.next_use;
+    start = end;
   }
-};
-
-Result simulate_optimal(const Options& options) {
-  Result result;
-  if (options.capacity == 0) return result;
-
-  const std::vector<std::uint32_t> request_ends = load_request_ends(options);
-  RequestSampler sampler{options, request_ends};
-  const std::uint32_t never = static_cast<std::uint32_t>(options.total_blocks + 1ULL);
-  std::unordered_map<std::uint32_t, OptimalState> cache;
-  cache.reserve(options.capacity * 2ULL + 1ULL);
-  std::priority_queue<HeapEntry> heap;
-  std::uint64_t useful_count = 0;
-
-  auto rebuild_heap = [&]() {
-    std::priority_queue<HeapEntry> rebuilt;
-    for (const auto& item : cache) {
-      rebuilt.push({ item.second.next_use, item.first, item.second.version });
-    }
-    heap.swap(rebuilt);
-  };
-
-  auto push_state = [&](std::uint32_t id, std::uint32_t next_use) {
-    auto& state = cache[id];
-    if (state.version > 0 && state.next_use < never) useful_count -= 1;
-    if (next_use < never) useful_count += 1;
-    state.next_use = next_use;
-    state.version += 1;
-    heap.push({ next_use, id, state.version });
-  };
-
-  auto evict_for_candidate = [&](std::uint32_t candidate_next) {
-    for (;;) {
-      if (heap.empty()) {
-        rebuild_heap();
-        if (heap.empty()) return cache.size() < options.capacity;
-      }
-      const HeapEntry top = heap.top();
-      heap.pop();
-      const auto found = cache.find(top.id);
-      if (found == cache.end()) continue;
-      if (found->second.version != top.version || found->second.next_use != top.next_use) continue;
-      if (found->second.next_use > candidate_next) {
-        if (found->second.next_use < never) useful_count -= 1;
-        cache.erase(found);
-        return true;
-      }
-      heap.push(top);
-      return false;
-    }
-  };
-
-  scan_chunks(options, true, [&](std::uint64_t start, std::size_t count, const std::uint32_t* ids, const std::uint16_t* tokens, const std::uint32_t* next_values) {
-    for (std::size_t index = 0; index < count; index += 1) {
-      const std::uint64_t event_index = start + index;
-      const std::uint32_t id = ids[index];
-      const std::uint16_t token_count = tokens[index];
-      const std::uint32_t next_use = next_values[index];
-      const bool hit = cache.find(id) != cache.end();
-      if (event_index >= options.warmup_event_start) {
-        result.total_tokens += token_count;
-        if (hit) result.hit_tokens += token_count;
-      }
-      if (hit) {
-        push_state(id, next_use);
-      } else if (cache.size() < options.capacity) {
-        push_state(id, next_use);
-      } else if (evict_for_candidate(next_use)) {
-        if (cache.size() < options.capacity) push_state(id, next_use);
-      } else {
-        // Belady-with-bypass: keep the current cache if the miss would be used
-        // no sooner than every resident block.
-      }
-      sampler.sample(event_index, useful_count);
-      if (heap.size() > cache.size() * 2ULL + 1'000'000ULL) rebuild_heap();
-    }
-  });
-  sampler.fill(result);
+  if (!full_before_measurement || result.total_tokens == 0) return underfilled_result(input, options);
+  result.measurement_start_request = static_cast<std::int64_t>(options.warmup_requests);
   return result;
 }
 
-void print_result(const Options& options, const Result& result) {
+struct HeapItem {
+  std::uint32_t node = 0;
+  std::uint32_t key = 0;
+  std::uint32_t version = 0;
+};
+
+class BinaryHeap {
+ public:
+  explicit BinaryHeap(bool max_heap) : max_heap_(max_heap) {}
+
+  void push(const HeapItem& item) {
+    items_.push_back(item);
+    std::size_t index = items_.size() - 1;
+    while (index > 0) {
+      const std::size_t parent = (index - 1) >> 1;
+      if (!better(items_[index], items_[parent])) break;
+      std::swap(items_[index], items_[parent]);
+      index = parent;
+    }
+  }
+
+  bool pop(HeapItem& out) {
+    if (items_.empty()) return false;
+    out = items_[0];
+    const HeapItem last = items_.back();
+    items_.pop_back();
+    if (!items_.empty()) {
+      items_[0] = last;
+      std::size_t index = 0;
+      for (;;) {
+        const std::size_t left = index * 2 + 1;
+        const std::size_t right = left + 1;
+        std::size_t best = index;
+        if (left < items_.size() && better(items_[left], items_[best])) best = left;
+        if (right < items_.size() && better(items_[right], items_[best])) best = right;
+        if (best == index) break;
+        std::swap(items_[best], items_[index]);
+        index = best;
+      }
+    }
+    return true;
+  }
+
+ private:
+  bool better(const HeapItem& left, const HeapItem& right) const {
+    if (left.key == right.key) return left.node > right.node;
+    return max_heap_ ? left.key > right.key : left.key < right.key;
+  }
+
+  bool max_heap_ = false;
+  std::vector<HeapItem> items_;
+};
+
+Result simulate_trie_policy(const SimulationInput& input, std::uint32_t capacity, bool optimal, const Options& options) {
+  if (capacity == 0 || input.ids.empty()) return no_cache_result(input, options);
+
+  Result result;
+  const std::size_t node_count = input.prefix.parent.size();
+  std::vector<std::uint8_t> present(node_count, 0);
+  std::vector<std::uint32_t> child_count(node_count, 0);
+  std::vector<std::uint32_t> state_version(node_count, 0);
+  std::vector<std::uint32_t> state_key(node_count, 0);
+  std::vector<std::uint32_t> protected_mark(node_count, 0);
+  BinaryHeap heap(optimal);
+  present[0] = 1;
+  std::uint32_t cache_size = 0;
+  std::uint32_t clock = 0;
+  std::uint32_t mark_value = 1;
+  bool full_before_measurement = false;
+
+  auto push_leaf = [&](std::uint32_t node) {
+    if (node == 0 || !present[node] || child_count[node] != 0) return;
+    state_version[node] += 1;
+    heap.push({ node, state_key[node], state_version[node] });
+  };
+
+  auto touch_lru = [&](std::uint32_t node) {
+    if (node == 0 || !present[node]) return;
+    state_key[node] = ++clock;
+    push_leaf(node);
+  };
+
+  auto update_optimal = [&](std::uint32_t node, std::uint32_t next_use) {
+    if (node == 0 || !present[node]) return;
+    state_key[node] = next_use;
+    push_leaf(node);
+  };
+
+  auto add_node = [&](std::uint32_t node, std::uint64_t event_index) {
+    const std::uint32_t parent = input.prefix.parent[node];
+    present[node] = 1;
+    cache_size += 1;
+    child_count[parent] += 1;
+    if (optimal) update_optimal(node, input.prefix.next_request_for_event[event_index]);
+    else touch_lru(node);
+  };
+
+  auto evict_leaf = [&](std::uint32_t candidate_key) {
+    std::vector<HeapItem> skipped;
+    HeapItem top;
+    for (;;) {
+      if (!heap.pop(top)) {
+        for (const HeapItem& item : skipped) heap.push(item);
+        return false;
+      }
+      const std::uint32_t node = top.node;
+      if (!present[node] || child_count[node] != 0 || state_version[node] != top.version || state_key[node] != top.key) {
+        continue;
+      }
+      if (protected_mark[node] == mark_value) {
+        skipped.push_back(top);
+        continue;
+      }
+      if (optimal && top.key <= candidate_key) {
+        heap.push(top);
+        for (const HeapItem& item : skipped) heap.push(item);
+        return false;
+      }
+      present[node] = 0;
+      cache_size -= 1;
+      const std::uint32_t parent = input.prefix.parent[node];
+      child_count[parent] -= 1;
+      if (parent > 0 && present[parent] && child_count[parent] == 0) push_leaf(parent);
+      for (const HeapItem& item : skipped) heap.push(item);
+      return true;
+    }
+  };
+
+  auto mark_protected_path = [&](std::uint64_t start, std::uint64_t end) {
+    mark_value += 1;
+    if (mark_value == 0x7fffffffU) {
+      std::fill(protected_mark.begin(), protected_mark.end(), 0);
+      mark_value = 1;
+    }
+    protected_mark[0] = mark_value;
+    for (std::uint64_t index = start; index < end; index += 1) {
+      const std::uint32_t node = input.prefix.node_for_event[index];
+      if (present[node]) protected_mark[node] = mark_value;
+    }
+  };
+
+  std::uint64_t start = 0;
+  for (std::uint64_t request = 0; request < input.request_ends.size(); request += 1) {
+    if (request >= options.warmup_requests && !full_before_measurement) return underfilled_result(input, options);
+    const std::uint64_t end = input.request_ends[request];
+    const bool measured = request >= options.warmup_requests;
+    bool prefix_alive = true;
+    for (std::uint64_t index = start; index < end; index += 1) {
+      const std::uint32_t node = input.prefix.node_for_event[index];
+      const bool hit = present[node] != 0;
+      if (measured) {
+        result.total_tokens += input.tokens[index];
+        if (prefix_alive && hit) result.hit_tokens += input.tokens[index];
+      }
+      if (prefix_alive && hit) {
+        if (optimal) update_optimal(node, input.prefix.next_request_for_event[index]);
+        else touch_lru(node);
+      } else if (!hit) {
+        prefix_alive = false;
+      }
+    }
+
+    mark_protected_path(start, end);
+    for (std::uint64_t index = start; index < end; index += 1) {
+      const std::uint32_t node = input.prefix.node_for_event[index];
+      if (present[node]) continue;
+      if (cache_size >= capacity) {
+        const std::uint32_t candidate_key = optimal ? input.prefix.next_request_for_event[index] : 0;
+        if (!evict_leaf(candidate_key)) break;
+      }
+      if (cache_size < capacity && present[input.prefix.parent[node]]) {
+        add_node(node, index);
+        if (cache_size >= capacity && request < options.warmup_requests) full_before_measurement = true;
+      } else {
+        break;
+      }
+    }
+    start = end;
+  }
+  if (!full_before_measurement || result.total_tokens == 0) return underfilled_result(input, options);
+  result.measurement_start_request = static_cast<std::int64_t>(options.warmup_requests);
+  return result;
+}
+
+struct AllResults {
+  Result fifo;
+  Result lru;
+  Result optimal;
+};
+
+AllResults simulate_all(const SimulationInput& input, std::uint32_t capacity, const Options& options) {
+  return {
+    simulate_fifo(input, capacity, options),
+    simulate_trie_policy(input, capacity, false, options),
+    simulate_trie_policy(input, capacity, true, options),
+  };
+}
+
+void print_result(const std::string& policy, std::uint64_t cache_blocks, const Result& result, std::uint64_t trie_node_count, std::uint64_t warmup_requests) {
   std::cout << "{"
-            << "\"policy\":\"" << options.policy << "\","
-            << "\"cacheBlocks\":" << options.capacity << ","
+            << "\"policy\":\"" << policy << "\","
+            << "\"cacheBlocks\":" << cache_blocks << ","
+            << "\"trieNodeCount\":" << trie_node_count << ","
+            << "\"warmupRequests\":" << warmup_requests << ","
+            << "\"measurementStartRequest\":" << result.measurement_start_request << ","
             << "\"hitTokens\":" << result.hit_tokens << ","
             << "\"totalTokens\":" << result.total_tokens << ","
             << "\"hitRate\":" << std::setprecision(17) << result.hit_rate() << ","
             << "\"usefulCacheBlockSamples\":" << result.useful_cache_block_samples << ","
             << "\"usefulCacheSamples\":" << result.useful_cache_samples << ","
-            << "\"usefulCacheRate\":" << std::setprecision(17) << result.useful_cache_rate(options.capacity)
+            << "\"usefulCacheRate\":" << std::setprecision(17) << result.useful_cache_rate(cache_blocks)
             << "}\n";
+}
+
+void print_named_result(const char* policy, std::uint64_t cache_blocks, const Result& result, std::uint64_t warmup_requests) {
+  std::cout << "\"policy\":\"" << policy << "\","
+            << "\"cacheBlocks\":" << cache_blocks << ","
+            << "\"warmupRequests\":" << warmup_requests << ","
+            << "\"measurementStartRequest\":" << result.measurement_start_request << ","
+            << "\"hitTokens\":" << result.hit_tokens << ","
+            << "\"totalTokens\":" << result.total_tokens << ","
+            << "\"hitRate\":" << std::setprecision(17) << result.hit_rate() << ","
+            << "\"usefulCacheBlockSamples\":" << result.useful_cache_block_samples << ","
+            << "\"usefulCacheSamples\":" << result.useful_cache_samples << ","
+            << "\"usefulCacheRate\":" << std::setprecision(17) << result.useful_cache_rate(cache_blocks);
+}
+
+void print_all_results(std::uint64_t cache_blocks, const AllResults& results, std::uint64_t trie_node_count, std::uint64_t warmup_requests) {
+  std::cout << "{"
+            << "\"cacheBlocks\":" << cache_blocks << ","
+            << "\"trieNodeCount\":" << trie_node_count << ","
+            << "\"fifo\":{";
+  print_named_result("fifo", cache_blocks, results.fifo, warmup_requests);
+  std::cout << "},\"lru\":{";
+  print_named_result("lru", cache_blocks, results.lru, warmup_requests);
+  std::cout << "},\"optimal\":{";
+  print_named_result("optimal", cache_blocks, results.optimal, warmup_requests);
+  std::cout << "}}\n";
 }
 
 }  // namespace
@@ -449,11 +599,16 @@ int main(int argc, char** argv) {
     if (options.policy == "build-next") {
       build_next_file(options);
       std::cout << "{\"policy\":\"build-next\",\"cacheBlocks\":0,\"hitTokens\":0,\"totalTokens\":0,\"hitRate\":0}\n";
+      return 0;
     }
-    else if (options.policy == "ceiling") print_result(options, simulate_ceiling(options));
-    else if (options.policy == "fifo") print_result(options, simulate_fifo(options));
-    else if (options.policy == "lru") print_result(options, simulate_lru(options));
-    else if (options.policy == "optimal") print_result(options, simulate_optimal(options));
+
+    const SimulationInput input = load_simulation_input(options);
+    const std::uint64_t trie_node_count = input.prefix.parent.size();
+    if (options.policy == "ceiling") print_result("ceiling", options.capacity, simulate_ceiling(input, options), trie_node_count, options.warmup_requests);
+    else if (options.policy == "fifo") print_result("fifo", options.capacity, simulate_fifo(input, options.capacity, options), trie_node_count, options.warmup_requests);
+    else if (options.policy == "lru") print_result("lru", options.capacity, simulate_trie_policy(input, options.capacity, false, options), trie_node_count, options.warmup_requests);
+    else if (options.policy == "optimal") print_result("optimal", options.capacity, simulate_trie_policy(input, options.capacity, true, options), trie_node_count, options.warmup_requests);
+    else if (options.policy == "all") print_all_results(options.capacity, simulate_all(input, options.capacity, options), trie_node_count, options.warmup_requests);
     else throw std::runtime_error("Unsupported policy: " + options.policy);
     return 0;
   } catch (const std::exception& error) {
