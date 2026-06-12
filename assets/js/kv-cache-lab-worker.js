@@ -196,7 +196,10 @@
       wasmSimMemo = new Map();
       const blockSize = Math.max(0, Math.floor(Number(message.blockSizeOverride) || 0));
       const maxEvents = Math.max(0, Math.floor(Number(message.maxEvents) || 0));
-      wasmExports.reset(blockSize, maxEvents, Number(message.warmupFraction) || 0);
+      const warmupFraction = Number.isFinite(Number(message.warmupFraction))
+        ? Number(message.warmupFraction)
+        : lab.DEFAULT_WARMUP_FRACTION;
+      wasmExports.reset(blockSize, maxEvents, warmupFraction);
       await streamFileIntoWasm(wasmExports, message.uploadFile, !!message.gzip, message.fileSize, (bytes, total) =>
         onProgress({ phase: "parse", bytes, total }),
       );

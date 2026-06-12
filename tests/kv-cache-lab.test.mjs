@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
@@ -7,6 +8,7 @@ const require = createRequire(import.meta.url);
 const {
   BYTES_PER_GIB,
   DEFAULT_CAPACITY_GIB_VALUES,
+  DEFAULT_WARMUP_FRACTION,
   cacheBlocksForGiB,
   createCacheKey,
   estimateBytesPerToken,
@@ -86,6 +88,16 @@ const tinyPreset = {
     burstiness: 0.5,
   },
 };
+
+test("lab warmup defaults match precomputed metadata", () => {
+  const presetsYaml = fs.readFileSync(new URL("../data/kv_cache_lab/presets.yaml", import.meta.url), "utf8");
+  const precomputed = JSON.parse(fs.readFileSync(new URL("../data/kv_cache_lab/precomputed.json", import.meta.url), "utf8"));
+  const match = presetsYaml.match(/warmup_fraction:\s*([0-9.]+)/);
+
+  assert.equal(DEFAULT_WARMUP_FRACTION, 0.5);
+  assert.equal(Number(match && match[1]), 0.5);
+  assert.equal(precomputed.metadata.warmup_fraction, 0.5);
+});
 
 test("FIFO, LRU, and optimal policies produce known block hit rates", () => {
   const fifo = simulatePolicy(unitTrace, 2, "fifo", { warmupRequests: 0 });

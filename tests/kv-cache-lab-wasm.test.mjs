@@ -21,7 +21,7 @@ const model = {
   default_tokens: 4096,
   fields: { num_hidden_layers: 32, num_key_value_heads: 8, head_dim: 128 },
 };
-const settings = { precision: "bf16_fp16", warmupFraction: 0.3, computeCeiling: true };
+const settings = { precision: "bf16_fp16", warmupFraction: 0.5, computeCeiling: true };
 const POLICY = { fifo: 0, lru: 1, optimal: 2 };
 
 function lcg(seed) {
@@ -55,7 +55,7 @@ function makeJsonl(seed, n, pool, blockSize, skew) {
   return lines.join("\n") + "\n";
 }
 
-function driveWasm(ex, text, { blockSize = 0, maxEvents = 0, warmupFraction = 0.3 }) {
+function driveWasm(ex, text, { blockSize = 0, maxEvents = 0, warmupFraction = lab.DEFAULT_WARMUP_FRACTION }) {
   const bytes = new TextEncoder().encode(text);
   ex.reset(blockSize, maxEvents, warmupFraction);
   const CHUNK = 1 << 16;

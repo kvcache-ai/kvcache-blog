@@ -79,7 +79,7 @@ const modelB = {
   default_tokens: 4096,
   fields: { num_hidden_layers: 48, num_key_value_heads: 4, head_dim: 128 },
 };
-const settings = { precision: "bf16_fp16", warmupFraction: 0.3, computeCeiling: true };
+const settings = { precision: "bf16_fp16", warmupFraction: 0.5, computeCeiling: true };
 
 test("decomposition (analyze + planTasks + planFromBuffers + assemble) equals sweepCapacity", () => {
   const trace = lab.parseUploadedTrace(JSONL, { blockSize: BS });

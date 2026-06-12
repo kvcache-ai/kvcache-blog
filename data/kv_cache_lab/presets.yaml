@@ -19,7 +19,7 @@ metadata:
 block_sizes: [16, 64, 512]
 simulation_defaults:
   seed: 20260528
-  warmup_fraction: 0.3
+  warmup_fraction: 0.5
   capacity_gib_values: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
   block_size: 512
 presets:

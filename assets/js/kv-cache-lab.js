@@ -13,7 +13,7 @@
 
   const BYTES_PER_GIB = calculator.BYTES_PER_GIB || 1024 ** 3;
   const DEFAULT_SEED = 20260528;
-  const DEFAULT_WARMUP_FRACTION = 0.3;
+  const DEFAULT_WARMUP_FRACTION = 0.5;
   const DEFAULT_BLOCK_SIZE = 64;
   // Huge-upload guards. The JS fallback keeps event arrays compact while using
   // string hash keys for safe identity; for huge uploads the sweep plan copies
@@ -3801,6 +3801,7 @@
   return {
     BYTES_PER_GIB,
     DEFAULT_CAPACITY_GIB_VALUES,
+    DEFAULT_WARMUP_FRACTION,
     POLICY_LABELS,
     UPLOAD_PRESET_ID,
     analyzeTrace,
