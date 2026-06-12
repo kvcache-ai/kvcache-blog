@@ -11,16 +11,6 @@
 <section id="kv-cache-lab" class="kv-lab-shell" data-state="loading">
   <div class="kv-lab-grid">
     <form class="kv-lab-controls" onsubmit="return false;">
-      <label>
-        <span>Model family</span>
-        <select data-lab-input="modelFamily"></select>
-      </label>
-
-      <label>
-        <span>Model</span>
-        <select data-lab-input="model"></select>
-      </label>
-
       <div class="kv-lab-field">
         <span class="kv-lab-field-heading">
           <span class="kv-lab-label-help">
@@ -51,7 +41,24 @@
           <span class="kv-lab-upload-status" data-lab-upload-status></span>
           <button class="kv-lab-upload-clear" data-lab-upload-clear type="button" hidden>Clear</button>
         </div>
+        <div class="kv-lab-upload-example">
+          <p><strong>Example</strong></p>
+          <pre><code>{"block_size":64,"hash_ids":[2001,2002],"input_length":128}
+{"block_size":64,"hash_ids":[2003,2004],"input_length":128}
+{"block_size":64,"hash_ids":[2005,2006],"input_length":128}</code></pre>
+          <p>Do you know you can deploy it locally? Check our <a href="https://github.com/kvcache-ai/kvcache-blog">repo</a>.</p>
+        </div>
       </div>
+
+      <label>
+        <span>Model family</span>
+        <select data-lab-input="modelFamily"></select>
+      </label>
+
+      <label>
+        <span>Model</span>
+        <select data-lab-input="model"></select>
+      </label>
 
       <label>
         <span>KV precision</span>
@@ -304,6 +311,55 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .kv-lab-upload-example {
+    display: grid;
+    gap: 0.35rem;
+    min-width: 0;
+    color: var(--lab-muted);
+    font-size: 0.74rem;
+    font-weight: 500;
+    line-height: 1.35;
+  }
+
+  .kv-lab-upload-example pre {
+    min-width: 0;
+    max-width: 100%;
+    margin: 0.1rem 0 0;
+    padding: 0.55rem;
+    overflow-x: auto;
+    border: 1px solid var(--lab-line);
+    border-radius: 6px;
+    background: #f8fafc;
+    color: var(--lab-ink);
+    font-size: 0.66rem;
+    font-weight: 500;
+    line-height: 1.35;
+  }
+
+  .kv-lab-upload-example code {
+    white-space: pre;
+  }
+
+  .kv-lab-upload-example p {
+    margin: 0;
+  }
+
+  .kv-lab-upload-example strong {
+    color: var(--lab-ink);
+    font-weight: 750;
+  }
+
+  .kv-lab-upload-example a {
+    color: #0369a1;
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .kv-lab-upload-example a:hover {
+    color: #0c4a6e;
+    text-decoration: underline;
   }
 
   .kv-lab-controls .kv-lab-upload-clear {
