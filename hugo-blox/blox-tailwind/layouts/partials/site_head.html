@@ -146,7 +146,11 @@
   <link rel="icon" type="image/png" href="{{ (partial "functions/get_site_icon" 32).RelPermalink }}" />
   <link rel="apple-touch-icon" type="image/png" href="{{ (partial "functions/get_site_icon" 180).RelPermalink }}" />
 
-  <link rel="canonical" href="{{ .Permalink }}" />
+  {{ $canonical := .Permalink }}
+  {{ with .Params.canonicalUrl }}
+    {{ $canonical = absURL . }}
+  {{ end }}
+  <link rel="canonical" href="{{ $canonical }}" />
 
   {{/* Get page image for sharing. */}}
   {{ $sharing_image := resources.GetMatch (path.Join "media" "sharing.*") }}
