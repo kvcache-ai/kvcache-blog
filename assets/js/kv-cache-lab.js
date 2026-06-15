@@ -3146,7 +3146,8 @@
     let ceilingValue = null;
     if (typeof opts.ceilingValue === "function") ceilingValue = opts.ceilingValue(sweep);
     else if (opts.ceilingValue !== undefined && opts.ceilingValue !== null) ceilingValue = opts.ceilingValue;
-    if (Number.isFinite(Number(ceilingValue))) values.push(Number(ceilingValue));
+    const hasCeilingValue = ceilingValue !== null && ceilingValue !== undefined && Number.isFinite(Number(ceilingValue));
+    if (hasCeilingValue) values.push(Number(ceilingValue));
     const yMax = opts.yMax || niceChartMax(Math.max(1, ...values));
     const xScale = (index) => margin.left + (index / Math.max(1, sweep.points.length - 1)) * plotWidth;
     const yScale = (value) => margin.top + (1 - clamp(value / yMax, 0, 1)) * plotHeight;
@@ -3173,7 +3174,7 @@
     svg.appendChild(svgNode("line", { x1: margin.left, y1: height - margin.bottom, x2: width - margin.right, y2: height - margin.bottom, stroke: "#94a3b8", "stroke-width": 1.2 }));
     svg.appendChild(svgNode("line", { x1: margin.left, y1: margin.top, x2: margin.left, y2: height - margin.bottom, stroke: "#94a3b8", "stroke-width": 1.2 }));
 
-    if (Number.isFinite(Number(ceilingValue))) {
+    if (hasCeilingValue) {
       const ceilingY = yScale(Number(ceilingValue));
       svg.appendChild(svgNode("line", {
         x1: margin.left,
