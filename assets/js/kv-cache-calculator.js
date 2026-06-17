@@ -162,6 +162,23 @@
       .join(", ");
   }
 
+  function indexerLayerPlan(model, layers, draftLayers) {
+    const mainIndexerLayers = optionalField(model, "indexer_full_layers", layers);
+    const sharedIndexerLayers = optionalField(
+      model,
+      "indexer_shared_layers",
+      Math.max(0, layers - mainIndexerLayers),
+    );
+    const draftIndexerLayers =
+      draftLayers > 0 ? optionalField(model, "draft_indexer_layers", draftLayers) : 0;
+    return {
+      mainIndexerLayers,
+      sharedIndexerLayers,
+      draftIndexerLayers,
+      activeIndexerLayers: mainIndexerLayers + draftIndexerLayers,
+    };
+  }
+
   function countByValue(values, target) {
     return values.filter((value) => Number(value) === target).length;
   }
@@ -247,27 +264,33 @@
       const layers = getField(model, "num_hidden_layers");
       const draftLayers = includeDraftKvCache ? draftLayerCount(model) : 0;
       const activeLayers = layers + draftLayers;
+      const indexerPlan = indexerLayerPlan(model, layers, draftLayers);
       const indexDim = getField(model, "index_head_dim");
       const kvRank = getField(model, "kv_lora_rank");
       const ropeDim = getField(model, "qk_rope_head_dim");
       const kvElementsPerLayer = kvRank + ropeDim;
       const indexerElementsPerLayer = indexDim;
-      const elementsPerLayer = kvElementsPerLayer + indexerElementsPerLayer;
 
       const kvElementsPerToken = activeLayers * kvElementsPerLayer;
-      const indexerElementsPerToken = activeLayers * indexerElementsPerLayer;
-      const elementsPerToken = activeLayers * elementsPerLayer;
+      const indexerElementsPerToken =
+        indexerPlan.activeIndexerLayers * indexerElementsPerLayer;
+      const elementsPerToken = kvElementsPerToken + indexerElementsPerToken;
       return {
         elementsPerSequence: elementsPerToken * tokens,
         elementsPerToken,
         formulaLabel: FORMULA_LABELS[formula],
         formulaText:
-          "active_layers = main_layers + draft_layers_if_enabled\nkv_bytes = tokens * sequences * active_layers * (kv_lora_rank + qk_rope_head_dim) * kv_precision_bytes\nindexer_bytes = tokens * sequences * active_layers * index_head_dim * indexer_precision_bytes\ntotal_bytes = kv_bytes + indexer_bytes",
+          "active_layers = main_layers + draft_layers_if_enabled\nactive_indexer_layers = main_indexer_layers + draft_indexer_layers_if_enabled\nkv_bytes = tokens * sequences * active_layers * (kv_lora_rank + qk_rope_head_dim) * kv_precision_bytes\nindexer_bytes = tokens * sequences * active_indexer_layers * index_head_dim * indexer_precision_bytes\ntotal_bytes = kv_bytes + indexer_bytes",
         formulaRows: [
           {
             name: "active_layers",
             expression: "main_layers + draft_layers_if_enabled",
             description: "Draft layers are counted only when Include draft KV cache is enabled for models that define a next-token prediction stack.",
+          },
+          {
+            name: "active_indexer_layers",
+            expression: "main_indexer_layers + draft_indexer_layers_if_enabled",
+            description: "For DSA models with shared indexer layers, only full indexer layers allocate independent indexer key cache.",
           },
           {
             name: "kv_bytes",
@@ -276,7 +299,7 @@
           },
           {
             name: "indexer_bytes",
-            expression: "tokens x sequences x active_layers x index_head_dim x indexer_precision_bytes",
+            expression: "tokens x sequences x active_indexer_layers x index_head_dim x indexer_precision_bytes",
             description: "Additional per-token indexer state used by the indexer attention path.",
           },
           {
@@ -285,7 +308,9 @@
             description: "Combined cache payload after applying the selected KV and indexer precisions.",
           },
         ],
-        note: "Production estimate uses latent KV plus indexer state; expanded HF-compatible cache is not included.",
+        note: indexerPlan.sharedIndexerLayers > 0
+          ? "Production estimate uses latent KV plus independently stored indexer state; shared indexer layers reuse the full indexer layers' selection. Expanded HF-compatible cache is not included."
+          : "Production estimate uses latent KV plus indexer state; expanded HF-compatible cache is not included.",
         byteGroups: [
           { role: "kv", label: "KV cache", elements: kvElementsPerToken * tokens },
           { role: "indexer", label: "Indexer cache", elements: indexerElementsPerToken * tokens },
@@ -293,10 +318,13 @@
         components: [
           ["Main layers", layers],
           ["Draft layers included", draftLayers, "Extra next-token prediction layers included in KV capacity when the checkbox is enabled."],
+          ["Main indexer layers", indexerPlan.mainIndexerLayers, "Full indexer layers that allocate independent indexer key cache."],
+          ["Shared indexer layers", indexerPlan.sharedIndexerLayers, "DSA layers that reuse the previous full indexer layer's top-k selection."],
+          ["Draft indexer layers included", indexerPlan.draftIndexerLayers, "Draft/MTP indexer layers counted when Include draft KV cache is enabled."],
           ["KV elements per token", kvElementsPerToken, "Latent KV elements per token before applying KV precision."],
           ["Indexer elements per token", indexerElementsPerToken, "Indexer elements per token before applying indexer precision."],
           ["Per-token elements", elementsPerToken, "KV plus indexer scalar elements per token before multiplying by precision bytes."],
-          ["Model fields", fieldList(model, ["num_hidden_layers", "kv_lora_rank", "qk_rope_head_dim", "index_head_dim"])],
+          ["Model fields", fieldList(model, ["num_hidden_layers", "kv_lora_rank", "qk_rope_head_dim", "index_head_dim", "indexer_full_layers", "indexer_shared_layers", "draft_indexer_layers"])],
         ],
       };
     }

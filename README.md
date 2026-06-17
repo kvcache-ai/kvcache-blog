@@ -17,6 +17,7 @@ Through open-source projects and academic research, KVCache.ai develops effectiv
 ### Tools
 
 - **[KV Cache Size Calculator](/tools/kv-cache-size-calculator/)** — Estimate KV cache capacity for common production LLM families, including DeepSeek, GLM, Kimi, Qwen, MiniMax, MiMo, and others.
+- **[KV Cache Hit Rate Simulator](/tools/kv-cache-hit-rate-simulator/)** — Calculate KV cache hit rate of preset or your own trace, under different memory budgets.
 
 ## Tech Stack
 

@@ -448,6 +448,90 @@ test("DSA optimized formula includes latent cache and indexer state", () => {
   assert.ok(Math.abs(result.totalGiB - 13.092041015625) < 1e-9);
 });
 
+test("GLM-5.2 DSA formula counts shared indexer layers only once", () => {
+  const model = {
+    id: "glm-5.2",
+    label: "GLM-5.2",
+    formula: "dsa_mla",
+    fields: {
+      num_hidden_layers: 78,
+      kv_lora_rank: 512,
+      qk_rope_head_dim: 64,
+      index_head_dim: 128,
+      indexer_full_layers: 21,
+      indexer_shared_layers: 57,
+      num_nextn_predict_layers: 1,
+      draft_indexer_layers: 1,
+    },
+  };
+
+  const result = calculate(model, {
+    tokens: 128000,
+    sequences: 1,
+    precision: "fp8_int8",
+    indexerPrecision: "fp4_int4",
+  });
+
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Main indexer layers")[1], 21);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Shared indexer layers")[1], 57);
+  assert.equal(result.elementPlan.byteGroups.find((group) => group.role === "kv").elements, 5750784000);
+  assert.equal(result.elementPlan.byteGroups.find((group) => group.role === "indexer").elements, 344064000);
+  assert.ok(Math.abs(result.kvGiB - 5.3558349609375) < 1e-9);
+  assert.ok(Math.abs(result.indexerGiB - 0.16021728515625) < 1e-9);
+  assert.ok(Math.abs(result.totalGiB - 5.51605224609375) < 1e-9);
+  assert.match(result.elementPlan.note, /shared indexer layers/);
+});
+
+test("GLM-5.2 draft option adds one KV layer and one full indexer layer", () => {
+  const model = {
+    id: "glm-5.2",
+    label: "GLM-5.2",
+    formula: "dsa_mla",
+    fields: {
+      num_hidden_layers: 78,
+      kv_lora_rank: 512,
+      qk_rope_head_dim: 64,
+      index_head_dim: 128,
+      indexer_full_layers: 21,
+      indexer_shared_layers: 57,
+      num_nextn_predict_layers: 1,
+      draft_indexer_layers: 1,
+    },
+  };
+
+  const withoutDraft = calculate(model, {
+    tokens: 128000,
+    sequences: 1,
+    precision: "fp8_int8",
+    indexerPrecision: "fp4_int4",
+    includeDraftKvCache: false,
+  });
+  const withDraft = calculate(model, {
+    tokens: 128000,
+    sequences: 1,
+    precision: "fp8_int8",
+    indexerPrecision: "fp4_int4",
+    includeDraftKvCache: true,
+  });
+
+  assert.equal(withDraft.elementPlan.components.find(([label]) => label === "Draft layers included")[1], 1);
+  assert.equal(
+    withDraft.elementPlan.components.find(([label]) => label === "Draft indexer layers included")[1],
+    1,
+  );
+  assert.equal(
+    withDraft.elementPlan.byteGroups.find((group) => group.role === "kv").elements -
+      withoutDraft.elementPlan.byteGroups.find((group) => group.role === "kv").elements,
+    73728000,
+  );
+  assert.equal(
+    withDraft.elementPlan.byteGroups.find((group) => group.role === "indexer").elements -
+      withoutDraft.elementPlan.byteGroups.find((group) => group.role === "indexer").elements,
+    16384000,
+  );
+  assert.ok(Math.abs(withDraft.totalGiB - withoutDraft.totalGiB - 0.0762939453125) < 1e-9);
+});
+
 test("DeepSeek V4 hybrid formula uses sliding window, compression ratios, and ratio-4 indexer", () => {
   const compressRatios = [
     128, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
