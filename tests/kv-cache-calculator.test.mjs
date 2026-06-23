@@ -813,6 +813,81 @@ test("MiniMax M2 draft option adds three standard GQA KV layers", () => {
   assert.equal(withDraft.components.find(([label]) => label === "Draft layers included")[1], 3);
 });
 
+test("MiniMax M3 MSA formula counts main KV plus key-only indexer cache", () => {
+  const model = {
+    id: "minimax-m3",
+    label: "MiniMax M3",
+    formula: "minimax_msa",
+    fields: {
+      num_hidden_layers: 60,
+      full_attention_layers: 3,
+      sparse_attention_layers: 57,
+      num_key_value_heads: 4,
+      head_dim: 128,
+      index_head_dim: 128,
+      index_n_heads: 4,
+      index_block_size: 128,
+      index_topk_blocks: 16,
+      index_local_blocks: 1,
+      indexer_fixed_precision_id: "bf16_fp16",
+      num_mtp_modules: 7,
+      num_nextn_predict_layers: 1,
+      disable_draft_kv_cache: true,
+    },
+  };
+
+  const plan = calculateElementsPerSequence(model, 1048576, { includeDraftKvCache: true });
+
+  assert.equal(plan.elementsPerToken, 68736);
+  assert.equal(plan.byteGroups.find((group) => group.role === "kv").elements, 64424509440);
+  assert.equal(plan.byteGroups.find((group) => group.role === "indexer").elements, 7650410496);
+  assert.equal(plan.components.find(([label]) => label === "Full-attention layers")[1], 3);
+  assert.equal(plan.components.find(([label]) => label === "Sparse-attention layers")[1], 57);
+  assert.equal(plan.components.find(([label]) => label === "MTP modules not included")[1], 7);
+  assert.match(plan.note, /lightweight indexer/);
+  assert.match(plan.note, /relevant KV blocks/);
+});
+
+test("MiniMax M3 fixes indexer precision to BF16 while KV precision can use FP8", () => {
+  const model = {
+    id: "minimax-m3",
+    label: "MiniMax M3",
+    formula: "minimax_msa",
+    fields: {
+      num_hidden_layers: 60,
+      full_attention_layers: 3,
+      sparse_attention_layers: 57,
+      num_key_value_heads: 4,
+      head_dim: 128,
+      index_head_dim: 128,
+      index_n_heads: 4,
+      index_block_size: 128,
+      index_topk_blocks: 16,
+      index_local_blocks: 1,
+      indexer_fixed_precision_id: "bf16_fp16",
+      num_mtp_modules: 7,
+      num_nextn_predict_layers: 1,
+      disable_draft_kv_cache: true,
+    },
+  };
+
+  const result = calculate(model, {
+    tokens: 1048576,
+    precision: "fp8_int8",
+    indexerPrecision: "fp4_int4",
+    includeDraftKvCache: true,
+    sequences: 1,
+    tensorParallel: 1,
+  });
+
+  assert.equal(result.indexerPrecisionLabel, "BF16 / FP16");
+  assert.equal(result.components.find(([label]) => label === "KV precision bytes")[1], 1);
+  assert.equal(result.components.find(([label]) => label === "Indexer precision bytes")[1], 2);
+  assert.ok(Math.abs(result.kvGiB - 60) < 1e-9);
+  assert.ok(Math.abs(result.indexerGiB - 14.25) < 1e-9);
+  assert.ok(Math.abs(result.totalGiB - 74.25) < 1e-9);
+});
+
 test("Llama 3.1 70B standard GQA formula matches config fields", () => {
   const model = {
     id: "llama-3.1-70b",

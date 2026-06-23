@@ -25,6 +25,7 @@
     dsa_mla: "DSA/MLA with indexer",
     qwen_linear_full_hybrid: "Qwen linear/full hybrid",
     mixed_full_sliding_gqa: "Mixed full/sliding GQA",
+    minimax_msa: "MiniMax MSA sparse attention",
     deepseek_v4_hybrid: "DeepSeek V4 hybrid sparse attention",
   };
 
@@ -69,6 +70,7 @@
 
   function draftLayerCount(model) {
     if (!model || !model.fields) return 0;
+    if (model.fields.disable_draft_kv_cache === true) return 0;
     const nextnLayers = safeNumber(model.fields.num_nextn_predict_layers, 0);
     if (nextnLayers > 0) return nextnLayers;
     if (model.fields.use_mtp === true) {
@@ -110,8 +112,16 @@
     );
   }
 
+  function fixedIndexerPrecisionId(model) {
+    return model && model.fields && typeof model.fields.indexer_fixed_precision_id === "string"
+      ? model.fields.indexer_fixed_precision_id
+      : undefined;
+  }
+
   function defaultIndexerPrecisionId(model, options, fallbackPrecisionId) {
     const optionsById = indexerPrecisionOptions(options || {});
+    const fixedPrecisionId = fixedIndexerPrecisionId(model);
+    if (fixedPrecisionId && optionsById[fixedPrecisionId]) return fixedPrecisionId;
     if (isDeepSeekV4(model) && optionsById.fp4_int4) return "fp4_int4";
     if (fallbackPrecisionId && optionsById[fallbackPrecisionId]) return fallbackPrecisionId;
     if (optionsById.bf16_fp16) return "bf16_fp16";
@@ -129,7 +139,9 @@
 
   function getIndexerPrecisionProfile(precisionId, options, model, fallbackPrecisionId) {
     const optionsById = indexerPrecisionOptions(options || {});
+    const fixedPrecisionId = fixedIndexerPrecisionId(model);
     const selected =
+      (fixedPrecisionId && optionsById[fixedPrecisionId]) ||
       optionsById[precisionId] ||
       optionsById[defaultIndexerPrecisionId(model, options, fallbackPrecisionId)] ||
       DEFAULT_PRECISIONS.fp4_int4;
@@ -500,6 +512,70 @@
           ["Full-attention elements", fullElements, "Full-attention scalar KV elements before applying precision bytes."],
           ["Sliding-window elements", slidingElements, "Sliding-window scalar KV elements before applying precision bytes."],
           ["Model fields", fieldList(model, ["num_hidden_layers", "full_attention_layers", "sliding_attention_layers", "num_key_value_heads", "num_global_key_value_heads", "head_dim", "global_head_dim", "v_head_dim", "global_v_head_dim", "swa_num_key_value_heads", "swa_head_dim", "swa_v_head_dim", "sliding_window"])],
+        ],
+      };
+    }
+
+    if (formula === "minimax_msa") {
+      const layers = getField(model, "num_hidden_layers");
+      const fullLayers = getField(model, "full_attention_layers");
+      const sparseLayers = getField(model, "sparse_attention_layers");
+      const kvHeads = getField(model, "num_key_value_heads");
+      const headDim = getField(model, "head_dim");
+      const indexDim = getField(model, "index_head_dim");
+      const indexHeads = optionalField(model, "index_n_heads", kvHeads);
+      const blockSize = getField(model, "index_block_size");
+      const topkBlocks = getField(model, "index_topk_blocks");
+      const localBlocks = optionalField(model, "index_local_blocks", 0);
+      const mtpModules = optionalField(model, "num_mtp_modules", 0);
+      const nextnLayers = optionalField(model, "num_nextn_predict_layers", 0);
+      const kvElementsPerToken = layers * 2 * kvHeads * headDim;
+      const indexerElementsPerToken = sparseLayers * indexDim;
+      const elementsPerToken = kvElementsPerToken + indexerElementsPerToken;
+      const kvElements = kvElementsPerToken * tokens;
+      const indexerElements = indexerElementsPerToken * tokens;
+
+      return {
+        elementsPerSequence: elementsPerToken * tokens,
+        elementsPerToken,
+        formulaLabel: FORMULA_LABELS[formula],
+        formulaText:
+          "kv_bytes = tokens * sequences * layers * 2 * num_key_value_heads * head_dim * kv_precision_bytes\nindexer_bytes = tokens * sequences * sparse_attention_layers * index_head_dim * indexer_precision_bytes\ntotal_bytes = kv_bytes + indexer_bytes",
+        formulaRows: [
+          {
+            name: "kv_bytes",
+            expression: "tokens x sequences x layers x 2 x num_key_value_heads x head_dim x kv_precision_bytes",
+            description: "MiniMax M3 stores ordinary main K/V cache for both full-attention and sparse-attention layers.",
+          },
+          {
+            name: "indexer_bytes",
+            expression: "tokens x sequences x sparse_attention_layers x index_head_dim x indexer_precision_bytes",
+            description: "MSA sparse layers keep a key-only side cache for the lightning indexer; index_n_heads affects scoring, not the stored index-key cache width.",
+          },
+          {
+            name: "total_bytes",
+            expression: "kv_bytes + indexer_bytes",
+            description: "Combined main KV cache and MSA index-key side cache.",
+          },
+        ],
+        note: "MiniMax Sparse Attention (MSA) uses a lightweight indexer to pick the most relevant KV blocks for each query, so long-context attention can read a sparse subset of the cached tokens while keeping a separate indexer cache for block selection.",
+        byteGroups: [
+          { role: "kv", label: "KV cache", elements: kvElements },
+          { role: "indexer", label: "Indexer cache", elements: indexerElements },
+        ],
+        components: [
+          ["Main layers", layers],
+          ["Full-attention layers", fullLayers, "Dense/full-attention layers without the MSA indexer branch."],
+          ["Sparse-attention layers", sparseLayers, "MSA layers that add a key-only indexer side cache."],
+          ["KV elements per token", kvElementsPerToken, "Main K/V elements per token before applying KV precision."],
+          ["Indexer elements per token", indexerElementsPerToken, "MSA index-key elements per token before applying indexer precision."],
+          ["Index heads", indexHeads, "Indexer query heads used for scoring selected KV blocks; the stored index-key cache is key-only."],
+          ["Index block size", blockSize, "Number of tokens per sparse-selection block. This is not a sliding-window cache cap."],
+          ["Top-k blocks", topkBlocks, "Sparse blocks selected by the indexer for each query."],
+          ["Local blocks", localBlocks, "Recent local blocks always visible to the sparse attention path."],
+          ["MTP modules not included", mtpModules, "The public MiniMax M3 checkpoint/config exposes MTP fields, but bundled MTP weights are not modeled in the base serving path."],
+          ["Next-N layers not included", nextnLayers, "Config field retained for traceability; draft KV is not included for MiniMax M3."],
+          ["Model fields", fieldList(model, ["num_hidden_layers", "full_attention_layers", "sparse_attention_layers", "num_key_value_heads", "head_dim", "index_head_dim", "index_n_heads", "index_block_size", "index_topk_blocks", "index_local_blocks", "indexer_fixed_precision_id"])],
         ],
       };
     }
@@ -924,13 +1000,19 @@
     const precisionSelect = root.querySelector("[data-kv-input='precision']");
     const showIndexerPrecision = hasIndexerCache(model);
     if (control) control.hidden = !showIndexerPrecision;
+    if (select) select.disabled = false;
     if (showIndexerPrecision) {
+      const fixedPrecisionId = fixedIndexerPrecisionId(model);
+      const options = fixedPrecisionId
+        ? rawIndexerPrecisionOptions(data).filter((option) => option.id === fixedPrecisionId)
+        : rawIndexerPrecisionOptions(data);
       const preferredValue = defaultIndexerPrecisionId(
         model,
         { indexerPrecisionOptions: data.indexer_precision_options, precisionOptions: data.precision_options },
         precisionSelect ? precisionSelect.value : undefined,
       );
-      populateSelect(select, rawIndexerPrecisionOptions(data), preferredValue);
+      populateSelect(select, options, preferredValue);
+      if (select && fixedPrecisionId) select.disabled = true;
     }
   }
 
