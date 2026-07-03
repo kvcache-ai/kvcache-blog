@@ -24,28 +24,34 @@ def _parse_csv_strings(value: str) -> list[str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m kvcache_sim", description="Analyze KV cache hit rate for JSONL traces.")
+    parser = argparse.ArgumentParser(prog="kvcache-simulator", description="Analyze KV cache hit rate for JSONL traces.")
     subparsers = parser.add_subparsers(dest="command")
 
-    sweep = subparsers.add_parser("sweep", help="Run a memory-budget sweep over a JSONL/JSONL.GZ trace")
-    sweep.add_argument("--trace", required=True, help="Trace path (.jsonl or .jsonl.gz), or - for stdin")
-    sweep.add_argument("--model", required=True, help="Model id from data/kv_cache_calculator/models.yaml")
-    sweep.add_argument("--kv-precision", dest="kv_precision", default=None, help="KV precision id, e.g. bf16_fp16, fp8_int8, fp4_int4")
-    sweep.add_argument("--precision", dest="kv_precision", help=argparse.SUPPRESS)
-    sweep.add_argument("--indexer-precision", default=None, help="Indexer precision id for models with an indexer cache")
-    sweep.add_argument("--include-draft-kv-cache", action="store_true", help="Include draft/MTP KV cache where the model config supports it")
-    sweep.add_argument("--block-size", type=int, default=None, help="Fallback block size when trace records omit block_size; record block_size overrides this value")
-    sweep.add_argument("--estimate-tokens", type=int, default=None, help="Override calculator token count used for bytes/token")
-    sweep.add_argument("--budgets-gib", default=",".join(str(v) for v in DEFAULT_BUDGETS_GIB), help="Comma-separated GiB budgets")
-    sweep.add_argument("--policies", default=",".join(DEFAULT_POLICIES), help="Comma-separated policies: fifo,lru,optimal")
-    sweep.add_argument("--backend", choices=["cpp", "python"], default="cpp", help="Simulation backend (default: cpp)")
-    sweep.add_argument("--jobs", type=int, default=1, help="Worker processes for the Python backend; ignored by the C++ backend")
-    sweep.add_argument("--no-progress", action="store_true", help="Disable terminal progress output")
-    sweep.add_argument("--format", choices=["table", "json"], default="table", help="Output format (default: table)")
-    sweep.add_argument("--output", "-o", default="-", help="Output path, or - for stdout")
-    sweep.add_argument("--models-yaml", default=None, help="Override models.yaml path")
-    sweep.add_argument("--max-records", type=int, default=0, help="Stop after this many valid requests (debug/testing)")
-    sweep.add_argument("--max-events", type=int, default=0, help="Stop after this many trace blocks (debug/testing)")
+    def add_run_arguments(command: argparse.ArgumentParser) -> None:
+        command.add_argument("--trace", required=True, help="Trace path (.jsonl or .jsonl.gz), or - for stdin")
+        command.add_argument("--model", required=True, help="Model id from the bundled KV Cache Size Calculator model catalog")
+        command.add_argument("--kv-precision", dest="kv_precision", default=None, help="KV precision id, e.g. bf16_fp16, fp8_int8, fp4_int4")
+        command.add_argument("--precision", dest="kv_precision", help=argparse.SUPPRESS)
+        command.add_argument("--indexer-precision", default=None, help="Indexer precision id for models with an indexer cache")
+        command.add_argument("--include-draft-kv-cache", action="store_true", help="Include draft/MTP KV cache where the model config supports it")
+        command.add_argument("--block-size", type=int, default=None, help="Fallback block size when trace records omit block_size; record block_size overrides this value")
+        command.add_argument("--estimate-tokens", type=int, default=None, help="Override calculator token count used for bytes/token")
+        command.add_argument("--budgets-gib", default=",".join(str(v) for v in DEFAULT_BUDGETS_GIB), help="Comma-separated GiB budgets")
+        command.add_argument("--policies", default=",".join(DEFAULT_POLICIES), help="Comma-separated policies: fifo,lru,optimal")
+        command.add_argument("--backend", choices=["cpp", "python"], default="cpp", help="Simulation backend (default: cpp)")
+        command.add_argument("--jobs", type=int, default=1, help="Worker processes for the Python backend; ignored by the C++ backend")
+        command.add_argument("--no-progress", action="store_true", help="Disable terminal progress output")
+        command.add_argument("--format", choices=["table", "json"], default="table", help="Output format (default: table)")
+        command.add_argument("--output", "-o", default="-", help="Output path, or - for stdout")
+        command.add_argument("--models-yaml", default=None, help="Override models.yaml path")
+        command.add_argument("--max-records", type=int, default=0, help="Stop after this many valid requests (debug/testing)")
+        command.add_argument("--max-events", type=int, default=0, help="Stop after this many trace blocks (debug/testing)")
+
+    run = subparsers.add_parser("run", help="Run hit-rate analysis over configured KV cache budgets")
+    add_run_arguments(run)
+
+    sweep = subparsers.add_parser("sweep", help="Alias for run; scans a set of KV cache memory budgets")
+    add_run_arguments(sweep)
 
     list_models = subparsers.add_parser("list-models", help="List supported model ids")
     list_models.add_argument("--models-yaml", default=None, help="Override models.yaml path")
@@ -101,7 +107,7 @@ def run_list_models(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "sweep":
+    if args.command in {"run", "sweep"}:
         return run_sweep_command(args)
     if args.command == "list-models":
         return run_list_models(args)

@@ -10,10 +10,6 @@ hugo_stats.json
 # WASM build cache
 wasm/kvcache-sim/target/
 
-# Python cache
-__pycache__/
-*.pyc
-
 # Local Hugo server
 .hugo_cache/
 server.log

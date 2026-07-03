@@ -3,8 +3,11 @@
 from .calculator import BYTES_PER_GIB, calculate_cache_size, load_models_data
 from .simulator import run_sweep
 
+__version__ = "0.1.0"
+
 __all__ = [
     "BYTES_PER_GIB",
+    "__version__",
     "calculate_cache_size",
     "load_models_data",
     "run_sweep",

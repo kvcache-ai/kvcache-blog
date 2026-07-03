@@ -12,8 +12,8 @@ import tempfile
 import threading
 from typing import Callable, Iterable
 
-from .calculator import repo_root
 from .policies import PolicyResult
+from ._resources import package_resource_path
 from .trace import TraceData
 
 UINT32_MAX = 2**32 - 1
@@ -37,7 +37,7 @@ class _BinaryTraceFiles:
 
 
 def _cpp_source_path() -> Path:
-    return repo_root() / "scripts" / "kv-cache-lab-native-sim.cc"
+    return package_resource_path("kv-cache-lab-native-sim.cc")
 
 
 def _build_path_for_source(source: Path) -> Path:

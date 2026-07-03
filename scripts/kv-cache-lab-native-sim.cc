@@ -5,7 +5,6 @@
 #include <iomanip>
 #include <iostream>
 #include <queue>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -27,9 +26,6 @@ struct Options {
   std::uint64_t request_count = 0;
   std::uint64_t warmup_requests = 0;
   std::uint32_t capacity = 0;
-  std::vector<std::uint32_t> capacities;
-  std::vector<std::string> policies;
-  bool progress = false;
 };
 
 struct Result {
@@ -58,29 +54,6 @@ std::uint64_t parse_u64(const char* value, const std::string& name) {
   return static_cast<std::uint64_t>(parsed);
 }
 
-std::vector<std::uint32_t> parse_u32_csv(const std::string& value, const std::string& name) {
-  std::vector<std::uint32_t> result;
-  std::stringstream stream(value);
-  std::string part;
-  while (std::getline(stream, part, ',')) {
-    if (part.empty()) continue;
-    const std::uint64_t parsed = parse_u64(part.c_str(), name);
-    if (parsed > 0xffffffffULL) throw std::runtime_error(name + " contains a value larger than uint32");
-    result.push_back(static_cast<std::uint32_t>(parsed));
-  }
-  return result;
-}
-
-std::vector<std::string> parse_string_csv(const std::string& value) {
-  std::vector<std::string> result;
-  std::stringstream stream(value);
-  std::string part;
-  while (std::getline(stream, part, ',')) {
-    if (!part.empty()) result.push_back(part);
-  }
-  return result;
-}
-
 Options parse_args(int argc, char** argv) {
   Options options;
   for (int index = 1; index < argc; index += 1) {
@@ -99,9 +72,6 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--request-count") options.request_count = parse_u64(require_value(arg), arg);
     else if (arg == "--warmup-requests") options.warmup_requests = parse_u64(require_value(arg), arg);
     else if (arg == "--capacity") options.capacity = static_cast<std::uint32_t>(parse_u64(require_value(arg), arg));
-    else if (arg == "--capacities") options.capacities = parse_u32_csv(require_value(arg), arg);
-    else if (arg == "--policies") options.policies = parse_string_csv(require_value(arg));
-    else if (arg == "--progress") options.progress = true;
     else throw std::runtime_error("Unknown argument: " + arg);
   }
   if (options.policy.empty() || options.ids_path.empty() || options.tokens_path.empty() || options.total_blocks == 0) {
@@ -110,12 +80,10 @@ Options parse_args(int argc, char** argv) {
   if (options.policy != "build-next" && (options.request_ends_path.empty() || options.request_count == 0)) {
     throw std::runtime_error("--request-ends and --request-count are required");
   }
+  if (options.policy != "build-next" && options.next_path.empty()) {
+    throw std::runtime_error("--next is required");
+  }
   return options;
-}
-
-void report_progress(const Options& options, std::uint64_t done, std::uint64_t total, const std::string& label) {
-  if (!options.progress) return;
-  std::cerr << "KV_PROGRESS " << done << " " << total << " " << label << "\n";
 }
 
 std::vector<std::uint32_t> load_request_ends(const Options& options) {
@@ -581,11 +549,6 @@ AllResults simulate_all(const SimulationInput& input, std::uint32_t capacity, co
   };
 }
 
-bool has_policy(const Options& options, const std::string& policy) {
-  if (options.policies.empty()) return true;
-  return std::find(options.policies.begin(), options.policies.end(), policy) != options.policies.end();
-}
-
 void print_result(const std::string& policy, std::uint64_t cache_blocks, const Result& result, std::uint64_t trie_node_count, std::uint64_t warmup_requests) {
   std::cout << "{"
             << "\"policy\":\"" << policy << "\","
@@ -628,59 +591,6 @@ void print_all_results(std::uint64_t cache_blocks, const AllResults& results, st
   std::cout << "}}\n";
 }
 
-void print_batch_results(const SimulationInput& input, const Options& options) {
-  const std::uint64_t trie_node_count = input.prefix.parent.size();
-  const std::uint64_t total_steps = 1 + options.capacities.size();
-  std::uint64_t completed_steps = 0;
-
-  const Result ceiling = simulate_ceiling(input, options);
-  completed_steps += 1;
-  report_progress(options, completed_steps, total_steps, "ceiling");
-
-  std::cout << "{"
-            << "\"trieNodeCount\":" << trie_node_count << ","
-            << "\"uniqueBlocks\":" << input.unique_blocks << ","
-            << "\"warmupRequests\":" << options.warmup_requests << ","
-            << "\"ceiling\":{";
-  print_named_result("ceiling", input.unique_blocks, ceiling, options.warmup_requests);
-  std::cout << "},\"points\":[";
-
-  bool first_point = true;
-  for (std::uint32_t capacity : options.capacities) {
-    Result fifo;
-    Result lru;
-    Result optimal;
-    if (has_policy(options, "fifo")) fifo = simulate_fifo(input, capacity, options);
-    if (has_policy(options, "lru")) lru = simulate_trie_policy(input, capacity, false, options);
-    if (has_policy(options, "optimal")) optimal = simulate_trie_policy(input, capacity, true, options);
-
-    if (!first_point) std::cout << ",";
-    first_point = false;
-    std::cout << "{"
-              << "\"cacheBlocks\":" << capacity;
-    if (has_policy(options, "fifo")) {
-      std::cout << ",\"fifo\":{";
-      print_named_result("fifo", capacity, fifo, options.warmup_requests);
-      std::cout << "}";
-    }
-    if (has_policy(options, "lru")) {
-      std::cout << ",\"lru\":{";
-      print_named_result("lru", capacity, lru, options.warmup_requests);
-      std::cout << "}";
-    }
-    if (has_policy(options, "optimal")) {
-      std::cout << ",\"optimal\":{";
-      print_named_result("optimal", capacity, optimal, options.warmup_requests);
-      std::cout << "}";
-    }
-    std::cout << "}";
-
-    completed_steps += 1;
-    report_progress(options, completed_steps, total_steps, "capacity");
-  }
-  std::cout << "]}\n";
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -692,11 +602,9 @@ int main(int argc, char** argv) {
       return 0;
     }
 
-    report_progress(options, 0, 1 + options.capacities.size(), "load");
     const SimulationInput input = load_simulation_input(options);
     const std::uint64_t trie_node_count = input.prefix.parent.size();
-    if (options.policy == "batch") print_batch_results(input, options);
-    else if (options.policy == "ceiling") print_result("ceiling", options.capacity, simulate_ceiling(input, options), trie_node_count, options.warmup_requests);
+    if (options.policy == "ceiling") print_result("ceiling", options.capacity, simulate_ceiling(input, options), trie_node_count, options.warmup_requests);
     else if (options.policy == "fifo") print_result("fifo", options.capacity, simulate_fifo(input, options.capacity, options), trie_node_count, options.warmup_requests);
     else if (options.policy == "lru") print_result("lru", options.capacity, simulate_trie_policy(input, options.capacity, false, options), trie_node_count, options.warmup_requests);
     else if (options.policy == "optimal") print_result("optimal", options.capacity, simulate_trie_policy(input, options.capacity, true, options), trie_node_count, options.warmup_requests);

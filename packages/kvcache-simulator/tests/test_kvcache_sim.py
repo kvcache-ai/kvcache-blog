@@ -16,6 +16,10 @@ from kvcache_sim.simulator import run_sweep
 from kvcache_sim.trace import parse_trace_file, parse_trace_lines
 
 
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = PACKAGE_ROOT.parents[1]
+
+
 def make_trace(*hash_paths: list[str], block_size: int = 1):
     lines = [
         json.dumps({
@@ -70,6 +74,14 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(result.indexer_precision, "bf16_fp16")
         self.assertEqual(result.indexer_precision_label, "BF16 / FP16")
         self.assertAlmostEqual(result.total_gib, 74.25)
+
+    def test_bundled_models_match_web_calculator_catalog_when_in_repo(self) -> None:
+        web_catalog = REPO_ROOT / "data" / "kv_cache_calculator" / "models.yaml"
+        bundled_catalog = PACKAGE_ROOT / "src" / "kvcache_sim" / "resources" / "models.yaml"
+        if not web_catalog.exists():
+            self.skipTest("web calculator catalog is not present")
+
+        self.assertEqual(bundled_catalog.read_text(encoding="utf-8"), web_catalog.read_text(encoding="utf-8"))
 
 
 class TraceParserTests(unittest.TestCase):
@@ -288,6 +300,39 @@ class SweepAndCliTests(unittest.TestCase):
         self.assertEqual(parsed["points"][0]["cacheBlocks"], 1)
         self.assertIn("Measurement: hit rates use the last 50% of requests", table.stdout)
         self.assertIn("Speedup: 1.0x means no-cache prefill throughput", table.stdout)
+
+    def test_cli_run_command_matches_sweep_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trace_path = Path(tmpdir) / "trace.jsonl"
+            trace_path.write_text(
+                "\n".join([
+                    json.dumps({"block_size": 1, "hash_ids": ["A"], "input_length": 1}),
+                    json.dumps({"block_size": 1, "hash_ids": ["B"], "input_length": 1}),
+                    json.dumps({"block_size": 1, "hash_ids": ["A"], "input_length": 1}),
+                    json.dumps({"block_size": 1, "hash_ids": ["B"], "input_length": 1}),
+                ])
+                + "\n",
+                encoding="utf-8",
+            )
+            args = [
+                "--trace",
+                str(trace_path),
+                "--model",
+                "qwen3-32b",
+                "--kv-precision",
+                "bf16_fp16",
+                "--budgets-gib",
+                "0.00025",
+                "--backend",
+                "python",
+                "--format",
+                "json",
+            ]
+
+            run_result = subprocess.run([sys.executable, "-m", "kvcache_sim", "run", *args], cwd=Path(__file__).resolve().parents[1], check=True, text=True, capture_output=True)
+            sweep_result = subprocess.run([sys.executable, "-m", "kvcache_sim", "sweep", *args], cwd=Path(__file__).resolve().parents[1], check=True, text=True, capture_output=True)
+
+        self.assertEqual(json.loads(run_result.stdout)["points"], json.loads(sweep_result.stdout)["points"])
 
 
 if __name__ == "__main__":

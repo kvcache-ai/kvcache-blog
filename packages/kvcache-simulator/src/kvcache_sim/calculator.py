@@ -7,6 +7,8 @@ import re
 import shlex
 from typing import Any
 
+from ._resources import package_resource_path
+
 BYTES_PER_GB = 1_000_000_000
 BYTES_PER_GIB = 1024 ** 3
 QWEN_LINEAR_CONV_BYTES_PER_ELEMENT = 2
@@ -35,12 +37,8 @@ class CacheSizeResult:
     total_gib: float
 
 
-def repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
 def default_models_path() -> Path:
-    return repo_root() / "data" / "kv_cache_calculator" / "models.yaml"
+    return package_resource_path("models.yaml")
 
 
 def _parse_scalar(value: str) -> Any:
