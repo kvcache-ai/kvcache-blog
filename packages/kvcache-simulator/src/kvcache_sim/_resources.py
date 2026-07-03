@@ -3,10 +3,18 @@ from __future__ import annotations
 from importlib import resources
 from pathlib import Path
 import hashlib
+import os
 import re
 import tempfile
 
 RESOURCE_PACKAGE = "kvcache_sim.resources"
+
+
+def user_temp_suffix() -> str:
+    try:
+        return f"-uid{os.getuid()}"
+    except AttributeError:
+        return ""
 
 
 def package_resource_path(name: str) -> Path:
@@ -21,7 +29,7 @@ def package_resource_path(name: str) -> Path:
     payload = resource.read_bytes()
     digest = hashlib.sha256(payload).hexdigest()[:16]
     safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", name)
-    target = Path(tempfile.gettempdir()) / f"kvcache-simulator-{digest}-{safe_name}"
+    target = Path(tempfile.gettempdir()) / f"kvcache-simulator{user_temp_suffix()}-{digest}-{safe_name}"
     if not target.exists() or target.read_bytes() != payload:
         target.write_bytes(payload)
     return target

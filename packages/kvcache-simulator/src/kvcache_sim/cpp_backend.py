@@ -13,7 +13,7 @@ import threading
 from typing import Callable, Iterable
 
 from .policies import PolicyResult
-from ._resources import package_resource_path
+from ._resources import package_resource_path, user_temp_suffix
 from .trace import TraceData
 
 UINT32_MAX = 2**32 - 1
@@ -42,7 +42,7 @@ def _cpp_source_path() -> Path:
 
 def _build_path_for_source(source: Path) -> Path:
     digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
-    return Path(tempfile.gettempdir()) / f"kvcache-sim-cpp-{digest}"
+    return Path(tempfile.gettempdir()) / f"kvcache-sim-cpp{user_temp_suffix()}-{digest}"
 
 
 def ensure_cpp_simulator(progress: ProgressCallback | None = None) -> Path:

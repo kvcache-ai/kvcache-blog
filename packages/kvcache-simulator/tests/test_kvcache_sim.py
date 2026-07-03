@@ -10,8 +10,10 @@ import unittest
 from pathlib import Path
 
 from kvcache_sim.calculator import calculate_cache_size, load_models_data, models_by_id
+from kvcache_sim.cpp_backend import _build_path_for_source
 from kvcache_sim.plan import build_execution_plan
 from kvcache_sim.policies import simulate_policy
+from kvcache_sim._resources import package_resource_path, user_temp_suffix
 from kvcache_sim.simulator import run_sweep
 from kvcache_sim.trace import parse_trace_file, parse_trace_lines
 
@@ -211,6 +213,21 @@ class SweepAndCliTests(unittest.TestCase):
         self.assertEqual([point["cacheBlocks"] for point in result["points"]], [1])
         self.assertEqual(result["points"][0]["results"]["fifo"]["totalTokens"], 2)
 
+    def test_run_sweep_sorts_budgets_before_early_breaks(self) -> None:
+        trace = make_trace(["A"], ["B"], ["A"], ["B"])
+        result = run_sweep(
+            trace,
+            model_id="qwen3-32b",
+            precision="bf16_fp16",
+            budgets_gib=[0.001, 0.00025, 0.00025],
+            policies=["fifo"],
+            backend="python",
+            models_data=self.models_data,
+        )
+
+        self.assertEqual([point["cacheBlocks"] for point in result["points"]], [1])
+        self.assertEqual(result["points"][0]["gib"], 0.00025)
+
     def test_multiprocess_sweep_matches_single_process(self) -> None:
         trace = make_trace(["A"], ["B"], ["A"], ["B"])
         serial = run_sweep(
@@ -333,6 +350,23 @@ class SweepAndCliTests(unittest.TestCase):
             sweep_result = subprocess.run([sys.executable, "-m", "kvcache_sim", "sweep", *args], cwd=Path(__file__).resolve().parents[1], check=True, text=True, capture_output=True)
 
         self.assertEqual(json.loads(run_result.stdout)["points"], json.loads(sweep_result.stdout)["points"])
+
+
+class TempPathTests(unittest.TestCase):
+    def test_temp_paths_include_user_suffix_when_available(self) -> None:
+        suffix = user_temp_suffix()
+        if not suffix:
+            self.skipTest("platform does not expose os.getuid")
+
+        resource_path = package_resource_path("models.yaml")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "sim.cc"
+            source.write_text("int main() { return 0; }\n", encoding="utf-8")
+            binary_path = _build_path_for_source(source)
+
+        if tempfile.gettempdir() in str(resource_path):
+            self.assertIn(suffix, resource_path.name)
+        self.assertIn(suffix, binary_path.name)
 
 
 if __name__ == "__main__":

@@ -119,7 +119,7 @@ def run_sweep(
         models_data=data,
     )
     bytes_per_block = float(cache_size.bytes_per_block or cache_size.bytes_per_token * trace.block_size)
-    selected_budgets = budgets_gib or DEFAULT_BUDGETS_GIB
+    selected_budgets = sorted(set(budgets_gib or DEFAULT_BUDGETS_GIB))
     selected_policies = policies or DEFAULT_POLICIES
     for policy in selected_policies:
         if policy not in DEFAULT_POLICIES:
