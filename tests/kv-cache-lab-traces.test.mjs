@@ -22,6 +22,13 @@ import {
   precomputeSweep,
   selectModels,
 } from "../scripts/lib/kv-cache-lab-traces.mjs";
+import {
+  PRECOMPUTED_SCHEMA_VERSION,
+  SIMULATION_SEMANTICS_VERSION,
+  compactPrecomputed,
+  compactTraceMatchesSimulation,
+  simulationResultsFromCompactTrace,
+} from "../scripts/lib/kv-cache-lab-precomputed.mjs";
 import { mergePrecomputed } from "../scripts/kv-cache-lab-merge-precomputed.mjs";
 
 const BYTES_PER_GIB = 1024 ** 3;
@@ -268,6 +275,53 @@ test("native full-precompute optimal uses Belady bypass admission", (t) => {
   }
 });
 
+test("full-precompute rebases copied event-cache paths", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kv-cache-lab-rebase-"));
+  try {
+    const traceDir = path.join(tmp, "kv-cache-lab-full", "bailian_qwen_trace_a");
+    fs.mkdirSync(traceDir, { recursive: true });
+    const files = {
+      idsPath: "ids.bin",
+      tokensPath: "tokens.u16.bin",
+      requestEndsPath: "request-ends.u32.bin",
+      nextPath: "next.u32.bin",
+    };
+    Object.values(files).forEach((file) => fs.writeFileSync(path.join(traceDir, file), Buffer.alloc(4)));
+    fs.writeFileSync(path.join(traceDir, "events.json"), JSON.stringify({
+      id: "bailian_qwen_trace_a",
+      label: "Fixture",
+      scenario: "Fixture",
+      sourceKind: "hash",
+      blockSize: 16,
+      requestCount: 1,
+      warmupRequests: 0,
+      warmupEventStart: 0,
+      totalBlocks: 1,
+      totalInputTokens: 16,
+      averageInputTokens: 16,
+      uniqueBlocks: 1,
+      ...Object.fromEntries(Object.keys(files).map((field) => [field, `/stale/machine/${files[field]}`])),
+    }));
+
+    const output = execFileSync("node", [
+      path.resolve(here, "../scripts/kv-cache-lab-full-precompute.mjs"),
+      "--events-only",
+      "--trace",
+      "bailian_qwen_trace_a",
+      "--cache-dir",
+      tmp,
+      "--output",
+      path.join(tmp, "unused.json"),
+    ], { encoding: "utf8" });
+    const metadata = JSON.parse(output).metadata;
+    for (const [field, file] of Object.entries(files)) {
+      assert.equal(metadata[field], path.join(traceDir, file));
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("precompute sweep is deterministic and uses source-native block size", () => {
   const trace = buildTrace(
     { id: "fixture", label: "Fixture", nativeBlockSize: 16, sourceKind: "hash" },
@@ -360,36 +414,64 @@ test("selected production families dedupe to expected KV architecture settings",
   }).length, 0);
   const groupedLabels = groups.map((group) => group.models.map((model) => model.label).join(" / "));
 
-  assert.equal(selectedModels.length, 15);
-  assert.equal(groups.length, 9);
-  assert.equal(settingCount, 51);
+  assert.equal(selectedModels.length, 17);
+  assert.equal(groups.length, 11);
+  assert.equal(settingCount, 69);
   assert.ok(groupedLabels.includes("DeepSeek V3 / DeepSeek R1"));
   assert.ok(groupedLabels.includes("GLM-5 / GLM-5.1"));
+  assert.ok(groupedLabels.includes("GLM-5.2"));
   assert.ok(groupedLabels.includes("Kimi K2.5 / Kimi K2.6"));
   assert.ok(groupedLabels.includes("MiniMax M2 / MiniMax M2.1 / MiniMax M2.5 / MiniMax M2.7"));
+  assert.ok(groupedLabels.includes("MiniMax M3"));
   assert.ok(selectedModels.every((model) => !["Qwen", "Cohere", "Llama", "Gemma"].some((family) => model.family.startsWith(family))));
 });
 
 test("merge precomputed data preserves existing sweeps and adds inputs", () => {
+  const result = (hitTokens) => ({
+    policy: "fifo",
+    cacheBlocks: 10,
+    warmupRequests: 1,
+    measurementMode: "fixed_window",
+    hitTokens,
+    totalTokens: 100,
+    hitRate: hitTokens / 100,
+  });
+  const sweep = (modelId, hitTokens) => ({
+    modelId,
+    bytesPerToken: 8,
+    points: [{
+      gib: 1,
+      cacheBlocks: 10,
+      results: {
+        fifo: result(hitTokens),
+        lru: { ...result(hitTokens + 10), policy: "lru" },
+        optimal: { ...result(hitTokens + 20), policy: "optimal" },
+      },
+    }],
+  });
   const base = {
-    metadata: { mode: "base", sources: { a: "base" } },
+    metadata: { mode: "base", warmup_fraction: 0.5, policies: ["fifo", "lru", "optimal"], sources: { a: "base" } },
     traces: {
       trace: {
         id: "trace",
+        nativeBlockSize: 64,
+        summary: { warmupRequests: 1 },
         modelSweeps: {
-          "model-a|precision=bf16_fp16|indexer=|draft=0": { modelId: "model-a" },
+          "model-a|precision=bf16_fp16|indexer=|draft=0": sweep("model-a", 10),
         },
       },
     },
   };
   const input = {
-    metadata: { mode: "input", sources: { b: "input" } },
+    metadata: { mode: "input", warmup_fraction: 0.5, policies: ["fifo", "lru", "optimal"], sources: { b: "input" } },
     traces: {
       trace: {
         id: "trace",
         label: "Trace",
+        nativeBlockSize: 64,
+        summary: { warmupRequests: 1 },
         modelSweeps: {
-          "model-b|precision=bf16_fp16|indexer=|draft=0": { modelId: "model-b" },
+          "model-b|precision=bf16_fp16|indexer=|draft=0": sweep("model-b", 10),
         },
       },
     },
@@ -398,9 +480,80 @@ test("merge precomputed data preserves existing sweeps and adds inputs", () => {
   const merged = mergePrecomputed(base, [input]);
 
   assert.equal(merged.metadata.mode, "input");
+  assert.equal(merged.metadata.schema_version, PRECOMPUTED_SCHEMA_VERSION);
+  assert.equal(merged.metadata.simulation_semantics, SIMULATION_SEMANTICS_VERSION);
   assert.deepEqual(merged.metadata.sources, { a: "base", b: "input" });
   assert.equal(merged.traces.trace.label, "Trace");
-  assert.equal(Object.keys(merged.traces.trace.modelSweeps).length, 2);
-  assert.equal(merged.traces.trace.modelSweeps["model-a|precision=bf16_fp16|indexer=|draft=0"].modelId, "model-a");
-  assert.equal(merged.traces.trace.modelSweeps["model-b|precision=bf16_fp16|indexer=|draft=0"].modelId, "model-b");
+  assert.equal(Object.keys(merged.traces.trace.settings).length, 2);
+  assert.deepEqual(merged.traces.trace.capacityResults[10], [10, 20, 30]);
+});
+
+test("compact precomputed data deduplicates capacity results without losing hit tokens", () => {
+  const policyResult = (policy, hitTokens) => ({ policy, hitTokens, totalTokens: 100, hitRate: hitTokens / 100 });
+  const point = {
+    gib: 1,
+    cacheBlocks: 10,
+    results: {
+      fifo: policyResult("fifo", 10),
+      lru: policyResult("lru", 20),
+      optimal: policyResult("optimal", 30),
+    },
+  };
+  const compact = compactPrecomputed({
+    metadata: { warmup_fraction: 0.5, policies: ["fifo", "lru", "optimal"] },
+    traces: {
+      trace: {
+        nativeBlockSize: 64,
+        summary: { requests: 2, totalBlocks: 2, totalInputTokens: 128, warmupRequests: 1 },
+        modelSweeps: {
+          "model-a|precision=bf16_fp16|indexer=|draft=0": { bytesPerToken: 8, points: [point] },
+          "model-b|precision=bf16_fp16|indexer=|draft=0": { bytesPerToken: 8, points: [point] },
+        },
+      },
+    },
+  });
+  const trace = compact.traces.trace;
+
+  assert.equal(Object.keys(trace.settings).length, 2);
+  assert.equal(Object.keys(trace.capacityResults).length, 1);
+  assert.deepEqual(trace.capacityResults[10], [10, 20, 30]);
+  assert.equal(trace.summary.totalMeasuredTokens, 100);
+  const restored = simulationResultsFromCompactTrace(trace);
+  assert.equal(restored.get("optimal|10").hitRate, 0.3);
+});
+
+test("versioned compact cache only matches the same semantics, warmup, and trace shape", () => {
+  const dataset = compactPrecomputed({
+    metadata: { warmup_fraction: 0.5, policies: ["fifo", "lru", "optimal"] },
+    traces: {
+      trace: {
+        nativeBlockSize: 64,
+        summary: {
+          requests: 2,
+          totalBlocks: 2,
+          totalInputTokens: 128,
+          totalMeasuredTokens: 64,
+          warmupRequests: 1,
+        },
+        settings: { "model-a|precision=bf16_fp16|indexer=|draft=0": [8, []] },
+        capacityResults: {},
+      },
+    },
+  });
+  const runtime = {
+    blockSize: 64,
+    requestCount: 2,
+    totalBlocks: 2,
+    totalInputTokens: 128,
+    warmupRequests: 1,
+    warmupFraction: 0.5,
+  };
+
+  assert.equal(compactTraceMatchesSimulation(dataset.traces.trace, dataset.metadata, runtime), true);
+  assert.equal(compactTraceMatchesSimulation(dataset.traces.trace, dataset.metadata, { ...runtime, warmupFraction: 0.25 }), false);
+  assert.equal(compactTraceMatchesSimulation(dataset.traces.trace, dataset.metadata, { ...runtime, totalBlocks: 3 }), false);
+  assert.equal(
+    compactTraceMatchesSimulation(dataset.traces.trace, { ...dataset.metadata, simulation_semantics: "old" }, runtime),
+    false,
+  );
 });

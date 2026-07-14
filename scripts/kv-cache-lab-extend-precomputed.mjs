@@ -13,6 +13,10 @@ import {
   normalizeTraceSource,
   precomputeSweep,
 } from "./lib/kv-cache-lab-traces.mjs";
+import {
+  compactPrecomputed,
+  expandCompactTrace,
+} from "./lib/kv-cache-lab-precomputed.mjs";
 
 function parseArgs(argv) {
   const args = {
@@ -59,7 +63,7 @@ const updated = [];
 
 for (const source of TRACE_SOURCES) {
   if (!wantedTraceIds.has(source.id) || !data.traces[source.id]) continue;
-  const traceData = data.traces[source.id];
+  const traceData = expandCompactTrace(data.traces[source.id], data.metadata);
   const requestLimit = Number(traceData.summary?.requests);
   const trace = await normalizeTraceSource(source, {
     ...options,
@@ -100,6 +104,7 @@ for (const source of TRACE_SOURCES) {
   }
 
   if (traceAdded) updated.push({ trace: source.id, points: traceAdded });
+  data.traces[source.id] = traceData;
 }
 
 data.metadata = {
@@ -109,6 +114,7 @@ data.metadata = {
   capacity_gib_values: options.capacityGiBValues,
 };
 
+const compactData = compactPrecomputed(data);
 await fsp.mkdir(path.dirname(outputPath), { recursive: true });
-await fsp.writeFile(outputPath, `${JSON.stringify(data, null, 2)}\n`);
+await fsp.writeFile(outputPath, `${JSON.stringify(compactData, null, 2)}\n`);
 console.log(JSON.stringify({ outputPath, updated }, null, 2));

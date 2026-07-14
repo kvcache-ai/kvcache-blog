@@ -4,6 +4,12 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
 
+import {
+  allModelSettings,
+  loadModelsData,
+  modelSweepKey as precomputedModelSweepKey,
+} from "../scripts/lib/kv-cache-lab-traces.mjs";
+
 const require = createRequire(import.meta.url);
 const {
   BYTES_PER_GIB,
@@ -97,6 +103,28 @@ test("lab warmup defaults match precomputed metadata", () => {
   assert.equal(DEFAULT_WARMUP_FRACTION, 0.5);
   assert.equal(Number(match && match[1]), 0.5);
   assert.equal(precomputed.metadata.warmup_fraction, 0.5);
+  assert.equal(precomputed.metadata.schema_version, 2);
+  assert.equal(
+    precomputed.metadata.simulation_semantics,
+    "prefix-hit-context-aware-fifo-block-lru-trie-optimal-belady-bypass-v1",
+  );
+  assert.ok(Object.values(precomputed.traces).every((trace) => trace.settings && trace.capacityResults && !trace.modelSweeps));
+});
+
+test("precomputed traces cover every calculator model and no-draft precision setting", () => {
+  const modelsData = loadModelsData("data/kv_cache_calculator/models.yaml");
+  const expectedKeys = allModelSettings(modelsData.models, {
+    precisionOptions: modelsData.precision_options,
+    indexerPrecisionOptions: modelsData.indexer_precision_options,
+    includeDraftKvCache: false,
+  }).map(precomputedModelSweepKey).sort();
+  const precomputed = JSON.parse(fs.readFileSync(new URL("../data/kv_cache_lab/precomputed.json", import.meta.url), "utf8"));
+
+  assert.equal(modelsData.models.length, 52);
+  assert.equal(expectedKeys.length, 198);
+  for (const [traceId, trace] of Object.entries(precomputed.traces)) {
+    assert.deepEqual(Object.keys(trace.settings).sort(), expectedKeys, `${traceId} settings`);
+  }
 });
 
 test("FIFO, LRU, and optimal policies produce known block hit rates", () => {
@@ -281,6 +309,47 @@ test("precomputed lookup uses model and precision key exactly", () => {
     precomputedResultFor(precomputed, preset, tinyModel, { precision: "bf16_fp16", indexerPrecision: "fp4_int4", includeDraftKvCache: false }),
     null,
   );
+});
+
+test("compact precomputed lookup rebuilds exact hit rates from shared capacity results", () => {
+  const preset = { id: "real_trace", label: "Real Trace" };
+  const precomputed = {
+    metadata: { policies: ["fifo", "lru", "optimal"] },
+    traces: {
+      real_trace: {
+        nativeBlockSize: 64,
+        sourceKind: "hash",
+        summary: {
+          requests: 4,
+          warmupRequests: 2,
+          averageInputTokens: 64,
+          totalMeasuredTokens: 100,
+          infiniteHitRate: 0.9,
+        },
+        settings: {
+          "tiny-standard|precision=bf16_fp16|indexer=|draft=0": [8, [1, 10, 2, 20]],
+        },
+        capacityResults: {
+          10: [20, 30, 40],
+          20: [50, 60, 70],
+        },
+      },
+    },
+  };
+
+  const result = precomputedResultFor(
+    precomputed,
+    preset,
+    tinyModel,
+    { precision: "bf16_fp16", includeDraftKvCache: false },
+  );
+
+  assert.ok(result);
+  assert.equal(result.sweep.bytesPerBlock, 512);
+  assert.equal(result.sweep.points.length, 2);
+  assert.equal(result.sweep.points[0].results.fifo.hitRate, 0.2);
+  assert.equal(result.sweep.points[1].results.optimal.hitRate, 0.7);
+  assert.equal(result.sweep.reuseCeiling, 0.9);
 });
 
 test("token-dependent cache layouts use estimate tokens for capacity accounting", () => {

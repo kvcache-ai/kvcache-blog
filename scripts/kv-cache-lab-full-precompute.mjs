@@ -28,6 +28,15 @@ import {
   parseArgs as parseCommonArgs,
   selectModels,
 } from "./lib/kv-cache-lab-traces.mjs";
+import {
+  PRECOMPUTED_SCHEMA_VERSION,
+  SIMULATION_SEMANTICS_VERSION,
+  compactPrecomputed,
+  compactTrace,
+  compactTraceMatchesSimulation,
+  mergeCompactTraces,
+  simulationResultsFromCompactTrace,
+} from "./lib/kv-cache-lab-precomputed.mjs";
 
 const require = createRequire(import.meta.url);
 const lab = require("../assets/js/kv-cache-lab.js");
@@ -47,7 +56,7 @@ const HF_EXPECTED_ROWS = {
 
 const UINT32_MAX = 0xffffffff;
 const EVENT_CHUNK = 1_000_000;
-const SIMULATION_RESULT_CACHE_DIR = "results-context-window-v1";
+const SIMULATION_RESULT_CACHE_DIR = `results-${SIMULATION_SEMANTICS_VERSION}`;
 
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -532,6 +541,20 @@ async function createSortedEventFiles(writer, traceDir, options) {
 async function ensureEventStream(source, options) {
   const traceDir = path.join(options.fullCacheDir || path.join(os.tmpdir(), "kv-cache-lab-full"), source.id);
   const metadataPath = path.join(traceDir, "events.json");
+  const rebaseCachedPaths = (metadata) => {
+    const files = {
+      idsPath: "ids.bin",
+      tokensPath: "tokens.u16.bin",
+      requestEndsPath: "request-ends.u32.bin",
+      nextPath: "next.u32.bin",
+    };
+    for (const [field, file] of Object.entries(files)) {
+      if (metadata[field] && fs.existsSync(metadata[field])) continue;
+      const localPath = path.join(traceDir, file);
+      if (fs.existsSync(localPath)) metadata[field] = localPath;
+    }
+    return metadata;
+  };
   const applyWarmup = (metadata) => {
     const warmupRequests = Math.min(
       metadata.requestCount,
@@ -542,7 +565,7 @@ async function ensureEventStream(source, options) {
     return metadata;
   };
   if (!options.forceEvents && fs.existsSync(metadataPath)) {
-    const metadata = applyWarmup(JSON.parse(await fsp.readFile(metadataPath, "utf8")));
+    const metadata = applyWarmup(rebaseCachedPaths(JSON.parse(await fsp.readFile(metadataPath, "utf8"))));
     if (metadata.requestEndsPath && fs.existsSync(metadata.requestEndsPath)) return metadata;
   }
   await fsp.rm(traceDir, { recursive: true, force: true });
@@ -1027,8 +1050,9 @@ function modelSettingFor(model) {
   };
 }
 
-function seedSimulationResults(existingTrace, metadata) {
-  return new Map();
+function seedSimulationResults(existingTrace, existingMetadata, metadata) {
+  if (!compactTraceMatchesSimulation(existingTrace, existingMetadata, metadata)) return new Map();
+  return simulationResultsFromCompactTrace(existingTrace, POLICIES);
 }
 
 function simulationResultHasCurrentStats(result) {
@@ -1039,7 +1063,8 @@ function simulationResultHasCurrentStats(result) {
 }
 
 function simulationResultCacheDir(metadata) {
-  return path.join(path.dirname(metadata.idsPath), SIMULATION_RESULT_CACHE_DIR);
+  const warmup = Number.isFinite(Number(metadata.warmupFraction)) ? Number(metadata.warmupFraction) : DEFAULT_WARMUP_FRACTION;
+  return path.join(path.dirname(metadata.idsPath), `${SIMULATION_RESULT_CACHE_DIR}-warmup-${warmup}`);
 }
 
 function simulationResultCachePath(metadata, policy, capacity) {
@@ -1200,10 +1225,31 @@ async function precomputeBlockCurveTrace(source, options, metadata, ceiling) {
   };
 }
 
-async function precomputeTrace(source, options, modelsData, existingTrace = null) {
+async function precomputeTrace(source, options, modelsData, existingTrace = null, existingMetadata = null) {
   const metadata = await ensureEventStream(source, options);
-  console.error(`[full] ${source.id}: computing infinite-cache ceiling`);
-  const ceiling = await computeCeiling(metadata, options);
+  const canRestoreOutput = compactTraceMatchesSimulation(existingTrace, existingMetadata, metadata);
+  const existingSummary = (existingTrace && existingTrace.summary) || {};
+  let ceiling;
+  if (
+    !options.blockCurve
+    && canRestoreOutput
+    && Number.isFinite(Number(existingSummary.infiniteHitTokens))
+    && Number.isFinite(Number(existingSummary.totalMeasuredTokens))
+    && Number.isFinite(Number(existingSummary.infiniteHitRate))
+  ) {
+    metadata.trieNodeCount = Math.max(1, Number(existingSummary.uniqueBlocks || 0) + 1);
+    metadata.uniqueBlocks = Math.max(0, metadata.trieNodeCount - 1);
+    ceiling = {
+      warmupRequests: metadata.warmupRequests,
+      hitTokens: Number(existingSummary.infiniteHitTokens),
+      totalTokens: Number(existingSummary.totalMeasuredTokens),
+      hitRate: Number(existingSummary.infiniteHitRate),
+    };
+    console.error(`[full] ${source.id}: restored infinite-cache ceiling from output`);
+  } else {
+    console.error(`[full] ${source.id}: computing infinite-cache ceiling`);
+    ceiling = await computeCeiling(metadata, options);
+  }
   if (options.blockCurve) {
     return precomputeBlockCurveTrace(source, options, metadata, ceiling);
   }
@@ -1259,7 +1305,7 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
     }
   }
 
-  const simulationResults = seedSimulationResults(existingTrace, metadata);
+  const simulationResults = seedSimulationResults(existingTrace, existingMetadata, metadata);
   const outputSeedCount = simulationResults.size;
   const localSeedCount = await seedCachedSimulationResults(simulationResults, metadata);
   const capacities = Array.from(capacityByKey.values()).sort((left, right) => left - right);
@@ -1375,7 +1421,7 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
     }
   }
 
-  return {
+  const generatedTrace = compactTrace({
     id: source.id,
     label: source.label,
     scenario: source.scenario,
@@ -1390,13 +1436,19 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
       uniqueBlocks: metadata.uniqueBlocks,
       totalBlocks: metadata.totalBlocks,
       warmupRequests: metadata.warmupRequests,
+      infiniteHitTokens: ceiling.hitTokens,
       infiniteHitRate: ceiling.hitRate,
+      totalMeasuredTokens: ceiling.totalTokens,
     },
     modelSweeps,
-  };
+  }, { policies: POLICIES });
+  return canRestoreOutput
+    ? mergeCompactTraces(existingTrace, generatedTrace, POLICIES)
+    : generatedTrace;
 }
 
 function refreshOutputMetadata(output, options) {
+  const updatedAt = new Date().toISOString();
   output.metadata = {
     ...(output.metadata || {}),
     mode: "precomputed_real_traces",
@@ -1412,7 +1464,7 @@ function refreshOutputMetadata(output, options) {
           : "all_model_precision_indexer_draft_settings",
     capacity_gib_values: options.capacityGiBValues,
     curve_points: options.blockCurve ? (options.curvePoints || 64) : output.metadata?.curve_points,
-    warmup_fraction: DEFAULT_WARMUP_FRACTION,
+    warmup_fraction: options.warmupFraction ?? DEFAULT_WARMUP_FRACTION,
     policies: POLICIES,
     sources: { ...(output.metadata && output.metadata.sources ? output.metadata.sources : {}), ...SOURCE_LINKS },
     reference_sources: output.metadata?.reference_sources || REFERENCE_SOURCES,
@@ -1420,8 +1472,15 @@ function refreshOutputMetadata(output, options) {
     exclude_families: options.excludeFamilies,
     dedupe_kv_architecture: Boolean(options.dedupeKvArchitecture),
     include_draft_kv_cache: !options.noDraft,
-    full_trace_updated_at: new Date().toISOString(),
+    schema_version: PRECOMPUTED_SCHEMA_VERSION,
+    simulation_semantics: SIMULATION_SEMANTICS_VERSION,
+    full_trace_updated_at: updatedAt,
+    updated_at: updatedAt,
   };
+  delete output.metadata.exact_model;
+  delete output.metadata.exact_precision;
+  delete output.metadata.exact_indexer_precision;
+  delete output.metadata.exact_include_draft_kv_cache;
 }
 
 async function writeOutputCheckpoint(outputPath, output) {
@@ -1434,7 +1493,7 @@ const selectedTraceIds = options.traceIds || Array.from(FULL_TRACE_IDS);
 const modelsData = loadModelsData(options.modelsPath);
 const outputPath = path.resolve(options.outputPath || DEFAULT_OUTPUT_PATH);
 const output = fs.existsSync(outputPath)
-  ? JSON.parse(await fsp.readFile(outputPath, "utf8"))
+  ? compactPrecomputed(JSON.parse(await fsp.readFile(outputPath, "utf8")))
   : { metadata: {}, traces: {} };
 
 for (const traceId of selectedTraceIds) {
@@ -1444,7 +1503,13 @@ for (const traceId of selectedTraceIds) {
     console.log(JSON.stringify({ trace: traceId, metadata }, null, 2));
     continue;
   }
-  const trace = await precomputeTrace(source, options, modelsData, output.traces && output.traces[traceId]);
+  const trace = await precomputeTrace(
+    source,
+    options,
+    modelsData,
+    output.traces && output.traces[traceId],
+    output.metadata,
+  );
   output.traces = { ...(output.traces || {}), [traceId]: trace };
   refreshOutputMetadata(output, options);
   await writeOutputCheckpoint(outputPath, output);

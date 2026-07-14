@@ -4,6 +4,11 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  compactPrecomputed,
+  mergeCompactPrecomputed,
+} from "./lib/kv-cache-lab-precomputed.mjs";
+
 function parseArgs(argv) {
   const args = { inputs: [] };
   for (let index = 0; index < argv.length; index += 1) {
@@ -23,35 +28,11 @@ async function readJsonIfExists(filePath, fallback) {
 }
 
 export function mergePrecomputed(baseData, inputDataList) {
-  const output = {
-    metadata: { ...(baseData && baseData.metadata ? baseData.metadata : {}) },
-    traces: { ...(baseData && baseData.traces ? baseData.traces : {}) },
-  };
+  let output = compactPrecomputed(baseData || { metadata: {}, traces: {} });
 
-  for (const input of inputDataList) {
-    if (!input) continue;
-    output.metadata = {
-      ...output.metadata,
-      ...(input.metadata || {}),
-      sources: {
-        ...(output.metadata.sources || {}),
-        ...(input.metadata && input.metadata.sources ? input.metadata.sources : {}),
-      },
-      reference_sources:
-        (input.metadata && input.metadata.reference_sources) ||
-        output.metadata.reference_sources,
-    };
-    for (const [traceId, trace] of Object.entries(input.traces || {})) {
-      const existing = output.traces[traceId] || {};
-      output.traces[traceId] = {
-        ...existing,
-        ...trace,
-        modelSweeps: {
-          ...(existing.modelSweeps || {}),
-          ...(trace.modelSweeps || {}),
-        },
-      };
-    }
+  for (const inputData of inputDataList) {
+    if (!inputData) continue;
+    output = mergeCompactPrecomputed(output, inputData);
   }
 
   output.metadata.merged_at = new Date().toISOString();
