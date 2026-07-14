@@ -2410,23 +2410,74 @@
 
   function availableSettingsFor(precomputed, preset, model) {
     const trace = precomputedTrace(precomputed, preset);
-    if (!trace || !trace.modelSweeps || !model) return [];
-    return Object.keys(trace.modelSweeps)
+    const settings = trace && (trace.modelSweeps || trace.settings);
+    if (!settings || !model) return [];
+    return Object.keys(settings)
       .map(parseSweepKey)
       .filter((setting) => setting.modelId === model.id);
   }
 
   function availableModelIdsFor(precomputed, preset) {
     const trace = precomputedTrace(precomputed, preset);
-    if (!trace || !trace.modelSweeps) return null;
-    return new Set(Object.keys(trace.modelSweeps).map((key) => parseSweepKey(key).modelId));
+    const settings = trace && (trace.modelSweeps || trace.settings);
+    if (!settings) return null;
+    return new Set(Object.keys(settings).map((key) => parseSweepKey(key).modelId));
+  }
+
+  function compactPrecomputedSweep(precomputed, trace, key) {
+    if (!trace || !trace.settings || !trace.capacityResults) return null;
+    const encoded = trace.settings[key];
+    if (!Array.isArray(encoded) || !Array.isArray(encoded[1]) || encoded[1].length % 2 !== 0) return null;
+    const bytesPerToken = Number(encoded[0]);
+    const blockSize = Number(trace.nativeBlockSize);
+    const totalTokens = Number(trace.summary && trace.summary.totalMeasuredTokens);
+    if (!(bytesPerToken > 0) || !(blockSize > 0) || !(totalTokens >= 0)) return null;
+    const policies = precomputed && precomputed.metadata && Array.isArray(precomputed.metadata.policies)
+      ? precomputed.metadata.policies
+      : POLICIES;
+    const warmupRequests = Number(trace.summary && trace.summary.warmupRequests) || 0;
+    const points = [];
+    for (let index = 0; index < encoded[1].length; index += 2) {
+      const gib = Number(encoded[1][index]);
+      const cacheBlocks = Math.floor(Number(encoded[1][index + 1]));
+      const hits = trace.capacityResults[String(cacheBlocks)];
+      if (!Number.isFinite(gib) || cacheBlocks < 0 || !Array.isArray(hits) || hits.length < policies.length) return null;
+      const results = {};
+      for (let policyIndex = 0; policyIndex < policies.length; policyIndex += 1) {
+        const policy = policies[policyIndex];
+        const hitTokens = Number(hits[policyIndex]);
+        if (!(hitTokens >= 0)) return null;
+        results[policy] = {
+          policy,
+          cacheBlocks,
+          warmupRequests,
+          measurementStartRequest: warmupRequests,
+          measurementMode: "fixed_window",
+          hitTokens,
+          totalTokens,
+          hitRate: totalTokens ? hitTokens / totalTokens : 0,
+        };
+      }
+      points.push({ gib, cacheBlocks, results });
+    }
+    return {
+      blockSize,
+      bytesPerToken,
+      bytesPerBlock: bytesPerToken * blockSize,
+      points,
+      policies,
+      warmupRequests,
+      sourceKind: trace.sourceKind,
+    };
   }
 
   function precomputedResultFor(precomputed, preset, model, settings) {
     const trace = precomputedTrace(precomputed, preset);
-    if (!trace || !trace.modelSweeps) return null;
+    if (!trace) return null;
     const key = modelSweepKey(model, settings || {});
-    const sweep = trace.modelSweeps[key];
+    const sweep = trace.modelSweeps
+      ? trace.modelSweeps[key]
+      : compactPrecomputedSweep(precomputed, trace, key);
     if (!sweep) return null;
     return {
       preset,

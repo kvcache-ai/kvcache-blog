@@ -6,6 +6,13 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 
+import {
+  compactPrecomputed,
+  compactTraceMatchesSimulation,
+  mergeCompactPrecomputed,
+  simulationResultsFromCompactTrace,
+} from "./kv-cache-lab-precomputed.mjs";
+
 const require = createRequire(import.meta.url);
 const calculator = require("../../assets/js/kv-cache-calculator.js");
 const lab = require("../../assets/js/kv-cache-lab.js");
@@ -1212,11 +1219,34 @@ export function precomputeBlockCapacityCurve(trace, options = {}) {
 
 export function loadModelsData(modelsPath = "data/kv_cache_calculator/models.yaml") {
   const absolute = path.resolve(modelsPath);
-  const json = execFileSync("ruby", ["-ryaml", "-rjson", "-e", "data=YAML.load_file(ARGV[0]); puts JSON.generate(data)", absolute], {
-    encoding: "utf8",
-    maxBuffer: 80 * 1024 * 1024,
-  });
-  return JSON.parse(json);
+  const parsers = [
+    {
+      command: "ruby",
+      args: ["-ryaml", "-rjson", "-e", "data=YAML.load_file(ARGV[0]); puts JSON.generate(data)", absolute],
+    },
+    {
+      command: "python3",
+      args: [
+        "-c",
+        "import json, sys, yaml; print(json.dumps(yaml.safe_load(open(sys.argv[1], encoding='utf-8'))))",
+        absolute,
+      ],
+    },
+  ];
+  const errors = [];
+  for (const parser of parsers) {
+    try {
+      const json = execFileSync(parser.command, parser.args, {
+        encoding: "utf8",
+        maxBuffer: 80 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return JSON.parse(json);
+    } catch (error) {
+      errors.push(`${parser.command}: ${error.message}`);
+    }
+  }
+  throw new Error(`Unable to parse ${absolute}. Install Ruby or Python with PyYAML. ${errors.join("; ")}`);
 }
 
 export async function precomputeCurves(options = {}) {
@@ -1253,6 +1283,16 @@ export async function precomputeCurves(options = {}) {
     const analysis = lab.analyzeTrace(trace, { warmupFraction });
     const plan = analysis.plan;
     const simulationCache = new Map();
+    const existingTrace = options.existingData && options.existingData.traces && options.existingData.traces[source.id];
+    if (compactTraceMatchesSimulation(existingTrace, options.existingData && options.existingData.metadata, {
+      ...analysis.meta,
+      warmupFraction,
+    })) {
+      for (const [key, result] of simulationResultsFromCompactTrace(existingTrace, POLICIES)) {
+        simulationCache.set(key, result);
+      }
+      console.error(`[precompute] ${source.id}: restored ${simulationCache.size} policy/capacity results from output`);
+    }
     const modelSweeps = {};
     let blockCapacityCurve = null;
     console.error(`[precompute] ${source.id}: ${trace.summary.requests} requests, ${trace.summary.totalBlocks} blocks, ${trace.summary.uniqueBlocks} unique`);
@@ -1333,13 +1373,14 @@ export async function precomputeCurves(options = {}) {
         ...trace.summary,
         uniqueBlocks: plan.uniqueBlocks,
         warmupRequests: plan.warmupRequests,
+        infiniteHitTokens: analysis.ceiling.hitTokens,
         infiniteHitRate: analysis.ceiling.hitRate,
         totalMeasuredTokens: analysis.meta.totalMeasuredTokens,
       },
       ...(options.blockCurve ? { blockCapacityCurve } : { modelSweeps }),
     };
   }
-  return {
+  return compactPrecomputed({
     metadata: {
       generated_at: generatedAt,
       mode: "precomputed_real_traces",
@@ -1355,7 +1396,7 @@ export async function precomputeCurves(options = {}) {
           : "selected_model_settings",
       capacity_gib_values: options.capacityGiBValues || DEFAULT_CAPACITY_GIB_VALUES,
       curve_points: options.blockCurve ? (options.curvePoints || 64) : undefined,
-        warmup_fraction: DEFAULT_WARMUP_FRACTION,
+        warmup_fraction: options.warmupFraction ?? DEFAULT_WARMUP_FRACTION,
       policies: POLICIES,
       sources: SOURCE_LINKS,
       reference_sources: REFERENCE_SOURCES,
@@ -1365,12 +1406,17 @@ export async function precomputeCurves(options = {}) {
       include_draft_kv_cache: !options.noDraft,
     },
     traces,
-  };
+  });
 }
 
 export async function writePrecomputedCurves(options = {}) {
   const outputPath = path.resolve(options.outputPath || DEFAULT_OUTPUT_PATH);
-  const data = await precomputeCurves(options);
+  let existingData = options.existingData;
+  if (!existingData && fs.existsSync(outputPath)) {
+    existingData = JSON.parse(await fsp.readFile(outputPath, "utf8"));
+  }
+  const generated = await precomputeCurves({ ...options, existingData });
+  const data = existingData ? mergeCompactPrecomputed(existingData, generated) : generated;
   await fsp.mkdir(path.dirname(outputPath), { recursive: true });
   await fsp.writeFile(outputPath, `${JSON.stringify(data, null, 2)}\n`);
   return { outputPath, data };
