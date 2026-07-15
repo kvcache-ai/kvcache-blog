@@ -1,6 +1,6 @@
 ---
 title: "Scaling KV Cache Beyond Memory with Mooncake SSD Offloading"
-summary: "By integrating Mooncake into OpenClaw's real inference path, we not only improved fast-path latency, but also sharply reduced TTFT tail latency in multi-session, long-context workloads, turning a system that was usually fast but occasionally slow into one that feels consistently smooth."
+summary: "Mooncake extends KV cache beyond expensive memory by pooling local NVMe SSDs into a distributed, persistent cache tier that preserves long-context reuse and reduces TTFT for agentic workloads."
 date: 2026-07-15
 authors:
   - Mooncake community
@@ -14,9 +14,8 @@ tags:
 draft: false
 showathome: true
 commentable: false
-home_weight: 202607140
-image:
-  alt_text: "OpenClaw and Mooncake tail-latency stability upgrade"
+home_weight: 202607150
+
 ---
 
 ## SSD Offloading Becomes Necessary, Practical and Profitable
