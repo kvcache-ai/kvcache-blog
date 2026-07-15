@@ -29,7 +29,7 @@ However, the lifetimes of KV caches vary dramatically; some will be reused hours
      style="width:70%; max-width:1100px"/>
 </center>
 
-As shown in the figure, KV block reuse exhibits pronounced temporal-locality polarization, while block lifetimes span orders of magnitude. In coding scenarios, 69.2% of reused blocks are reaccessed within ten minutes, whereas cold reuse after more than 30 minutes accounts for only 10.3%. In reasoning scenarios, this skew is even more extreme: 83.0% of reused blocks exhibit short-cycle reuse, while only 5.0% fall into the cold-reuse category. These distributions show that KV cache access does not follow a simple monotonic decay. Instead, it forms a bimodal pattern where hot clusters coexist with cold tails. As a result, LRU or fixed-TTL policies may prematurely evict cold yet still valuable KV blocks, leading to catastrophic cache misses and massive prefill recomputation later.
+As shown in the figure, KV block reuse exhibits pronounced temporal-locality polarization, while block lifetimes span orders of magnitude. In coding scenarios, 69.2% of reused blocks are re-accessed within ten minutes, whereas cold reuse after more than 30 minutes accounts for only 10.3%. In reasoning scenarios, this skew is even more extreme: 83.0% of reused blocks exhibit short-cycle reuse, while only 5.0% fall into the cold-reuse category. These distributions show that KV cache access does not follow a simple monotonic decay. Instead, it forms a bimodal pattern where hot clusters coexist with cold tails. As a result, LRU or fixed-TTL policies may prematurely evict cold yet still valuable KV blocks, leading to catastrophic cache misses and massive prefill recomputation later.
 
 This naturally raises a question: can we use cheaper, more cost-effective SSDs to store these long-tail KV blocks? In our previous blog, [How Much KV Cache Budget Do We Need for LLM Serving?](/blog/calculate-kvcache-cache-budge/), we answered this question through a quantitative analysis of agentic workloads. We showed that the marginal benefit of provisioning additional DRAM capacity quickly diminishes, making a tiered storage hierarchy increasingly attractive. More importantly, because the vast majority of KV cache hits can already be served by a relatively small DRAM cache, only a tiny fraction of requests need to access the SSD tier. In other words, SSDs can dramatically expand KV cache capacity while imposing very little pressure on the read path.
 
@@ -38,7 +38,7 @@ Even more appealingly, KV cache hit rate translates nonlinearly into prefill spe
 ## Mooncake Solution: A Distributed SSD Pool for KV Cache
 
 
-Motivated by this observation, we built SSD offloading support directly into Mooncake Store. As shown in the figure above, Mooncake organizes local SSDs across serving nodes into a distributed KV cache pool, just as it already does for DRAM. DRAM remains the low-latency serving tier for hot data, while the larger, lower-cost SSD tier extends KV cache lifetime. A master coordinates the global metadata of all replicas across both tiers, allowing any compute node to transparently discover and reuse KV blocks stored on another node’s local SSD.
+Motivated by this observation, we built SSD offloading support directly into Mooncake Store. As shown in the figure below, Mooncake organizes local SSDs across serving nodes into a distributed KV cache pool, just as it already does for DRAM. DRAM remains the low-latency serving tier for hot data, while the larger, lower-cost SSD tier extends KV cache lifetime. A master coordinates the global metadata of all replicas across both tiers, allowing any compute node to transparently discover and reuse KV blocks stored on another node’s local SSD.
 
 <center>
 <img src="store-arch.png"
@@ -74,7 +74,7 @@ A storage backend defines how objects are organized on disk, including their lay
 - **OffsetAllocatorStorageBackend** stores all objects in a single pre-allocated file. Like Mooncake's DRAM storage, it uses an OffsetAllocator to manage space, enabling object-level allocation and eviction.
 - **FilePerKeyBackend** (demo) stores each object as an individual file under a two-level hash-sharded directory tree. While not designed for performance, it is useful for debugging and inspecting on-disk data.
 
-## Benchmark Result
+## Benchmark Results
 
 We evaluate end-to-end performance on a single DGX node equipped with 8 × A100-SXM4-40GB GPUs and dual RDMA NICs. The evaluation compares four configurations:
 
@@ -97,7 +97,7 @@ As shown in the figure above, SSD offloading significantly reduces TTFT while im
      style="width:70%; max-width:1100px"/>
 </center>
 
-To understand where these gains come from, we break down TTFT and KV cache hit rate by conversation round, with the output length fixed to one token to isolate prefill latency. During the first six rounds, the memory pool is sufficient for both configurations, and they achieve nearly identical hit rates above 80%. The difference emerges once memory is exhausted. Starting from round 7, Mooncake without SSD must evict KV cache, causing the hit rate to collapse from 83% to 36% and TTFT to increase from 6s to 16s. With SSD offloading, evicted KV blocks remain available on NVMe, keeping the hit rate above 84% through round 8 and limiting TTFT to 9.4 s.
+To understand where these gains come from, we break down TTFT and KV cache hit rate by conversation round, with the output length fixed to one token to isolate prefill latency. During the first six rounds, the memory pool is sufficient for both configurations, and they achieve nearly identical hit rates above 80%. The difference emerges once memory is exhausted. Starting from round 7, Mooncake without SSD must evict KV cache, causing the hit rate to collapse from 83% to 36% and TTFT to increase from 6 s to 16 s. With SSD offloading, evicted KV blocks remain available on NVMe, keeping the hit rate above 84% through round 8 and limiting TTFT to 9.4 s.
 
 ## Ongoing Work
 
