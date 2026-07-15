@@ -136,6 +136,13 @@ module.exports = {
               padding: "0.1rem 0.2rem",
               borderRadius: "0.25rem",
             },
+            // Disable Typography's markdown-style backtick decorations around inline code.
+            "code::before": {
+              content: "none",
+            },
+            "code::after": {
+              content: "none",
+            },
           },
         },
         invert: {

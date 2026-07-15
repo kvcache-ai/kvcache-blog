@@ -1,0 +1,33 @@
+/* Tailwind Typography renders inline code with decorative backticks via
+   code::before / code::after. Remove them so <code> shows as actual code. */
+.prose :where(code)::before,
+.prose :where(code)::after {
+  content: none;
+}
+
+/* Article headings: lg:prose-xl makes h2–h4 feel oversized relative to body text. */
+.prose :where(h2) {
+  font-size: 1.35em;
+}
+
+.prose :where(h3) {
+  font-size: 1.2em;
+}
+
+.prose :where(h4) {
+  font-size: 1.1em;
+}
+
+@media (min-width: 1024px) {
+  .lg\:prose-xl :where(h2) {
+    font-size: 1.4em; /* was 1.8em */
+  }
+
+  .lg\:prose-xl :where(h3) {
+    font-size: 1.25em; /* was 1.5em */
+  }
+
+  .lg\:prose-xl :where(h4) {
+    font-size: 1.1em;
+  }
+}
