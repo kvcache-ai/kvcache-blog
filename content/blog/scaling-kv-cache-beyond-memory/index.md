@@ -6,10 +6,9 @@ authors:
   - Mooncake community
 tags:
   - Mooncake
-  - OpenClaw
-  - SGLang
-  - TTFT
-  - KVCache
+  - KV Cache
+  - SSD Offloading
+  - Agentic Workload
 
 draft: false
 showathome: true
