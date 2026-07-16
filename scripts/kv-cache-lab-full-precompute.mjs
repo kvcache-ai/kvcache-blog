@@ -22,6 +22,7 @@ import {
   blockCapacityGrid,
   downloadFile,
   filterPrecisionOptions,
+  flattenWekaRequestRecords,
   kvArchitectureGroups,
   loadModelsData,
   modelSweepKey,
@@ -319,29 +320,14 @@ async function ensureGitRepository(source, options) {
   return repoDir;
 }
 
-function parseWekaNestedRecord(record) {
-  if (typeof record !== "string") return record;
-  try {
-    return JSON.parse(record);
-  } catch {
-    return null;
-  }
-}
-
-function flattenWekaRequests(records, output, timestampOffset = 0) {
-  (records || []).forEach((rawRecord) => {
-    const record = parseWekaNestedRecord(rawRecord);
-    if (record && Array.isArray(record.hash_ids) && record.hash_ids.length) {
-      output.push({
-        timestamp: timestampOffset + toNumber(record.t ?? record.timestamp, 0),
-        inputLength: positiveInteger(record.in ?? record.input_length, record.hash_ids.length * 64),
-        outputTokens: Math.max(0, Math.floor(toNumber(record.out ?? record.output_length, 0))),
-        hashIds: record.hash_ids,
-      });
-    }
-    if (Array.isArray(record && record.requests)) {
-      flattenWekaRequests(record.requests, output, timestampOffset + toNumber(record.t, 0));
-    }
+function flattenWekaRequests(records, output, source) {
+  flattenWekaRequestRecords(records, source).forEach(({ record, timestamp }) => {
+    output.push({
+      timestamp,
+      inputLength: positiveInteger(record.in ?? record.input_length, record.hash_ids.length * 64),
+      outputTokens: Math.max(0, Math.floor(toNumber(record.out ?? record.output_length, 0))),
+      hashIds: record.hash_ids,
+    });
   });
 }
 
@@ -438,7 +424,7 @@ async function buildRequestStore(source, options, traceDir) {
     for (const file of files) {
       const record = JSON.parse(await fsp.readFile(path.join(tracePath, file), "utf8"));
       const requests = [];
-      flattenWekaRequests(record.requests || [], requests);
+      flattenWekaRequests(record.requests || [], requests, source);
       requests.sort((left, right) => left.timestamp - right.timestamp);
       const stats = requestHashStats(requests);
       const base = writer.allocateNamespace(stats.maxHashId);
@@ -452,7 +438,7 @@ async function buildRequestStore(source, options, traceDir) {
     const cachePath = await fetchHfRowsToCache(source, options);
     await readJsonlRecords(cachePath, async (record) => {
       const requests = [];
-      flattenWekaRequests(record.requests || [], requests);
+      flattenWekaRequests(record.requests || [], requests, source);
       requests.sort((left, right) => left.timestamp - right.timestamp);
       const stats = requestHashStats(requests);
       const base = writer.allocateNamespace(stats.maxHashId);
@@ -528,6 +514,9 @@ async function createSortedEventFiles(writer, traceDir, options) {
     totalInputTokens,
     averageInputTokens: writer.descriptors.length ? totalInputTokens / writer.descriptors.length : 0,
     uniqueBlocks: writer.uniqueIdCount,
+    ...(writer.source.requestTimelineSemantics
+      ? { requestTimelineSemantics: writer.source.requestTimelineSemantics }
+      : {}),
     idsPath,
     tokensPath,
     requestEndsPath,
@@ -566,7 +555,9 @@ async function ensureEventStream(source, options) {
   };
   if (!options.forceEvents && fs.existsSync(metadataPath)) {
     const metadata = applyWarmup(rebaseCachedPaths(JSON.parse(await fsp.readFile(metadataPath, "utf8"))));
-    if (metadata.requestEndsPath && fs.existsSync(metadata.requestEndsPath)) return metadata;
+    const timelineMatches = !source.requestTimelineSemantics
+      || metadata.requestTimelineSemantics === source.requestTimelineSemantics;
+    if (timelineMatches && metadata.requestEndsPath && fs.existsSync(metadata.requestEndsPath)) return metadata;
   }
   await fsp.rm(traceDir, { recursive: true, force: true });
   await fsp.mkdir(traceDir, { recursive: true });
@@ -1210,6 +1201,9 @@ async function precomputeBlockCurveTrace(source, options, metadata, ceiling) {
       warmupRequests: metadata.warmupRequests,
       totalMeasuredTokens,
       infiniteHitRate: ceiling.hitRate,
+      ...(metadata.requestTimelineSemantics
+        ? { requestTimelineSemantics: metadata.requestTimelineSemantics }
+        : {}),
     },
     blockCapacityCurve: {
       blockSize: metadata.blockSize,
@@ -1439,6 +1433,9 @@ async function precomputeTrace(source, options, modelsData, existingTrace = null
       infiniteHitTokens: ceiling.hitTokens,
       infiniteHitRate: ceiling.hitRate,
       totalMeasuredTokens: ceiling.totalTokens,
+      ...(metadata.requestTimelineSemantics
+        ? { requestTimelineSemantics: metadata.requestTimelineSemantics }
+        : {}),
     },
     modelSweeps,
   }, { policies: POLICIES });
