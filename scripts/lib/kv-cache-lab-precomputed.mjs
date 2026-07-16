@@ -290,10 +290,10 @@ export function compactTraceMatchesSimulation(trace, datasetMetadata, simulation
   if (!equalIfPresent(datasetMetadata && datasetMetadata.warmup_fraction, simulationMetadata && simulationMetadata.warmupFraction)) return false;
   const summary = trace.summary || {};
   const runtimeSummary = (simulationMetadata && simulationMetadata.summary) || {};
-  const runtimeTimelineSemantics = simulationMetadata && (
+  const runtimeTimelineSemantics = (simulationMetadata && (
     simulationMetadata.requestTimelineSemantics ?? runtimeSummary.requestTimelineSemantics
-  );
-  if (runtimeTimelineSemantics !== undefined && summary.requestTimelineSemantics !== runtimeTimelineSemantics) return false;
+  )) ?? undefined;
+  if (summary.requestTimelineSemantics !== runtimeTimelineSemantics) return false;
   return equalIfPresent(trace.nativeBlockSize, simulationMetadata && simulationMetadata.blockSize)
     && equalIfPresent(summary.requests, simulationMetadata && (simulationMetadata.requestCount ?? runtimeSummary.requests))
     && equalIfPresent(summary.totalInputTokens, simulationMetadata && (simulationMetadata.totalInputTokens ?? runtimeSummary.totalInputTokens))

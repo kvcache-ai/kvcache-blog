@@ -555,8 +555,7 @@ async function ensureEventStream(source, options) {
   };
   if (!options.forceEvents && fs.existsSync(metadataPath)) {
     const metadata = applyWarmup(rebaseCachedPaths(JSON.parse(await fsp.readFile(metadataPath, "utf8"))));
-    const timelineMatches = !source.requestTimelineSemantics
-      || metadata.requestTimelineSemantics === source.requestTimelineSemantics;
+    const timelineMatches = metadata.requestTimelineSemantics === source.requestTimelineSemantics;
     if (timelineMatches && metadata.requestEndsPath && fs.existsSync(metadata.requestEndsPath)) return metadata;
   }
   await fsp.rm(traceDir, { recursive: true, force: true });

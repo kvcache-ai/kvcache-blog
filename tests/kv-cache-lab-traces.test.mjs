@@ -353,6 +353,21 @@ test("full-precompute preserves relative timestamps for kv-cache-tester sub-agen
       ],
     }));
 
+    const traceDir = path.join(tmp, "kv-cache-lab-full", "kv_cache_tester_claude_code");
+    fs.mkdirSync(traceDir, { recursive: true });
+    const staleRequestEnds = path.join(traceDir, "request-ends.u32.bin");
+    fs.writeFileSync(staleRequestEnds, Buffer.alloc(4));
+    fs.writeFileSync(path.join(traceDir, "events.json"), JSON.stringify({
+      id: "kv_cache_tester_claude_code",
+      blockSize: 64,
+      requestCount: 1,
+      totalBlocks: 1,
+      totalInputTokens: 64,
+      uniqueBlocks: 1,
+      requestTimelineSemantics: WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS,
+      requestEndsPath: staleRequestEnds,
+    }));
+
     const output = execFileSync("node", [
       path.resolve(here, "../scripts/kv-cache-lab-full-precompute.mjs"),
       "--events-only",
@@ -675,6 +690,18 @@ test("versioned compact cache only matches the same semantics, warmup, and trace
     ...runtime,
     requestTimelineSemantics: WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS,
   }), false);
+  const absoluteTrace = {
+    ...dataset.traces.trace,
+    summary: {
+      ...dataset.traces.trace.summary,
+      requestTimelineSemantics: WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS,
+    },
+  };
+  assert.equal(compactTraceMatchesSimulation(absoluteTrace, dataset.metadata, runtime), false);
+  assert.equal(compactTraceMatchesSimulation(absoluteTrace, dataset.metadata, {
+    ...runtime,
+    requestTimelineSemantics: WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS,
+  }), true);
   assert.equal(compactTraceMatchesSimulation(dataset.traces.trace, dataset.metadata, { ...runtime, warmupFraction: 0.25 }), false);
   assert.equal(compactTraceMatchesSimulation(dataset.traces.trace, dataset.metadata, { ...runtime, totalBlocks: 3 }), false);
   assert.equal(
