@@ -21,6 +21,7 @@ import {
   normalizeWekaSessionRecord,
   precomputeSweep,
   selectModels,
+  WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS,
 } from "../scripts/lib/kv-cache-lab-traces.mjs";
 import {
   PRECOMPUTED_SCHEMA_VERSION,
@@ -159,7 +160,7 @@ test("Weka session parser expands native hash-id request streams", () => {
   assert.equal(requests[1].inputBlocks[0].id, "semianalysis_weka_no_subagents:trace-a:2");
 });
 
-test("Weka session parser flattens nested sub-agent requests with parent namespace", () => {
+test("Weka session parser preserves absolute sub-agent timestamps and global order", () => {
   const requests = normalizeWekaSessionRecord(
     {
       id: "trace-parent",
@@ -170,24 +171,32 @@ test("Weka session parser flattens nested sub-agent requests with parent namespa
           t: 20,
           type: "subagent",
           requests: [
-            { t: 2, model: "claude-haiku", in: 65, out: 1, hash_ids: [100, 101] },
+            { t: 20, model: "claude-haiku", in: 65, out: 1, hash_ids: [100, 101] },
+            { t: 24, model: "claude-haiku", in: 64, out: 1, hash_ids: [101] },
           ],
         },
+        { t: 22, model: "claude-opus", in: 64, out: 1, hash_ids: [2] },
       ],
     },
-    { id: "kv_cache_tester_claude_code", nativeBlockSize: 64 },
+    {
+      id: "semianalysis_weka_with_subagents_256k",
+      nativeBlockSize: 64,
+      requestTimelineSemantics: WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS,
+    },
   );
 
-  assert.equal(requests.length, 2);
-  assert.equal(requests[1].timestamp, 22);
+  assert.equal(requests.length, 4);
+  assert.deepEqual(requests.map((request) => request.timestamp), [10, 20, 22, 24]);
   assert.deepEqual(
     requests[1].inputBlocks.map((block) => block.id),
-    ["kv_cache_tester_claude_code:trace-parent:100", "kv_cache_tester_claude_code:trace-parent:101"],
+    ["semianalysis_weka_with_subagents_256k:trace-parent:100", "semianalysis_weka_with_subagents_256k:trace-parent:101"],
   );
   assert.deepEqual(
     requests[1].inputBlocks.map((block) => block.tokens),
     [64, 1],
   );
+  assert.equal(requests[2].inputBlocks[0].id, "semianalysis_weka_with_subagents_256k:trace-parent:2");
+  assert.equal(requests[3].inputBlocks[0].id, "semianalysis_weka_with_subagents_256k:trace-parent:101");
 });
 
 test("infinite-cache reuse ceiling uses the fixed measurement window", () => {
@@ -317,6 +326,133 @@ test("full-precompute rebases copied event-cache paths", () => {
     for (const [field, file] of Object.entries(files)) {
       assert.equal(metadata[field], path.join(traceDir, file));
     }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("full-precompute preserves relative timestamps for kv-cache-tester sub-agents", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kv-cache-lab-weka-timeline-"));
+  try {
+    const sourceDir = path.join(tmp, "kv-cache-tester", "traces");
+    fs.mkdirSync(sourceDir, { recursive: true });
+    fs.writeFileSync(path.join(sourceDir, "fixture.json"), JSON.stringify({
+      id: "trace-parent",
+      block_size: 64,
+      requests: [
+        { t: 10, in: 64, out: 1, hash_ids: [1] },
+        {
+          t: 20,
+          type: "subagent",
+          requests: [
+            { t: 0, in: 64, out: 1, hash_ids: [100] },
+            { t: 4, in: 64, out: 1, hash_ids: [101] },
+          ],
+        },
+        { t: 22, in: 64, out: 1, hash_ids: [2] },
+      ],
+    }));
+
+    const traceDir = path.join(tmp, "kv-cache-lab-full", "kv_cache_tester_claude_code");
+    fs.mkdirSync(traceDir, { recursive: true });
+    const staleRequestEnds = path.join(traceDir, "request-ends.u32.bin");
+    fs.writeFileSync(staleRequestEnds, Buffer.alloc(4));
+    fs.writeFileSync(path.join(traceDir, "events.json"), JSON.stringify({
+      id: "kv_cache_tester_claude_code",
+      blockSize: 64,
+      requestCount: 1,
+      totalBlocks: 1,
+      totalInputTokens: 64,
+      uniqueBlocks: 1,
+      requestTimelineSemantics: WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS,
+      requestEndsPath: staleRequestEnds,
+    }));
+
+    const output = execFileSync("node", [
+      path.resolve(here, "../scripts/kv-cache-lab-full-precompute.mjs"),
+      "--events-only",
+      "--trace",
+      "kv_cache_tester_claude_code",
+      "--cache-dir",
+      tmp,
+      "--output",
+      path.join(tmp, "unused.json"),
+    ], { encoding: "utf8" });
+    const metadata = JSON.parse(output).metadata;
+    assert.equal(metadata.requestTimelineSemantics, undefined);
+    assert.equal(metadata.requestCount, 4);
+
+    const ids = fs.readFileSync(metadata.idsPath);
+    assert.deepEqual(
+      Array.from({ length: metadata.totalBlocks }, (_, index) => ids.readUInt32LE(index * 4)),
+      [2, 101, 3, 102],
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("full-precompute rebuilds stale SemiAnalysis events in absolute timestamp order", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kv-cache-lab-weka-absolute-"));
+  try {
+    const fixture = {
+      id: "trace-parent",
+      block_size: 64,
+      requests: [
+        { t: 10, in: 64, out: 1, hash_ids: [1] },
+        {
+          t: 20,
+          type: "subagent",
+          requests: [
+            { t: 20, in: 64, out: 1, hash_ids: [100] },
+            { t: 24, in: 64, out: 1, hash_ids: [101] },
+          ],
+        },
+        { t: 22, in: 64, out: 1, hash_ids: [2] },
+      ],
+    };
+    const rows = [JSON.stringify(fixture)];
+    for (let index = 1; index < 470; index += 1) {
+      rows.push(JSON.stringify({ id: `empty-${index}`, block_size: 64, requests: [] }));
+    }
+    fs.writeFileSync(
+      path.join(tmp, "semianalysis_weka_with_subagents_256k.hf-rows.jsonl"),
+      `${rows.join("\n")}\n`,
+    );
+
+    const traceDir = path.join(tmp, "kv-cache-lab-full", "semianalysis_weka_with_subagents_256k");
+    fs.mkdirSync(traceDir, { recursive: true });
+    const staleRequestEnds = path.join(traceDir, "request-ends.u32.bin");
+    fs.writeFileSync(staleRequestEnds, Buffer.alloc(4));
+    fs.writeFileSync(path.join(traceDir, "events.json"), JSON.stringify({
+      id: "semianalysis_weka_with_subagents_256k",
+      blockSize: 64,
+      requestCount: 1,
+      totalBlocks: 1,
+      totalInputTokens: 64,
+      uniqueBlocks: 1,
+      requestEndsPath: staleRequestEnds,
+    }));
+
+    const output = execFileSync("node", [
+      path.resolve(here, "../scripts/kv-cache-lab-full-precompute.mjs"),
+      "--events-only",
+      "--trace",
+      "semianalysis_weka_with_subagents_256k",
+      "--cache-dir",
+      tmp,
+      "--output",
+      path.join(tmp, "unused.json"),
+    ], { encoding: "utf8" });
+    const metadata = JSON.parse(output).metadata;
+    assert.equal(metadata.requestTimelineSemantics, WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS);
+    assert.equal(metadata.requestCount, 4);
+
+    const ids = fs.readFileSync(metadata.idsPath);
+    assert.deepEqual(
+      Array.from({ length: metadata.totalBlocks }, (_, index) => ids.readUInt32LE(index * 4)),
+      [2, 101, 3, 102],
+    );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -550,6 +686,22 @@ test("versioned compact cache only matches the same semantics, warmup, and trace
   };
 
   assert.equal(compactTraceMatchesSimulation(dataset.traces.trace, dataset.metadata, runtime), true);
+  assert.equal(compactTraceMatchesSimulation(dataset.traces.trace, dataset.metadata, {
+    ...runtime,
+    requestTimelineSemantics: WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS,
+  }), false);
+  const absoluteTrace = {
+    ...dataset.traces.trace,
+    summary: {
+      ...dataset.traces.trace.summary,
+      requestTimelineSemantics: WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS,
+    },
+  };
+  assert.equal(compactTraceMatchesSimulation(absoluteTrace, dataset.metadata, runtime), false);
+  assert.equal(compactTraceMatchesSimulation(absoluteTrace, dataset.metadata, {
+    ...runtime,
+    requestTimelineSemantics: WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS,
+  }), true);
   assert.equal(compactTraceMatchesSimulation(dataset.traces.trace, dataset.metadata, { ...runtime, warmupFraction: 0.25 }), false);
   assert.equal(compactTraceMatchesSimulation(dataset.traces.trace, dataset.metadata, { ...runtime, totalBlocks: 3 }), false);
   assert.equal(

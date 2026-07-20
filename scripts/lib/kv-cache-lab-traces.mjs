@@ -22,6 +22,7 @@ export const DEFAULT_OUTPUT_PATH = path.resolve("data/kv_cache_lab/precomputed.j
 export const DEFAULT_CAPACITY_GIB_VALUES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384];
 export const DEFAULT_WARMUP_FRACTION = 0.5;
 export const POLICIES = ["fifo", "lru", "optimal"];
+export const WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS = "absolute-trace-t-v1";
 
 export const TRACE_SOURCES = [
   {
@@ -103,6 +104,7 @@ export const TRACE_SOURCES = [
     hfConfig: "default",
     hfSplit: "train",
     hfPageSize: 1,
+    requestTimelineSemantics: WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS,
     sources: ["semianalysis_weka_with_subagents_256k"],
   },
   {
@@ -446,7 +448,7 @@ function normalizeWekaRequest(record, source, context) {
   const ordinal = context.ordinal;
   return {
     id: `${traceId}:${context.group || "main"}:${ordinal}`,
-    timestamp: toNumber(context.timestampOffset, 0) + toNumber(record.t ?? record.timestamp, 0),
+    timestamp: toNumber(context.timestamp, toNumber(record.t ?? record.timestamp, 0)),
     inputTokens: inputLength,
     outputTokens: Math.max(0, Math.floor(toNumber(record.out ?? record.output_length, 0))),
     model: record.model,
@@ -466,37 +468,36 @@ function parseWekaNestedRecord(record) {
   }
 }
 
-function flattenWekaRequests(records, source, context, output) {
-  let ordinal = context.ordinal || 0;
-  (records || []).forEach((rawRecord, index) => {
-    const record = parseWekaNestedRecord(rawRecord);
-    const normalized = normalizeWekaRequest(record, source, { ...context, ordinal });
-    if (normalized) {
-      output.push(normalized);
-      ordinal += 1;
-    }
-    if (Array.isArray(record && record.requests)) {
-      ordinal = flattenWekaRequests(
-        record.requests,
-        source,
-        {
-          ...context,
-          group: `${context.group || "main"}:sub${index}`,
-          timestampOffset: toNumber(context.timestampOffset, 0) + toNumber(record.t, 0),
-          ordinal,
-        },
-        output,
-      );
-    }
-  });
-  return ordinal;
+export function flattenWekaRequestRecords(records, source = {}) {
+  const output = [];
+  // SemiAnalysis subagent corpora store inner t values on the top-level trace
+  // clock; older kv-cache-tester traces store them relative to the group start.
+  const absoluteTimestamps = source.requestTimelineSemantics === WEKA_ABSOLUTE_TIMESTAMP_SEMANTICS;
+  function visit(rawRecords, group, timestampOffset) {
+    (rawRecords || []).forEach((rawRecord, index) => {
+      const record = parseWekaNestedRecord(rawRecord);
+      if (record && Array.isArray(record.hash_ids) && record.hash_ids.length) {
+        output.push({
+          record,
+          group,
+          ordinal: output.length,
+          timestamp: (absoluteTimestamps ? 0 : timestampOffset) + toNumber(record.t ?? record.timestamp, 0),
+        });
+      }
+      if (Array.isArray(record && record.requests)) {
+        visit(record.requests, `${group}:sub${index}`, timestampOffset + toNumber(record.t, 0));
+      }
+    });
+  }
+  visit(records, "main", 0);
+  return output;
 }
 
 export function normalizeWekaSessionRecord(record, source = {}) {
   const blockSize = positiveInteger(record.block_size, positiveInteger(source.nativeBlockSize, 64));
   const traceId = record.id || record.session_id || stableHash(JSON.stringify(record).slice(0, 1024));
-  const requests = [];
-  flattenWekaRequests(record.requests || [], source, { traceId, blockSize, group: "main", timestampOffset: 0, ordinal: 0 }, requests);
+  const requests = flattenWekaRequestRecords(record.requests || [], source).map(({ record: request, group, ordinal, timestamp }) =>
+    normalizeWekaRequest(request, source, { traceId, blockSize, group, ordinal, timestamp }));
   requests.sort((left, right) => toNumber(left.timestamp, 0) - toNumber(right.timestamp, 0));
   const perSessionLimit = source.maxRequestsPerSession ? positiveInteger(source.maxRequestsPerSession, requests.length) : Infinity;
   return requests.slice(0, perSessionLimit);
@@ -854,6 +855,7 @@ export function buildTrace(source, requests) {
       averageInputTokens: safeRequests.length ? totalInputTokens / safeRequests.length : 0,
       uniqueBlocks: uniqueBlocks.size,
       totalBlocks,
+      ...(source.requestTimelineSemantics ? { requestTimelineSemantics: source.requestTimelineSemantics } : {}),
     },
   };
 }
