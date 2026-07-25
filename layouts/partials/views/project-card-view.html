@@ -75,7 +75,7 @@
     </div>
   </div>
 
-{{ else if eq $item.Title "TrEnv-X"}}
+{{ else if eq $item.Title "AgentENV"}}
   <div class="p-4 border top-item project-card-shell">
     <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
       <a href="{{ $item.Params.external_link }}">
@@ -87,7 +87,7 @@
     <!-- summary -->
     <hr class="mt-2" />
       <p class="mt-2 line-clamp-5 text-sm">
-        An open-source runtime platform designed for AI Agent applications.
+        {{ ($item.Params.summary | default $item.Summary) | plainify | htmlUnescape | chomp -}}
       </p>
 
     <!-- bottom button -->
