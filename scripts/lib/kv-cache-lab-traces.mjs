@@ -169,6 +169,7 @@ export const SOURCE_LINKS = {
 
 export const FEATURED_MODEL_SETTINGS = [
   { modelId: "deepseek-v4-pro", precision: "fp8_int8", indexerPrecision: "fp4_int4", includeDraftKvCache: false },
+  { modelId: "kimi-k3", precision: "fp8_int8", includeDraftKvCache: false },
   { modelId: "qwen3-32b", precision: "bf16_fp16", includeDraftKvCache: false },
   { modelId: "llama-3.1-8b", precision: "bf16_fp16", includeDraftKvCache: false },
   { modelId: "kimi-k2.6", precision: "bf16_fp16", includeDraftKvCache: false },
@@ -212,6 +213,8 @@ function optionIds(options, fallback) {
 }
 
 function defaultPrecisionId(model, precisionIds) {
+  const modelDefault = model && model.fields && model.fields.default_precision_id;
+  if (modelDefault && precisionIds.includes(modelDefault)) return modelDefault;
   if (isDeepSeekV4(model) && precisionIds.includes("fp8_int8")) return "fp8_int8";
   if (precisionIds.includes("bf16_fp16")) return "bf16_fp16";
   return precisionIds[0];
@@ -234,7 +237,9 @@ function orderedValues(values, preferred) {
 }
 
 export function defaultModelSetting(model) {
-  const precision = isDeepSeekV4(model) ? "fp8_int8" : "bf16_fp16";
+  const precision =
+    (model && model.fields && model.fields.default_precision_id) ||
+    (isDeepSeekV4(model) ? "fp8_int8" : "bf16_fp16");
   const setting = {
     modelId: model.id,
     precision,
@@ -299,6 +304,7 @@ export function modelMatchesFilters(model, options = {}) {
   const excludeFamilies = normalizeList(options.excludeFamilies);
   const includeModels = normalizeList(options.modelIds);
   const excludeModels = normalizeList(options.excludeModelIds);
+  if (model.hit_rate_supported === false) return false;
   if (includeFamilies.length && !includeFamilies.includes(model.family)) return false;
   if (excludeFamilies.includes(model.family)) return false;
   if (includeModels.length && !includeModels.includes(model.id)) return false;

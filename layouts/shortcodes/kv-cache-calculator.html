@@ -42,7 +42,7 @@
 
       <label class="kv-checkbox-row" data-kv-linear-state-control hidden>
         <input data-kv-input="includeLinearAttentionState" type="checkbox">
-        <span data-kv-inline-help="Adds Qwen3.5/3.6 linear-attention recurrent and convolution state. This state is sequence-level runtime cache, not ordinary per-token KV.">Include linear-attention state</span>
+        <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. This state is sequence-level runtime cache, not ordinary per-token KV.">Include linear-attention state</span>
       </label>
 
       <div class="kv-cta-note">
@@ -241,11 +241,18 @@
   }
 
   .kv-metric-grid div {
+    display: flex;
+    flex-direction: column;
     min-height: 5rem;
     padding: 0.85rem;
     border: 1px solid var(--kv-line);
     border-radius: 8px;
     background: #fff;
+  }
+
+  .kv-metric-grid span {
+    min-height: 2.15rem;
+    line-height: 1.3;
   }
 
   .kv-metric-grid strong {

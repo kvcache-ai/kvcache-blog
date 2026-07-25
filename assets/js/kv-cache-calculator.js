@@ -12,6 +12,8 @@
   const RESULT_DIGITS = 5;
   const QWEN_LINEAR_CONV_BYTES_PER_ELEMENT = 2;
   const QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT = 4;
+  const KIMI_KDA_CONV_BYTES_PER_ELEMENT = 2;
+  const KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT = 4;
 
   const DEFAULT_PRECISIONS = {
     bf16_fp16: { label: "BF16 / FP16", bytesPerElement: 2 },
@@ -23,6 +25,7 @@
     standard_gqa: "Standard MHA/GQA",
     mla: "MLA latent KV",
     dsa_mla: "DSA/MLA with indexer",
+    kimi_kda_mla_hybrid: "Kimi KDA/MLA hybrid",
     qwen_linear_full_hybrid: "Qwen linear/full hybrid",
     mixed_full_sliding_gqa: "Mixed full/sliding GQA",
     minimax_msa: "MiniMax MSA sparse attention",
@@ -92,7 +95,11 @@
   }
 
   function hasLinearAttentionState(model) {
-    return Boolean(model && model.formula === "qwen_linear_full_hybrid");
+    return Boolean(
+      model &&
+        (model.formula === "qwen_linear_full_hybrid" ||
+          model.formula === "kimi_kda_mla_hybrid"),
+    );
   }
 
   function toBoolean(value) {
@@ -101,6 +108,11 @@
 
   function defaultPrecisionId(model, options) {
     const optionsById = precisionOptions(options || {});
+    const modelDefault =
+      model && model.fields && typeof model.fields.default_precision_id === "string"
+        ? model.fields.default_precision_id
+        : undefined;
+    if (modelDefault && optionsById[modelDefault]) return modelDefault;
     if (isDeepSeekV4(model) && optionsById.fp8_int8) return "fp8_int8";
     return optionsById.bf16_fp16 ? "bf16_fp16" : Object.keys(optionsById)[0];
   }
@@ -337,6 +349,181 @@
           ["Indexer elements per token", indexerElementsPerToken, "Indexer elements per token before applying indexer precision."],
           ["Per-token elements", elementsPerToken, "KV plus indexer scalar elements per token before multiplying by precision bytes."],
           ["Model fields", fieldList(model, ["num_hidden_layers", "kv_lora_rank", "qk_rope_head_dim", "index_head_dim", "indexer_full_layers", "indexer_shared_layers", "draft_indexer_layers"])],
+        ],
+      };
+    }
+
+    if (formula === "kimi_kda_mla_hybrid") {
+      const layers = getField(model, "num_hidden_layers");
+      const fullLayers = getField(model, "full_attention_layers");
+      const kdaLayers = getField(model, "kda_layers");
+      const kvRank = getField(model, "kv_lora_rank");
+      const ropeDim = getField(model, "qk_rope_head_dim");
+      const kdaHeads = getField(model, "kda_num_heads");
+      const kdaHeadDim = getField(model, "kda_head_dim");
+      const kdaKeyHeads = optionalField(model, "kda_num_key_heads", kdaHeads);
+      const kdaKeyDim = optionalField(model, "kda_key_head_dim", kdaHeadDim);
+      const kdaValueHeads = optionalField(model, "kda_num_value_heads", kdaHeads);
+      const kdaValueDim = optionalField(model, "kda_value_head_dim", kdaHeadDim);
+      const kdaConvKernel = getField(model, "kda_conv_kernel_size");
+      const convBytesPerElement = optionalField(
+        model,
+        "kda_conv_state_bytes_per_element",
+        KIMI_KDA_CONV_BYTES_PER_ELEMENT,
+      );
+      const recurrentBytesPerElement = optionalField(
+        model,
+        "kda_recurrent_state_bytes_per_element",
+        KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT,
+      );
+
+      const mlaElementsPerToken = fullLayers * (kvRank + ropeDim);
+      const mlaElements = mlaElementsPerToken * tokens;
+      const kdaConvElements =
+        kdaLayers *
+        (kdaConvKernel - 1) *
+        (kdaHeads * kdaHeadDim +
+          kdaKeyHeads * kdaKeyDim +
+          kdaValueHeads * kdaValueDim);
+      const kdaRecurrentElements =
+        kdaLayers * kdaValueHeads * kdaValueDim * kdaKeyDim;
+      const kdaStateBytesPerSequence = includeLinearAttentionState
+        ? kdaConvElements * convBytesPerElement +
+          kdaRecurrentElements * recurrentBytesPerElement
+        : 0;
+      const byteGroups = [
+        {
+          role: "kv",
+          label: "MLA latent KV cache",
+          elements: mlaElements,
+        },
+      ];
+      const formulaRows = [
+        {
+          name: "mla_kv_bytes",
+          expression:
+            "tokens x sequences x full_attention_layers x (kv_lora_rank + qk_rope_head_dim) x precision_bytes",
+          description:
+            "Stores one compressed MLA latent vector plus the RoPE key segment for every cached token.",
+        },
+      ];
+
+      if (includeLinearAttentionState) {
+        byteGroups.push({
+          role: "linear_state",
+          label: "KDA active state",
+          bytesPerSequence: kdaStateBytesPerSequence,
+        });
+        formulaRows.push(
+          {
+            name: "kda_conv_state_bytes",
+            expression:
+              "sequences x kda_layers x (conv_kernel - 1) x (q_dim + k_dim + v_dim) x conv_state_bytes",
+            description:
+              "KDA short-convolution history, stored in BF16.",
+          },
+          {
+            name: "kda_recurrent_state_bytes",
+            expression:
+              "sequences x kda_layers x value_heads x value_head_dim x key_head_dim x recurrent_state_bytes",
+            description:
+              "One active KDA recurrent matrix per sequence, stored in FP32.",
+          },
+          {
+            name: "total_bytes",
+            expression:
+              "mla_kv_bytes + kda_conv_state_bytes + kda_recurrent_state_bytes",
+            description:
+              "Combined token-linear MLA cache and fixed per-sequence KDA runtime state.",
+          },
+        );
+      } else {
+        formulaRows.push(
+          {
+            name: "kda_linear_attention_state",
+            expression:
+              "excluded unless Include linear-attention state is enabled",
+            description:
+              "KDA layers keep fixed convolution and recurrent state rather than ordinary token-addressable KV blocks.",
+          },
+          {
+            name: "total_bytes",
+            expression: "mla_kv_bytes",
+            description:
+              "Reusable token-addressable MLA latent KV payload only.",
+          },
+        );
+      }
+
+      return {
+        elementsPerSequence:
+          mlaElements +
+          (includeLinearAttentionState
+            ? kdaConvElements + kdaRecurrentElements
+            : 0),
+        elementsPerToken: mlaElementsPerToken,
+        hitRateElementsPerToken: mlaElementsPerToken,
+        formulaLabel: FORMULA_LABELS[formula],
+        formulaText:
+          "mla_kv_bytes = tokens * sequences * full_attention_layers * (kv_lora_rank + qk_rope_head_dim) * precision_bytes\ntotal_bytes = mla_kv_bytes + optional_kda_active_state_bytes",
+        formulaRows,
+        note: includeLinearAttentionState
+          ? "Includes the 24-layer token-addressable MLA latent cache and one BF16-convolution/FP32-recurrent KDA state per active sequence. Engine-specific checkpoint and intermediate buffers are excluded."
+          : "Includes the 24-layer token-addressable MLA latent cache. The 69 KDA layers' sequence-level state is excluded.",
+        byteGroups,
+        components: [
+          ["Main layers", layers],
+          [
+            "MLA full-attention layers",
+            fullLayers,
+            "Layers that allocate token-addressable compressed MLA latent KV plus RoPE key cache.",
+          ],
+          [
+            "KDA linear-attention layers",
+            kdaLayers,
+            "Layers that allocate fixed convolution and recurrent state per active request.",
+          ],
+          [
+            "KDA state included",
+            includeLinearAttentionState ? "Yes" : "No",
+            "When enabled, adds the fixed per-sequence KDA convolution and recurrent state.",
+          ],
+          [
+            "MLA elements per token",
+            mlaElementsPerToken,
+            "full_attention_layers x (kv_lora_rank + qk_rope_head_dim).",
+          ],
+          [
+            "KDA conv elements",
+            kdaConvElements,
+            "All KDA Q/K/V short-convolution history for one active state.",
+          ],
+          [
+            "KDA recurrent elements",
+            kdaRecurrentElements,
+            "All KDA recurrent matrices for one active state.",
+          ],
+          [
+            "KDA active-state bytes per sequence",
+            kdaConvElements * convBytesPerElement +
+              kdaRecurrentElements * recurrentBytesPerElement,
+            "One active KDA state per sequence; engine-specific checkpoint buffers are excluded.",
+          ],
+          ["KDA conv-state bytes", convBytesPerElement],
+          ["KDA recurrent-state bytes", recurrentBytesPerElement],
+          [
+            "Model fields",
+            fieldList(model, [
+              "num_hidden_layers",
+              "full_attention_layers",
+              "kda_layers",
+              "kv_lora_rank",
+              "qk_rope_head_dim",
+              "kda_num_heads",
+              "kda_head_dim",
+              "kda_conv_kernel_size",
+            ]),
+          ],
         ],
       };
     }
@@ -754,6 +941,12 @@
     const indexerBytes = cacheGroups
       .filter((group) => group.role === "indexer")
       .reduce((total, group) => total + group.bytes, 0);
+    const hitRateBytesPerToken = Number.isFinite(
+      elementPlan.hitRateElementsPerToken,
+    )
+      ? elementPlan.hitRateElementsPerToken *
+        bytesPerElementForGroup(cachePrecision, "kv")
+      : undefined;
 
     return {
       modelId: model.id,
@@ -776,6 +969,7 @@
       bytesPerToken: bytesPerSequence / tokens,
       perDeviceBytes: totalBytes / tensorParallel,
       perDeviceGiB: totalBytes / tensorParallel / BYTES_PER_GIB,
+      hitRateBytesPerToken,
       cacheGroups,
       elementPlan,
       components: elementPlan.components.concat(precisionComponents(cachePrecision)),
@@ -874,10 +1068,19 @@
         ]);
       });
     }
+    const includesFixedState = result.cacheGroups.some(
+      (group) => group.role === "linear_state",
+    );
     metrics.push([
-      "Per token size",
+      includesFixedState ? "Amortized size per token" : "Per token size",
       formatBytes(result.bytesPerToken),
     ]);
+    if (Number.isFinite(result.hitRateBytesPerToken)) {
+      metrics.push([
+        "Reusable MLA per token",
+        formatBytes(result.hitRateBytesPerToken),
+      ]);
+    }
 
     metrics.forEach(([label, value]) => {
       list.appendChild(renderMetricCard(label, value));
@@ -990,7 +1193,9 @@
 
   function populatePrecisionOptions(root, data, model) {
     const select = root.querySelector("[data-kv-input='precision']");
-    const preferredValue = isDeepSeekV4(model) ? "fp8_int8" : "bf16_fp16";
+    const preferredValue = defaultPrecisionId(model, {
+      precisionOptions: data.precision_options,
+    });
     populateSelect(select, rawPrecisionOptions(data), preferredValue);
   }
 
@@ -1030,7 +1235,14 @@
     const checkbox = root.querySelector("[data-kv-input='includeLinearAttentionState']");
     const showLinearStateControl = hasLinearAttentionState(model);
     if (control) control.hidden = !showLinearStateControl;
-    if (checkbox) checkbox.checked = false;
+    if (checkbox) {
+      checkbox.checked = Boolean(
+        showLinearStateControl &&
+          model &&
+          model.fields &&
+          model.fields.default_include_linear_attention_state === true,
+      );
+    }
   }
 
   function setCheckboxHelp(root) {
@@ -1073,7 +1285,6 @@
       indexerPrecision: root.querySelector("[data-kv-input='indexerPrecision']"),
       includeDraftKvCache: root.querySelector("[data-kv-input='includeDraftKvCache']"),
       includeLinearAttentionState: root.querySelector("[data-kv-input='includeLinearAttentionState']"),
-      tensorParallel: root.querySelector("[data-kv-input='tensorParallel']"),
     };
 
     function selectedModel() {
@@ -1105,7 +1316,7 @@
             indexerPrecision: inputValue(inputs.indexerPrecision, undefined),
             includeDraftKvCache: checkboxValue(inputs.includeDraftKvCache),
             includeLinearAttentionState: checkboxValue(inputs.includeLinearAttentionState),
-            tensorParallel: inputValue(inputs.tensorParallel, 1),
+            tensorParallel: 1,
           },
           {
             precisionOptions: data.precision_options,

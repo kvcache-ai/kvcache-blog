@@ -1808,7 +1808,12 @@
         indexerPrecisionOptions: settings && settings.indexerPrecisionOptions,
       },
     );
-    return result.bytesPerToken;
+    // Kimi K3's reusable prefix payload is its MLA token cache.
+    // Its KDA state lives in a separate sequence-state pool and is not a
+    // token-addressable cache block.
+    return Number.isFinite(result.hitRateBytesPerToken)
+      ? result.hitRateBytesPerToken
+      : result.bytesPerToken;
   }
 
   function traceEstimateTokens(trace, model) {
@@ -3647,7 +3652,9 @@
   }
 
   function initialize(root, data, options) {
-    const models = data.models || [];
+    const models = (data.models || []).filter(
+      (model) => model.hit_rate_supported !== false,
+    );
     const precomputed = data.precomputed || null;
     const rawPresets = data.lab && data.lab.presets ? data.lab.presets : [];
     const presets = precomputed && precomputed.traces
@@ -3978,10 +3985,16 @@
       if (inputs.includeDraftKvCache) inputs.includeDraftKvCache.checked = false;
     }
 
+    function syncKdaNote(model) {
+      const note = root.querySelector("[data-lab-kda-note]");
+      if (note) note.hidden = !model || model.formula !== "kimi_kda_mla_hybrid";
+    }
+
     function syncModelControls() {
       const model = selectedModel();
       syncPrecisionControls(model);
       syncDraftControl(model);
+      syncKdaNote(model);
     }
 
     function applyPresetDefaults() {

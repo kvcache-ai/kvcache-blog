@@ -80,6 +80,30 @@ const tinySlidingModel = {
   },
 };
 
+const kimiK3Model = {
+  id: "kimi-k3",
+  label: "Kimi K3",
+  formula: "kimi_kda_mla_hybrid",
+  default_tokens: 1048576,
+  fields: {
+    num_hidden_layers: 93,
+    full_attention_layers: 24,
+    kda_layers: 69,
+    default_precision_id: "bf16_fp16",
+    kv_lora_rank: 512,
+    qk_rope_head_dim: 64,
+    kda_num_heads: 96,
+    kda_head_dim: 128,
+    kda_num_key_heads: 96,
+    kda_key_head_dim: 128,
+    kda_num_value_heads: 96,
+    kda_value_head_dim: 128,
+    kda_conv_kernel_size: 4,
+    kda_conv_state_bytes_per_element: 2,
+    kda_recurrent_state_bytes_per_element: 4,
+  },
+};
+
 const tinyPreset = {
   id: "chat",
   label: "Chat",
@@ -113,17 +137,51 @@ test("lab warmup defaults match precomputed metadata", () => {
 
 test("precomputed traces cover every calculator model and no-draft precision setting", () => {
   const modelsData = loadModelsData("data/kv_cache_calculator/models.yaml");
-  const expectedKeys = allModelSettings(modelsData.models, {
+  const hitRateModels = modelsData.models.filter(
+    (model) => model.hit_rate_supported !== false,
+  );
+  const expectedKeys = allModelSettings(hitRateModels, {
     precisionOptions: modelsData.precision_options,
     indexerPrecisionOptions: modelsData.indexer_precision_options,
     includeDraftKvCache: false,
   }).map(precomputedModelSweepKey).sort();
   const precomputed = JSON.parse(fs.readFileSync(new URL("../data/kv_cache_lab/precomputed.json", import.meta.url), "utf8"));
 
-  assert.equal(modelsData.models.length, 52);
-  assert.equal(expectedKeys.length, 198);
+  assert.equal(modelsData.models.length, 53);
+  assert.equal(hitRateModels.length, 53);
+  assert.equal(expectedKeys.length, 201);
   for (const [traceId, trace] of Object.entries(precomputed.traces)) {
     assert.deepEqual(Object.keys(trace.settings).sort(), expectedKeys, `${traceId} settings`);
+  }
+});
+
+test("Kimi K3 precomputed settings reuse exact simulations within one percent of logical MLA capacity", () => {
+  const precomputed = JSON.parse(fs.readFileSync(new URL("../data/kv_cache_lab/precomputed.json", import.meta.url), "utf8"));
+  const precisions = {
+    bf16_fp16: 27648,
+    fp8_int8: 13824,
+    fp4_int4: 6912,
+  };
+
+  assert.equal(
+    precomputed.metadata.kimi_k3_capacity_mapping,
+    "nearest-existing-exact-simulation-capacity-under-1pct-v1",
+  );
+  for (const [traceId, trace] of Object.entries(precomputed.traces)) {
+    for (const [precision, bytesPerToken] of Object.entries(precisions)) {
+      const key = `kimi-k3|precision=${precision}|indexer=|draft=0`;
+      const [storedBytesPerToken, flattened] = trace.settings[key];
+      assert.equal(storedBytesPerToken, bytesPerToken, `${traceId} ${precision} bytes/token`);
+      for (let index = 0; index < flattened.length; index += 2) {
+        const gib = flattened[index];
+        const actualBlocks = flattened[index + 1];
+        const desiredBlocks = Math.floor(
+          (gib * BYTES_PER_GIB) / (bytesPerToken * trace.nativeBlockSize),
+        );
+        const relativeError = Math.abs(actualBlocks - desiredBlocks) / desiredBlocks;
+        assert.ok(relativeError <= 0.01, `${traceId} ${precision} ${gib} GiB: ${relativeError}`);
+      }
+    }
   }
 });
 
@@ -257,6 +315,14 @@ test("capacity accounting converts model bytes per token into cache blocks", () 
   assert.equal(bytesPerToken, 4);
   assert.equal(bytesPerBlock, 256);
   assert.equal(cacheBlocksForGiB(512 / BYTES_PER_GIB, bytesPerBlock), 2);
+});
+
+test("Kimi K3 hit-rate capacity counts only the logical MLA token cache", () => {
+  const bytesPerToken = estimateBytesPerToken(kimiK3Model, {
+    precision: "fp8_int8",
+  });
+
+  assert.equal(bytesPerToken, 24 * (512 + 64));
 });
 
 test("model byte estimate honors indexer precision and draft KV settings", () => {

@@ -13,6 +13,8 @@ BYTES_PER_GB = 1_000_000_000
 BYTES_PER_GIB = 1024 ** 3
 QWEN_LINEAR_CONV_BYTES_PER_ELEMENT = 2
 QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT = 4
+KIMI_KDA_CONV_BYTES_PER_ELEMENT = 2
+KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT = 4
 
 DEFAULT_PRECISIONS = {
     "bf16_fp16": {"label": "BF16 / FP16", "bytes_per_element": 2.0},
@@ -35,6 +37,7 @@ class CacheSizeResult:
     indexer_bytes: float
     total_bytes: float
     total_gib: float
+    hit_rate_bytes_per_token: float | None
 
 
 def default_models_path() -> Path:
@@ -237,6 +240,9 @@ def _fixed_indexer_precision_id(model: dict[str, Any]) -> str | None:
 
 
 def default_precision_id(model: dict[str, Any], options: dict[str, dict[str, Any]]) -> str:
+    model_default = (model.get("fields") or {}).get("default_precision_id")
+    if isinstance(model_default, str) and model_default in options:
+        return model_default
     if _is_deepseek_v4(model) and "fp8_int8" in options:
         return "fp8_int8"
     if "bf16_fp16" in options:
@@ -264,7 +270,12 @@ def _indexer_layer_plan(model: dict[str, Any], layers: int, draft_layers: int) -
     return main, shared, draft, main + draft
 
 
-def _calculate_byte_groups(model: dict[str, Any], tokens: int, include_draft_kv_cache: bool, include_linear_attention_state: bool) -> tuple[float, list[dict[str, Any]]]:
+def _calculate_byte_groups(
+    model: dict[str, Any],
+    tokens: int,
+    include_draft_kv_cache: bool,
+    include_linear_attention_state: bool,
+) -> tuple[float, list[dict[str, Any]]]:
     formula = model.get("formula")
     fields = model.get("fields") or {}
     draft_layers = _draft_layer_count(model) if include_draft_kv_cache else 0
@@ -310,6 +321,64 @@ def _calculate_byte_groups(model: dict[str, Any], tokens: int, include_draft_kv_
                 "label": "Linear-attention state",
                 "bytes_per_sequence": conv_elements * QWEN_LINEAR_CONV_BYTES_PER_ELEMENT + recurrent_elements * QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT,
             })
+        return elements_per_token, groups
+
+    if formula == "kimi_kda_mla_hybrid":
+        full_layers = _field(model, "full_attention_layers")
+        kda_layers = _field(model, "kda_layers")
+        kv_rank = _field(model, "kv_lora_rank")
+        rope_dim = _field(model, "qk_rope_head_dim")
+        kda_heads = _field(model, "kda_num_heads")
+        kda_head_dim = _field(model, "kda_head_dim")
+        key_heads = _optional_field(model, "kda_num_key_heads", kda_heads)
+        key_dim = _optional_field(model, "kda_key_head_dim", kda_head_dim)
+        value_heads = _optional_field(model, "kda_num_value_heads", kda_heads)
+        value_dim = _optional_field(model, "kda_value_head_dim", kda_head_dim)
+        conv_kernel = _field(model, "kda_conv_kernel_size")
+        conv_bytes_per_element = _optional_field(
+            model,
+            "kda_conv_state_bytes_per_element",
+            KIMI_KDA_CONV_BYTES_PER_ELEMENT,
+        )
+        recurrent_bytes_per_element = _optional_field(
+            model,
+            "kda_recurrent_state_bytes_per_element",
+            KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT,
+        )
+        elements_per_token = full_layers * (kv_rank + rope_dim)
+        groups = [
+            {
+                "role": "kv",
+                "label": "MLA latent KV cache",
+                "elements": elements_per_token * tokens,
+            }
+        ]
+        if include_linear_attention_state:
+            conv_elements = (
+                kda_layers
+                * (conv_kernel - 1)
+                * (
+                    kda_heads * kda_head_dim
+                    + key_heads * key_dim
+                    + value_heads * value_dim
+                )
+            )
+            recurrent_elements = (
+                kda_layers
+                * value_heads
+                * value_dim
+                * key_dim
+            )
+            groups.append(
+                {
+                    "role": "linear_state",
+                    "label": "KDA active state",
+                    "bytes_per_sequence": (
+                        conv_elements * conv_bytes_per_element
+                        + recurrent_elements * recurrent_bytes_per_element
+                    ),
+                }
+            )
         return elements_per_token, groups
 
     if formula == "mixed_full_sliding_gqa":
@@ -413,7 +482,12 @@ def calculate_cache_size(
 
     active_draft = include_draft_kv_cache and has_draft_kv_cache(model)
     tokens = _positive_int(tokens, int(model.get("default_tokens") or 4096))
-    _, groups = _calculate_byte_groups(model, tokens, active_draft, include_linear_attention_state)
+    _, groups = _calculate_byte_groups(
+        model,
+        tokens,
+        active_draft,
+        include_linear_attention_state,
+    )
     kv_bytes = 0.0
     indexer_bytes = 0.0
     total_bytes = 0.0
@@ -426,6 +500,13 @@ def calculate_cache_size(
             kv_bytes += group_bytes
 
     bytes_per_token = total_bytes / tokens
+    hit_rate_bytes_per_token = None
+    if model.get("formula") == "kimi_kda_mla_hybrid":
+        hit_rate_bytes_per_token = (
+            _field(model, "full_attention_layers")
+            * (_field(model, "kv_lora_rank") + _field(model, "qk_rope_head_dim"))
+            * kv_precision_bytes
+        )
     return CacheSizeResult(
         model_id=str(model["id"]),
         model_label=str(model.get("label") or model["id"]),
@@ -439,4 +520,5 @@ def calculate_cache_size(
         indexer_bytes=indexer_bytes,
         total_bytes=total_bytes,
         total_gib=total_bytes / BYTES_PER_GIB,
+        hit_rate_bytes_per_token=hit_rate_bytes_per_token,
     )
