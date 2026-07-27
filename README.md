@@ -12,7 +12,7 @@ Through open-source projects and academic research, KVCache.ai develops effectiv
 
 - **[Mooncake](https://github.com/kvcache-ai/Mooncake)** — A KV cache-centric disaggregated architecture for LLM serving.
 - **[KTransformers](https://ktransformers.net/en)** — A CPU/GPU heterogeneous LLM inference and fine-tuning framework for running and tuning 100B+ models on accessible workstation hardware.
-- **[TrEnv-X](https://github.com/kvcache-ai/TrEnv-X)** — An open-source runtime platform designed for AI Agent applications.
+- **[AgentENV](https://github.com/kvcache-ai/AgentENV)** — An open-source runtime platform designed for AI Agent applications.
 
 ### Tools
 
