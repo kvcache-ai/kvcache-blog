@@ -550,12 +550,13 @@ test("selected production families dedupe to expected KV architecture settings",
   }).length, 0);
   const groupedLabels = groups.map((group) => group.models.map((model) => model.label).join(" / "));
 
-  assert.equal(selectedModels.length, 17);
-  assert.equal(groups.length, 11);
-  assert.equal(settingCount, 69);
+  assert.equal(selectedModels.length, 18);
+  assert.equal(groups.length, 12);
+  assert.equal(settingCount, 72);
   assert.ok(groupedLabels.includes("DeepSeek V3 / DeepSeek R1"));
   assert.ok(groupedLabels.includes("GLM-5 / GLM-5.1"));
   assert.ok(groupedLabels.includes("GLM-5.2"));
+  assert.ok(groupedLabels.includes("Kimi K3"));
   assert.ok(groupedLabels.includes("Kimi K2.5 / Kimi K2.6"));
   assert.ok(groupedLabels.includes("MiniMax M2 / MiniMax M2.1 / MiniMax M2.5 / MiniMax M2.7"));
   assert.ok(groupedLabels.includes("MiniMax M3"));

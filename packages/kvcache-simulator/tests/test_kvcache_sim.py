@@ -77,6 +77,29 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(result.indexer_precision_label, "BF16 / FP16")
         self.assertAlmostEqual(result.total_gib, 74.25)
 
+    def test_kimi_k3_uses_mla_and_kda_state_layout(self) -> None:
+        result = calculate_cache_size(
+            self.models["kimi-k3"],
+            tokens=1048576,
+            precision="fp8_int8",
+            include_linear_attention_state=True,
+            models_data=self.models_data,
+        )
+
+        self.assertEqual(result.hit_rate_bytes_per_token, 13824)
+        self.assertAlmostEqual(result.total_gib, 13.918510437011719)
+
+    def test_kimi_k3_mla_cache_uses_exact_logical_token_count(self) -> None:
+        result = calculate_cache_size(
+            self.models["kimi-k3"],
+            tokens=1,
+            precision="fp8_int8",
+            include_linear_attention_state=False,
+            models_data=self.models_data,
+        )
+
+        self.assertEqual(result.total_bytes, 13824)
+
     def test_bundled_models_match_web_calculator_catalog_when_in_repo(self) -> None:
         web_catalog = REPO_ROOT / "data" / "kv_cache_calculator" / "models.yaml"
         bundled_catalog = PACKAGE_ROOT / "src" / "kvcache_sim" / "resources" / "models.yaml"

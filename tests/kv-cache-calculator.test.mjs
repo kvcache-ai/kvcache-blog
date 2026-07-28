@@ -23,6 +23,122 @@ test("standard GQA formula matches Qwen3-32B at 128k tokens", () => {
   assert.ok(Math.abs(result.totalGiB - 31.25) < 1e-9);
 });
 
+const kimiK3 = {
+  id: "kimi-k3",
+  label: "Kimi K3",
+  formula: "kimi_kda_mla_hybrid",
+  fields: {
+    num_hidden_layers: 93,
+    full_attention_layers: 24,
+    kda_layers: 69,
+    default_precision_id: "bf16_fp16",
+    kv_lora_rank: 512,
+    qk_rope_head_dim: 64,
+    kda_num_heads: 96,
+    kda_head_dim: 128,
+    kda_num_key_heads: 96,
+    kda_key_head_dim: 128,
+    kda_num_value_heads: 96,
+    kda_value_head_dim: 128,
+    kda_conv_kernel_size: 4,
+    kda_conv_state_bytes_per_element: 2,
+    kda_recurrent_state_bytes_per_element: 4,
+  },
+};
+
+test("Kimi K3 defaults to BF16 KV cache", () => {
+  const result = calculate(kimiK3, {
+    tokens: 1,
+    sequences: 1,
+    includeLinearAttentionState: false,
+  });
+
+  assert.equal(result.precisionLabel, "BF16 / FP16");
+  assert.equal(result.totalBytes, 27648);
+});
+
+test("Kimi K3 counts the FP8 MLA latent payload", () => {
+  const result = calculate(kimiK3, {
+    tokens: 1048576,
+    sequences: 1,
+    precision: "fp8_int8",
+  });
+
+  assert.equal(result.tensorParallel, 1);
+  assert.equal(result.elementPlan.elementsPerToken, 24 * (512 + 64));
+  assert.equal(result.bytesPerToken, 13824);
+  assert.equal(result.hitRateBytesPerToken, 13824);
+  assert.equal(result.totalGiB, 13.5);
+  assert.equal(
+    result.cacheGroups.find((group) =>
+      group.label.startsWith("MLA latent KV cache"),
+    ).bytes,
+    14495514624,
+  );
+  assert.equal(
+    result.elementPlan.components.find(([label]) => label === "KDA state included")[1],
+    "No",
+  );
+  assert.match(result.elementPlan.note, /69 KDA layers/);
+});
+
+test("Kimi K3 KDA state is one logical active state per sequence", () => {
+  const result = calculate(kimiK3, {
+    tokens: 1048576,
+    sequences: 1,
+    precision: "fp8_int8",
+    includeLinearAttentionState: true,
+  });
+  const convBytes = 69 * (4 - 1) * (3 * 96 * 128) * 2;
+  const recurrentBytes = 69 * 96 * 128 * 128 * 4;
+  const state = result.cacheGroups.find(
+    (group) => group.label.startsWith("KDA active state"),
+  );
+
+  assert.equal(convBytes, 15261696);
+  assert.equal(recurrentBytes, 434110464);
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "KDA active-state bytes per sequence",
+    )[1],
+    convBytes + recurrentBytes,
+  );
+  assert.equal(state.bytes, convBytes + recurrentBytes);
+  assert.ok(Math.abs(result.totalGiB - 13.918510437011719) < 1e-12);
+  assert.equal(
+    result.elementPlan.components.find(([label]) => label === "KDA state included")[1],
+    "Yes",
+  );
+  assert.match(
+    result.elementPlan.formulaRows.find(
+      (row) => row.name === "kda_recurrent_state_bytes",
+    ).expression,
+    /value_heads/,
+  );
+});
+
+test("Kimi K3 MLA cache scales from the exact logical token count", () => {
+  const fp8Result = calculate(kimiK3, {
+    tokens: 1,
+    sequences: 1,
+    precision: "fp8_int8",
+    includeLinearAttentionState: false,
+  });
+  const bf16Result = calculate(kimiK3, {
+    tokens: 1,
+    sequences: 1,
+    precision: "bf16_fp16",
+    includeLinearAttentionState: false,
+  });
+
+  assert.equal(fp8Result.totalBytes, 13824);
+  assert.equal(fp8Result.totalGiB * 1024 ** 2, 13.5);
+  assert.equal(fp8Result.hitRateBytesPerToken, 13824);
+  assert.equal(bf16Result.totalBytes, 27648);
+  assert.equal(bf16Result.totalGiB * 1024 ** 2, 27);
+  assert.equal(bf16Result.hitRateBytesPerToken, 27648);
+});
+
 test("Qwen3.6 27B counts only full-attention KV layers", () => {
   const model = {
     id: "qwen3.6-27b",

@@ -61,6 +61,10 @@
         <select data-lab-input="model"></select>
       </label>
 
+      <p class="kv-lab-model-note" data-lab-kda-note hidden>
+        Joint KDA/MLA hits are not modeled because KDA state management varies by engine; this view isolates MLA prefix-cache hits.
+      </p>
+
       <label>
         <span>KV precision</span>
         <select data-lab-input="precision"></select>
@@ -222,6 +226,14 @@
     background: #f1f5f9;
     color: var(--lab-muted);
     cursor: not-allowed;
+  }
+
+  .kv-lab-model-note {
+    margin: -0.35rem 0 0;
+    color: var(--lab-muted);
+    font-size: 0.72rem;
+    font-weight: 500;
+    line-height: 1.4;
   }
 
   .kv-lab-upload-zone {
