@@ -3,7 +3,7 @@ metadata:
   note: "Curated from official Hugging Face model config/source files and serving-engine references. Values describe KV cache capacity planning, not model weights or activation memory."
   serving_references:
     deepseek_v4_vllm_indexer_fp4: "https://vllm.ai/blog/deepseek-v4"
-    kimi_k3_config: "https://huggingface.co/moonshotai/Kimi-K3.0/raw/main/config.json"
+    kimi_k3_config: "https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json"
 precision_options:
   - id: bf16_fp16
     label: "BF16 / FP16"
@@ -181,7 +181,7 @@ models:
     formula: "kimi_kda_mla_hybrid"
     default_tokens: 1024
     max_position_embeddings: 1048576
-    source_url: "https://huggingface.co/moonshotai/Kimi-K3.0/raw/main/config.json"
+    source_url: "https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json"
     source_retrieved_at: "2026-07-25"
     hit_rate_supported: true
     fields:
