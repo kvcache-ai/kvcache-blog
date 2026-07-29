@@ -1,10 +1,8 @@
-# KVCache.ai
+Official website source for [KVCache.AI](https://kvcache.ai/) — the home of open-source projects and research on KV cache management and LLM serving optimization.
 
-Official website source for [KVCache.ai](https://kvcache.ai/) — the home of open-source projects and research on KV cache management and LLM serving optimization.
+## About KVCache.AI
 
-## About KVCache.ai
-
-KVCache.ai advances the state of the art in Large Language Model (LLM) inference optimization. In decoder-only Transformer models, data from diverse modalities can ultimately be transformed into KV cache, making it a central component of modern LLM serving systems. As a result, KV cache has become a key focus for improving inference efficiency through techniques such as caching, scheduling, compression, offloading, and disaggregated serving architectures.
+KVCache.AI advances the state of the art in Large Language Model (LLM) inference optimization. In decoder-only Transformer models, data from diverse modalities can ultimately be transformed into KV cache, making it a central component of modern LLM serving systems. As a result, KV cache has become a key focus for improving inference efficiency through techniques such as caching, scheduling, compression, offloading, and disaggregated serving architectures.
 
 Through open-source projects and academic research, KVCache.ai develops effective, practical, and high-performance solutions for KV cache management and LLM serving optimization. The goal is to make LLM deployment more accessible, efficient, and cost-effective for organizations of all sizes.
 
