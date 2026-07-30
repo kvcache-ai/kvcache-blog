@@ -40,18 +40,33 @@
         <span data-kv-inline-help="Adds model-specific MTP/draft KV layers when enabled by the serving stack. DeepSeek V4 draft layers use ratio=0 sliding-window cache.">Include draft KV cache</span>
       </label>
 
+      <label class="kv-checkbox-row" data-kv-linear-state-control hidden>
+        <input data-kv-input="includeLinearAttentionState" type="checkbox">
+        <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. For K3, the checkpoint interval controls how many retained states are counted.">Include linear-attention state</span>
+      </label>
+
+      <fieldset class="kv-policy-group" data-kv-kda-policy-control hidden>
+        <legend>KDA Checkpoint Policy:</legend>
+        <label class="kv-radio-row">
+          <input data-kv-input="kdaCheckpointPolicyPromptEnd" type="radio" name="kdaCheckpointPolicy" value="prompt_end" checked required>
+          <span class="kv-option-label">
+            <span>Prompt-End State</span>
+            <span class="kv-help-target" data-kv-inline-help="Assumes one KDA state is saved only at the end of each sequence."></span>
+          </span>
+        </label>
+        <label class="kv-radio-row">
+          <input data-kv-input="kdaCheckpointPolicyFixedInterval" type="radio" name="kdaCheckpointPolicy" value="fixed_interval" required>
+          <span>Fixed Interval Checkpoints</span>
+        </label>
+      </fieldset>
+
       <div class="kv-field" data-kv-kda-checkpoint-control hidden>
         <span class="kv-control-label">
           <label for="kv-kda-checkpoint-interval">KDA checkpoint interval</label>
           <span class="kv-help-target" data-kv-inline-help="Stores one KDA state checkpoint every N tokens. The final partial interval counts as one checkpoint."></span>
         </span>
-        <input id="kv-kda-checkpoint-interval" data-kv-input="kdaCheckpointInterval" type="number" min="1" step="1" inputmode="numeric" value="1024">
+        <input id="kv-kda-checkpoint-interval" data-kv-input="kdaCheckpointInterval" type="number" min="1" step="1" value="10240">
       </div>
-
-      <label class="kv-checkbox-row" data-kv-linear-state-control hidden>
-        <input data-kv-input="includeLinearAttentionState" type="checkbox">
-        <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. For K3, the checkpoint interval controls how many retained states are counted.">Include linear-attention state</span>
-      </label>
 
       <div class="kv-cta-note">
         <p>Want to analyze KV cache hit rates of your traces? Try our <a href="https://kvcache.ai/tools/kv-cache-hit-rate-simulator/">KV Cache Hit Rate Simulator</a>.</p>
@@ -166,6 +181,36 @@
     gap: 0.55rem;
   }
 
+  .kv-controls .kv-policy-group {
+    display: grid;
+    gap: 0.35rem;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    color: var(--kv-muted);
+    font-size: 0.82rem;
+    font-weight: 650;
+  }
+
+  .kv-controls .kv-policy-group legend {
+    margin: 0 0 0.05rem;
+    padding: 0;
+  }
+
+  .kv-controls .kv-radio-row {
+    display: grid;
+    grid-template-columns: 1.05rem minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem;
+  }
+
+  .kv-controls .kv-option-label {
+    display: inline-flex;
+    width: max-content;
+    max-width: 100%;
+    align-items: center;
+  }
+
   .kv-controls .kv-control-label {
     display: inline-flex;
     width: max-content;
@@ -182,7 +227,8 @@
     pointer-events: auto;
   }
 
-  .kv-checkbox-row input {
+  .kv-checkbox-row input,
+  .kv-radio-row input {
     width: 1.05rem;
     min-height: 1.05rem;
     margin: 0;
@@ -205,7 +251,8 @@
     padding: 0.55rem 0.7rem;
   }
 
-  .kv-controls input[type="checkbox"] {
+  .kv-controls input[type="checkbox"],
+  .kv-controls input[type="radio"] {
     width: 1.05rem;
     min-height: 1.05rem;
     padding: 0;
