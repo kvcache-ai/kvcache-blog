@@ -43,6 +43,7 @@ const kimiK3 = {
     kda_conv_kernel_size: 4,
     kda_conv_state_bytes_per_element: 2,
     kda_recurrent_state_bytes_per_element: 4,
+    default_kda_checkpoint_interval: 1024,
   },
 };
 
@@ -82,9 +83,9 @@ test("Kimi K3 counts the FP8 MLA latent payload", () => {
   assert.match(result.elementPlan.note, /69 KDA layers/);
 });
 
-test("Kimi K3 KDA state is one logical active state per sequence", () => {
+test("Kimi K3 defaults to one checkpoint for 1024 tokens", () => {
   const result = calculate(kimiK3, {
-    tokens: 1048576,
+    tokens: 1024,
     sequences: 1,
     precision: "fp8_int8",
     includeLinearAttentionState: true,
@@ -92,19 +93,24 @@ test("Kimi K3 KDA state is one logical active state per sequence", () => {
   const convBytes = 69 * (4 - 1) * (3 * 96 * 128) * 2;
   const recurrentBytes = 69 * 96 * 128 * 128 * 4;
   const state = result.cacheGroups.find(
-    (group) => group.label.startsWith("KDA active state"),
+    (group) => group.label.startsWith("KDA checkpoint state"),
   );
 
   assert.equal(convBytes, 15261696);
   assert.equal(recurrentBytes, 434110464);
   assert.equal(
     result.elementPlan.components.find(
-      ([label]) => label === "KDA active-state bytes per sequence",
+      ([label]) => label === "KDA checkpoints per sequence",
+    )[1],
+    1,
+  );
+  assert.equal(state.bytes, convBytes + recurrentBytes);
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "KDA checkpoint bytes per sequence",
     )[1],
     convBytes + recurrentBytes,
   );
-  assert.equal(state.bytes, convBytes + recurrentBytes);
-  assert.ok(Math.abs(result.totalGiB - 13.918510437011719) < 1e-12);
   assert.equal(
     result.elementPlan.components.find(([label]) => label === "KDA state included")[1],
     "Yes",
@@ -113,7 +119,85 @@ test("Kimi K3 KDA state is one logical active state per sequence", () => {
     result.elementPlan.formulaRows.find(
       (row) => row.name === "kda_recurrent_state_bytes",
     ).expression,
-    /value_heads/,
+    /kda_checkpoint_count/,
+  );
+});
+
+test("Kimi K3 stores a final checkpoint for a partial interval", () => {
+  const result = calculate(kimiK3, {
+    tokens: 1025,
+    sequences: 1,
+    precision: "fp8_int8",
+    includeLinearAttentionState: true,
+    kdaCheckpointInterval: 1024,
+  });
+  const checkpointBytes =
+    69 * (4 - 1) * (3 * 96 * 128) * 2 +
+    69 * 96 * 128 * 128 * 4;
+  const state = result.cacheGroups.find(
+    (group) => group.label.startsWith("KDA checkpoint state"),
+  );
+
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "KDA checkpoints per sequence",
+    )[1],
+    2,
+  );
+  assert.equal(state.bytes, 2 * checkpointBytes);
+  assert.match(
+    result.elementPlan.formulaRows.find(
+      (row) => row.name === "kda_checkpoint_count",
+    ).expression,
+    /ceil/,
+  );
+});
+
+test("Kimi K3 checkpoint storage scales with intervals and sequences", () => {
+  const sequences = 3;
+  const result = calculate(kimiK3, {
+    tokens: 4096,
+    sequences,
+    precision: "fp8_int8",
+    includeLinearAttentionState: true,
+    kdaCheckpointInterval: 1024,
+  });
+  const checkpointBytes =
+    69 * (4 - 1) * (3 * 96 * 128) * 2 +
+    69 * 96 * 128 * 128 * 4;
+  const state = result.cacheGroups.find(
+    (group) => group.label.startsWith("KDA checkpoint state"),
+  );
+
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "KDA checkpoints per sequence",
+    )[1],
+    4,
+  );
+  assert.equal(state.bytes, 4 * sequences * checkpointBytes);
+});
+
+test("Kimi K3 ignores checkpoint interval when linear state is excluded", () => {
+  const result = calculate(kimiK3, {
+    tokens: 4096,
+    sequences: 2,
+    precision: "fp8_int8",
+    includeLinearAttentionState: false,
+    kdaCheckpointInterval: 1,
+  });
+
+  assert.equal(
+    result.cacheGroups.some((group) =>
+      group.label.startsWith("KDA checkpoint state"),
+    ),
+    false,
+  );
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "KDA checkpoints per sequence",
+    )[1],
+    0,
   );
 });
 
