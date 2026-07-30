@@ -102,6 +102,10 @@
     );
   }
 
+  function hasKdaCheckpointInterval(model) {
+    return Boolean(model && model.formula === "kimi_kda_mla_hybrid");
+  }
+
   function toBoolean(value) {
     return value === true || value === "true" || value === "on" || value === "1";
   }
@@ -357,6 +361,13 @@
       const layers = getField(model, "num_hidden_layers");
       const fullLayers = getField(model, "full_attention_layers");
       const kdaLayers = getField(model, "kda_layers");
+      const kdaCheckpointInterval = toPositiveInteger(
+        settings && settings.kdaCheckpointInterval,
+        optionalField(model, "default_kda_checkpoint_interval", 1024),
+      );
+      const kdaCheckpointCount = includeLinearAttentionState
+        ? Math.ceil(tokens / kdaCheckpointInterval)
+        : 0;
       const kvRank = getField(model, "kv_lora_rank");
       const ropeDim = getField(model, "qk_rope_head_dim");
       const kdaHeads = getField(model, "kda_num_heads");
@@ -387,10 +398,11 @@
           kdaValueHeads * kdaValueDim);
       const kdaRecurrentElements =
         kdaLayers * kdaValueHeads * kdaValueDim * kdaKeyDim;
-      const kdaStateBytesPerSequence = includeLinearAttentionState
-        ? kdaConvElements * convBytesPerElement +
-          kdaRecurrentElements * recurrentBytesPerElement
-        : 0;
+      const kdaStateBytes =
+        kdaConvElements * convBytesPerElement +
+        kdaRecurrentElements * recurrentBytesPerElement;
+      const kdaCheckpointBytesPerSequence =
+        kdaCheckpointCount * kdaStateBytes;
       const byteGroups = [
         {
           role: "kv",
@@ -411,30 +423,36 @@
       if (includeLinearAttentionState) {
         byteGroups.push({
           role: "linear_state",
-          label: "KDA active state",
-          bytesPerSequence: kdaStateBytesPerSequence,
+          label: "KDA checkpoint state",
+          bytesPerSequence: kdaCheckpointBytesPerSequence,
         });
         formulaRows.push(
           {
+            name: "kda_checkpoint_count",
+            expression: "ceil(tokens / kda_checkpoint_interval)",
+            description:
+              "Stores one checkpoint at each interval and one final checkpoint for a partial trailing interval.",
+          },
+          {
             name: "kda_conv_state_bytes",
             expression:
-              "sequences x kda_layers x (conv_kernel - 1) x (q_dim + k_dim + v_dim) x conv_state_bytes",
+              "sequences x kda_checkpoint_count x kda_layers x (conv_kernel - 1) x (q_dim + k_dim + v_dim) x conv_state_bytes",
             description:
-              "KDA short-convolution history, stored in BF16.",
+              "BF16 KDA short-convolution history stored in every retained checkpoint.",
           },
           {
             name: "kda_recurrent_state_bytes",
             expression:
-              "sequences x kda_layers x value_heads x value_head_dim x key_head_dim x recurrent_state_bytes",
+              "sequences x kda_checkpoint_count x kda_layers x value_heads x value_head_dim x key_head_dim x recurrent_state_bytes",
             description:
-              "One active KDA recurrent matrix per sequence, stored in FP32.",
+              "FP32 KDA recurrent matrices stored in every retained checkpoint.",
           },
           {
             name: "total_bytes",
             expression:
               "mla_kv_bytes + kda_conv_state_bytes + kda_recurrent_state_bytes",
             description:
-              "Combined token-linear MLA cache and fixed per-sequence KDA runtime state.",
+              "Combined token-linear MLA cache and retained KDA checkpoint states.",
           },
         );
       } else {
@@ -459,16 +477,17 @@
         elementsPerSequence:
           mlaElements +
           (includeLinearAttentionState
-            ? kdaConvElements + kdaRecurrentElements
+            ? kdaCheckpointCount *
+              (kdaConvElements + kdaRecurrentElements)
             : 0),
         elementsPerToken: mlaElementsPerToken,
         hitRateElementsPerToken: mlaElementsPerToken,
         formulaLabel: FORMULA_LABELS[formula],
         formulaText:
-          "mla_kv_bytes = tokens * sequences * full_attention_layers * (kv_lora_rank + qk_rope_head_dim) * precision_bytes\ntotal_bytes = mla_kv_bytes + optional_kda_active_state_bytes",
+          "mla_kv_bytes = tokens * sequences * full_attention_layers * (kv_lora_rank + qk_rope_head_dim) * precision_bytes\nkda_checkpoint_count = ceil(tokens / kda_checkpoint_interval)\ntotal_bytes = mla_kv_bytes + optional_kda_checkpoint_bytes",
         formulaRows,
         note: includeLinearAttentionState
-          ? "Includes the 24-layer token-addressable MLA latent cache and one BF16-convolution/FP32-recurrent KDA state per active sequence. Engine-specific checkpoint and intermediate buffers are excluded."
+          ? "Includes the 24-layer token-addressable MLA latent cache and retained BF16-convolution/FP32-recurrent KDA checkpoints. Active, ping-pong, and speculative runtime buffers are excluded."
           : "Includes the 24-layer token-addressable MLA latent cache. The 69 KDA layers' sequence-level state is excluded.",
         byteGroups,
         components: [
@@ -481,12 +500,22 @@
           [
             "KDA linear-attention layers",
             kdaLayers,
-            "Layers that allocate fixed convolution and recurrent state per active request.",
+            "Layers whose convolution and recurrent state is stored in each KDA checkpoint.",
           ],
           [
             "KDA state included",
             includeLinearAttentionState ? "Yes" : "No",
-            "When enabled, adds the fixed per-sequence KDA convolution and recurrent state.",
+            "When enabled, adds retained KDA convolution and recurrent checkpoints.",
+          ],
+          [
+            "KDA checkpoint interval",
+            kdaCheckpointInterval,
+            "Number of tokens represented by each retained KDA checkpoint.",
+          ],
+          [
+            "KDA checkpoints per sequence",
+            kdaCheckpointCount,
+            "ceil(tokens / kda_checkpoint_interval), including the final partial interval.",
           ],
           [
             "MLA elements per token",
@@ -494,20 +523,24 @@
             "full_attention_layers x (kv_lora_rank + qk_rope_head_dim).",
           ],
           [
-            "KDA conv elements",
+            "KDA conv elements per checkpoint",
             kdaConvElements,
-            "All KDA Q/K/V short-convolution history for one active state.",
+            "All KDA Q/K/V short-convolution history stored in one checkpoint.",
           ],
           [
-            "KDA recurrent elements",
+            "KDA recurrent elements per checkpoint",
             kdaRecurrentElements,
-            "All KDA recurrent matrices for one active state.",
+            "All KDA recurrent matrices stored in one checkpoint.",
           ],
           [
-            "KDA active-state bytes per sequence",
-            kdaConvElements * convBytesPerElement +
-              kdaRecurrentElements * recurrentBytesPerElement,
-            "One active KDA state per sequence; engine-specific checkpoint buffers are excluded.",
+            "KDA bytes per checkpoint",
+            kdaStateBytes,
+            "One BF16-convolution/FP32-recurrent KDA checkpoint.",
+          ],
+          [
+            "KDA checkpoint bytes per sequence",
+            kdaCheckpointBytesPerSequence,
+            "Retained checkpoint count multiplied by bytes per checkpoint.",
           ],
           ["KDA conv-state bytes", convBytesPerElement],
           ["KDA recurrent-state bytes", recurrentBytesPerElement],
@@ -522,6 +555,7 @@
               "kda_num_heads",
               "kda_head_dim",
               "kda_conv_kernel_size",
+              "default_kda_checkpoint_interval",
             ]),
           ],
         ],
@@ -925,6 +959,12 @@
     const elementPlan = calculateElementsPerSequence(model, tokens, {
       includeDraftKvCache: hasDraftKvCache(model) && toBoolean(input.includeDraftKvCache),
       includeLinearAttentionState: hasLinearAttentionState(model) && toBoolean(input.includeLinearAttentionState),
+      kdaCheckpointInterval: hasKdaCheckpointInterval(model)
+        ? toPositiveInteger(
+            input.kdaCheckpointInterval,
+            optionalField(model, "default_kda_checkpoint_interval", 1024),
+          )
+        : undefined,
     });
     const cacheGroupsPerSequence = calculateCacheGroups(elementPlan, cachePrecision);
     const bytesPerSequence = cacheGroupsPerSequence.reduce((total, group) => total + group.bytesPerSequence, 0);
@@ -1030,6 +1070,9 @@
       if (!wasOpen) help.dataset.kvOpen = "true";
     });
     help.addEventListener("blur", () => {
+      delete help.dataset.kvOpen;
+    });
+    help.addEventListener("mouseleave", () => {
       delete help.dataset.kvOpen;
     });
     parent.appendChild(help);
@@ -1245,6 +1288,27 @@
     }
   }
 
+  function syncKdaCheckpointControl(root, model) {
+    const control = root.querySelector("[data-kv-kda-checkpoint-control]");
+    const input = root.querySelector("[data-kv-input='kdaCheckpointInterval']");
+    const checkbox = root.querySelector("[data-kv-input='includeLinearAttentionState']");
+    const showCheckpointControl = Boolean(
+      hasKdaCheckpointInterval(model) && checkbox && checkbox.checked,
+    );
+    if (control) control.hidden = !showCheckpointControl;
+    if (!input) return;
+
+    if (showCheckpointControl && input.dataset.kvModelId !== model.id) {
+      input.value = optionalField(
+        model,
+        "default_kda_checkpoint_interval",
+        1024,
+      );
+      input.dataset.kvModelId = model.id;
+    }
+    input.disabled = !showCheckpointControl || !checkbox || !checkbox.checked;
+  }
+
   function setCheckboxHelp(root) {
     root.querySelectorAll("[data-kv-inline-help]").forEach((node) => {
       appendHelp(node, node.getAttribute("data-kv-inline-help"));
@@ -1285,6 +1349,7 @@
       indexerPrecision: root.querySelector("[data-kv-input='indexerPrecision']"),
       includeDraftKvCache: root.querySelector("[data-kv-input='includeDraftKvCache']"),
       includeLinearAttentionState: root.querySelector("[data-kv-input='includeLinearAttentionState']"),
+      kdaCheckpointInterval: root.querySelector("[data-kv-input='kdaCheckpointInterval']"),
     };
 
     function selectedModel() {
@@ -1302,11 +1367,13 @@
       populateIndexerPrecisionOptions(root, data, model);
       syncDraftControl(root, model);
       syncLinearStateControl(root, model);
+      syncKdaCheckpointControl(root, model);
     }
 
     function update() {
       try {
         const model = selectedModel();
+        syncKdaCheckpointControl(root, model);
         const result = calculate(
           model,
           {
@@ -1316,6 +1383,10 @@
             indexerPrecision: inputValue(inputs.indexerPrecision, undefined),
             includeDraftKvCache: checkboxValue(inputs.includeDraftKvCache),
             includeLinearAttentionState: checkboxValue(inputs.includeLinearAttentionState),
+            kdaCheckpointInterval: inputValue(
+              inputs.kdaCheckpointInterval,
+              optionalField(model, "default_kda_checkpoint_interval", 1024),
+            ),
             tensorParallel: 1,
           },
           {

@@ -40,9 +40,17 @@
         <span data-kv-inline-help="Adds model-specific MTP/draft KV layers when enabled by the serving stack. DeepSeek V4 draft layers use ratio=0 sliding-window cache.">Include draft KV cache</span>
       </label>
 
+      <div class="kv-field" data-kv-kda-checkpoint-control hidden>
+        <span class="kv-control-label">
+          <label for="kv-kda-checkpoint-interval">KDA checkpoint interval</label>
+          <span class="kv-help-target" data-kv-inline-help="Stores one KDA state checkpoint every N tokens. The final partial interval counts as one checkpoint."></span>
+        </span>
+        <input id="kv-kda-checkpoint-interval" data-kv-input="kdaCheckpointInterval" type="number" min="1" step="1" inputmode="numeric" value="1024">
+      </div>
+
       <label class="kv-checkbox-row" data-kv-linear-state-control hidden>
         <input data-kv-input="includeLinearAttentionState" type="checkbox">
-        <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. This state is sequence-level runtime cache, not ordinary per-token KV.">Include linear-attention state</span>
+        <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. For K3, the checkpoint interval controls how many retained states are counted.">Include linear-attention state</span>
       </label>
 
       <div class="kv-cta-note">
@@ -141,7 +149,8 @@
     padding: 1rem;
   }
 
-  .kv-controls label {
+  .kv-controls label,
+  .kv-controls .kv-field {
     display: grid;
     gap: 0.35rem;
     margin: 0;
@@ -155,6 +164,22 @@
     grid-template-columns: 1.05rem minmax(0, 1fr);
     align-items: center;
     gap: 0.55rem;
+  }
+
+  .kv-controls .kv-control-label {
+    display: inline-flex;
+    width: max-content;
+    max-width: 100%;
+    align-items: center;
+  }
+
+  .kv-control-label label {
+    display: inline;
+  }
+
+  .kv-help-target {
+    display: inline-flex;
+    pointer-events: auto;
   }
 
   .kv-checkbox-row input {
@@ -311,7 +336,6 @@
   }
 
   .kv-help:hover::after,
-  .kv-help:focus::after,
   .kv-help:focus-visible::after,
   .kv-help[data-kv-open="true"]::after {
     display: block;
