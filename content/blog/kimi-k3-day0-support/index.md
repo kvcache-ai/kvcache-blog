@@ -39,7 +39,7 @@ The open K3 configuration contains 93 decoder layers: **69 KDA layers interleave
 
 ![Kimi K3 hybrid KDA and MLA architecture](featured.png)
 
-Image source: https://www.kimi.com/blog/kimi-k3
+{{< image-source url="https://www.kimi.com/blog/kimi-k3" >}}
 
 MLA retains token-level latent KV representations. Its cache therefore has the familiar property of a Transformer KV cache: storage grows with context length, with a representation associated with each historical token.
 
@@ -99,7 +99,7 @@ SGLang extends its radix tree with KDA-aware checkpoints. The tree still matches
 
 ![Sparse KDA checkpoints on the SGLang radix tree](sglang-checkpoints.png)
 
-Image source: https://www.lmsys.org/blog/2026-07-27-kimi-k3-day0-support/
+{{< image-source url="https://www.lmsys.org/blog/2026-07-27-kimi-k3-day0-support/" >}}
 
 ### **Sparse Checkpoint Management: Balancing Cache Capacity and Replay**
 
@@ -151,7 +151,7 @@ SGLang's optional **Unified Memory** mode lets both cache families draw from one
 
 ![SGLang unified memory for KDA state and MLA KV](sglang-unified-memory.png)
 
-Image source: https://www.lmsys.org/blog/2026-07-27-kimi-k3-day0-support/
+{{< image-source url="https://www.lmsys.org/blog/2026-07-27-kimi-k3-day0-support/" >}}
 
 The implementation uses one contiguous region: KDA state blocks grow from one end and MLA KV blocks from the other, leaving one free region between them. When an object is freed in the packed region, an object from the corresponding end is moved into the gap to keep free space contiguous.
 
@@ -181,7 +181,7 @@ vLLM coordinates the two cache groups under its Hybrid KV Cache Manager. MLA lay
 
 ![vLLM hybrid cache management for MLA KV and KDA state](vllm-hybrid-cache.png)
 
-Image source: https://vllm.ai/blog/2026-07-27-k3
+{{< image-source url="https://vllm.ai/blog/2026-07-27-k3" >}}
 
 vLLM separates logical prefix matching from physical state-block allocation. Fine-grained prefix hashes can identify a recoverable boundary inside the logical token span associated with a larger physical block, so KDA checkpoints need to be retained only at selected positions rather than at every token.
 
@@ -193,7 +193,7 @@ If reuse were limited to physical block boundaries, a valid checkpoint inside a 
 
 ![Fine-grained prefix matching inside a physical vLLM state block](vllm-fine-grained-prefix-hit.png)
 
-Image source: https://vllm.ai/blog/2026-07-22-kimi-k3-preview
+{{< image-source url="https://vllm.ai/blog/2026-07-22-kimi-k3-preview" >}}
 
 Fine-grained partial hits separate three concerns: physical state-block size, scheduler alignment, and prefix-match granularity. vLLM can register a valid KDA state at a fine-grained boundary within a larger physical block. In the example above, position 4,480 becomes a recoverable prefix boundary even though it does not coincide with the physical allocation boundary. A later request can match that boundary and copy the cached state into private working storage before extending it.
 
@@ -205,7 +205,7 @@ Because KDA checkpoints are too large to retain at every candidate boundary, vLL
 
 ![vLLM interval-based KDA checkpoint retention](vllm-interval-retention.png)
 
-Image source: https://vllm.ai/blog/2026-07-27-k3
+{{< image-source url="https://vllm.ai/blog/2026-07-27-k3" >}}
 
 Multi-turn conversations and agentic workloads contain boundaries with predictable reuse value. vLLM can retain periodic KDA checkpoints and always retains prompt-end state.
 
@@ -215,7 +215,7 @@ Prompt-end retention is especially useful for multi-turn serving because the nex
 
 ![vLLM Marconi-style selective checkpoint retention](vllm-selective-retention.gif)
 
-Image source: https://vllm.ai/blog/2026-07-27-k3
+{{< image-source url="https://vllm.ai/blog/2026-07-27-k3" >}}
 
 Fixed intervals capture known structure but cannot predict dynamic shared prefixes such as system prompts, repository snapshots, or tool definitions. Retaining a full KDA checkpoint on first sight would let one-off prefixes consume a large state budget.
 
@@ -251,7 +251,7 @@ For Kimi K3, one page holds either 1,536 tokens of MLA latent history or one com
 
 ![TokenSpeed Flat KV page and slab layout](tokenspeed-flat-kv.png)
 
-Image source: https://lightseek.org/blog/tokenspeed-kimi-k3.html
+{{< image-source url="https://lightseek.org/blog/tokenspeed-kimi-k3.html" >}}
 
 TokenSpeed divides K3's 69 KDA layers into three groups of 23 and organizes the shared pool into 24 physical slabs. Every slab contains one MLA page, while the first 23 slabs also contain three KDA pages—one for each 23-layer KDA group. A single global page ID indexes the corresponding page across the slabs, allowing prefix caching, copy-on-write snapshots, and decode execution to use the same physical page pool.
 
@@ -277,7 +277,7 @@ Kimi K3's native vision support adds an encoder stage, extending PD to EPD. Toke
 
 ![TokenSpeed encoder-prefill-decode disaggregation](tokenspeed-epd.png)
 
-Image source: https://lightseek.org/blog/tokenspeed-kimi-k3.html
+{{< image-source url="https://lightseek.org/blog/tokenspeed-kimi-k3.html" >}}
 
 In TokenSpeed's EPD architecture, the encoder, prefill, and decode worker pools can use independent scheduling and scaling policies. The Serving Management Gateway (SMG) routes requests across the three stages.
 
