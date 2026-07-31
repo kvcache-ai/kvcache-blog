@@ -43,7 +43,7 @@ const kimiK3 = {
     kda_conv_kernel_size: 4,
     kda_conv_state_bytes_per_element: 2,
     kda_recurrent_state_bytes_per_element: 4,
-    default_kda_checkpoint_interval: 1024,
+    default_kda_checkpoint_interval: "infinity",
   },
 };
 
@@ -83,9 +83,9 @@ test("Kimi K3 counts the FP8 MLA latent payload", () => {
   assert.match(result.elementPlan.note, /69 KDA layers/);
 });
 
-test("Kimi K3 defaults to one checkpoint for 1024 tokens", () => {
+test("Kimi K3 defaults to one checkpoint at an infinite interval", () => {
   const result = calculate(kimiK3, {
-    tokens: 1024,
+    tokens: 1048576,
     sequences: 1,
     precision: "fp8_int8",
     includeLinearAttentionState: true,
@@ -103,6 +103,12 @@ test("Kimi K3 defaults to one checkpoint for 1024 tokens", () => {
       ([label]) => label === "KDA checkpoints per sequence",
     )[1],
     1,
+  );
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "KDA checkpoint interval",
+    )[1],
+    "∞",
   );
   assert.equal(state.bytes, convBytes + recurrentBytes);
   assert.equal(
@@ -129,6 +135,7 @@ test("Kimi K3 stores a final checkpoint for a partial interval", () => {
     sequences: 1,
     precision: "fp8_int8",
     includeLinearAttentionState: true,
+    kdaCheckpointPolicy: "fixed_interval",
     kdaCheckpointInterval: 1024,
   });
   const checkpointBytes =
@@ -160,6 +167,7 @@ test("Kimi K3 checkpoint storage scales with intervals and sequences", () => {
     sequences,
     precision: "fp8_int8",
     includeLinearAttentionState: true,
+    kdaCheckpointPolicy: "fixed_interval",
     kdaCheckpointInterval: 1024,
   });
   const checkpointBytes =
@@ -184,6 +192,7 @@ test("Kimi K3 ignores checkpoint interval when linear state is excluded", () => 
     sequences: 2,
     precision: "fp8_int8",
     includeLinearAttentionState: false,
+    kdaCheckpointPolicy: "fixed_interval",
     kdaCheckpointInterval: 1,
   });
 
@@ -198,6 +207,54 @@ test("Kimi K3 ignores checkpoint interval when linear state is excluded", () => 
       ([label]) => label === "KDA checkpoints per sequence",
     )[1],
     0,
+  );
+});
+
+test("Kimi K3 prompt-end policy ignores a finite interval", () => {
+  const result = calculate(kimiK3, {
+    tokens: 4096,
+    sequences: 1,
+    precision: "fp8_int8",
+    includeLinearAttentionState: true,
+    kdaCheckpointPolicy: "prompt_end",
+    kdaCheckpointInterval: 1,
+  });
+
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "KDA checkpoint interval",
+    )[1],
+    "∞",
+  );
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "KDA checkpoints per sequence",
+    )[1],
+    1,
+  );
+});
+
+test("Kimi K3 treats a blank fixed interval as prompt-end state", () => {
+  const result = calculate(kimiK3, {
+    tokens: 4096,
+    sequences: 1,
+    precision: "fp8_int8",
+    includeLinearAttentionState: true,
+    kdaCheckpointPolicy: "fixed_interval",
+    kdaCheckpointInterval: "",
+  });
+
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "KDA checkpoint interval",
+    )[1],
+    "∞",
+  );
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "KDA checkpoints per sequence",
+    )[1],
+    1,
   );
 });
 

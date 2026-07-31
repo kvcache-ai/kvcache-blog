@@ -14,6 +14,9 @@
   const QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT = 4;
   const KIMI_KDA_CONV_BYTES_PER_ELEMENT = 2;
   const KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT = 4;
+  const KDA_CHECKPOINT_INFINITY = "∞";
+  const KDA_CUSTOM_INTERVAL_DEFAULT = 10240;
+  const KDA_CHECKPOINT_POLICY_FIXED_INTERVAL = "fixed_interval";
 
   const DEFAULT_PRECISIONS = {
     bf16_fp16: { label: "BF16 / FP16", bytesPerElement: 2 },
@@ -104,6 +107,34 @@
 
   function hasKdaCheckpointInterval(model) {
     return Boolean(model && model.formula === "kimi_kda_mla_hybrid");
+  }
+
+  function parseKdaCheckpointInterval(value, fallback) {
+    if (
+      value === Infinity ||
+      value === KDA_CHECKPOINT_INFINITY ||
+      (typeof value === "string" && value.toLowerCase() === "infinity")
+    ) {
+      return Infinity;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0
+      ? Math.max(1, Math.floor(parsed))
+      : fallback;
+  }
+
+  function defaultKdaCheckpointInterval(model) {
+    const value =
+      model && model.fields
+        ? model.fields.default_kda_checkpoint_interval
+        : undefined;
+    return parseKdaCheckpointInterval(value, Infinity);
+  }
+
+  function formatKdaCheckpointInterval(value) {
+    return Number.isFinite(value)
+      ? String(value)
+      : KDA_CHECKPOINT_INFINITY;
   }
 
   function toBoolean(value) {
@@ -361,12 +392,14 @@
       const layers = getField(model, "num_hidden_layers");
       const fullLayers = getField(model, "full_attention_layers");
       const kdaLayers = getField(model, "kda_layers");
-      const kdaCheckpointInterval = toPositiveInteger(
+      const kdaCheckpointInterval = parseKdaCheckpointInterval(
         settings && settings.kdaCheckpointInterval,
-        optionalField(model, "default_kda_checkpoint_interval", 1024),
+        defaultKdaCheckpointInterval(model),
       );
       const kdaCheckpointCount = includeLinearAttentionState
-        ? Math.ceil(tokens / kdaCheckpointInterval)
+        ? Number.isFinite(kdaCheckpointInterval)
+          ? Math.ceil(tokens / kdaCheckpointInterval)
+          : 1
         : 0;
       const kvRank = getField(model, "kv_lora_rank");
       const ropeDim = getField(model, "qk_rope_head_dim");
@@ -429,9 +462,10 @@
         formulaRows.push(
           {
             name: "kda_checkpoint_count",
-            expression: "ceil(tokens / kda_checkpoint_interval)",
+            expression:
+              "interval is infinity ? 1 : ceil(tokens / kda_checkpoint_interval)",
             description:
-              "Stores one checkpoint at each interval and one final checkpoint for a partial trailing interval.",
+              "The infinity default stores one final checkpoint; finite intervals also count a final partial interval.",
           },
           {
             name: "kda_conv_state_bytes",
@@ -484,7 +518,7 @@
         hitRateElementsPerToken: mlaElementsPerToken,
         formulaLabel: FORMULA_LABELS[formula],
         formulaText:
-          "mla_kv_bytes = tokens * sequences * full_attention_layers * (kv_lora_rank + qk_rope_head_dim) * precision_bytes\nkda_checkpoint_count = ceil(tokens / kda_checkpoint_interval)\ntotal_bytes = mla_kv_bytes + optional_kda_checkpoint_bytes",
+          "mla_kv_bytes = tokens * sequences * full_attention_layers * (kv_lora_rank + qk_rope_head_dim) * precision_bytes\nkda_checkpoint_count = interval_is_infinity ? 1 : ceil(tokens / kda_checkpoint_interval)\ntotal_bytes = mla_kv_bytes + optional_kda_checkpoint_bytes",
         formulaRows,
         note: includeLinearAttentionState
           ? "Includes the 24-layer token-addressable MLA latent cache and retained BF16-convolution/FP32-recurrent KDA checkpoints. Active, ping-pong, and speculative runtime buffers are excluded."
@@ -509,13 +543,13 @@
           ],
           [
             "KDA checkpoint interval",
-            kdaCheckpointInterval,
-            "Number of tokens represented by each retained KDA checkpoint.",
+            formatKdaCheckpointInterval(kdaCheckpointInterval),
+            "The infinity default stores one final checkpoint; otherwise this is the number of tokens represented by each retained checkpoint.",
           ],
           [
             "KDA checkpoints per sequence",
             kdaCheckpointCount,
-            "ceil(tokens / kda_checkpoint_interval), including the final partial interval.",
+            "One when the interval is infinity; otherwise ceil(tokens / kda_checkpoint_interval).",
           ],
           [
             "MLA elements per token",
@@ -960,10 +994,12 @@
       includeDraftKvCache: hasDraftKvCache(model) && toBoolean(input.includeDraftKvCache),
       includeLinearAttentionState: hasLinearAttentionState(model) && toBoolean(input.includeLinearAttentionState),
       kdaCheckpointInterval: hasKdaCheckpointInterval(model)
-        ? toPositiveInteger(
-            input.kdaCheckpointInterval,
-            optionalField(model, "default_kda_checkpoint_interval", 1024),
-          )
+        ? input.kdaCheckpointPolicy === KDA_CHECKPOINT_POLICY_FIXED_INTERVAL
+          ? parseKdaCheckpointInterval(
+              input.kdaCheckpointInterval,
+              defaultKdaCheckpointInterval(model),
+            )
+          : Infinity
         : undefined,
     });
     const cacheGroupsPerSequence = calculateCacheGroups(elementPlan, cachePrecision);
@@ -1289,24 +1325,41 @@
   }
 
   function syncKdaCheckpointControl(root, model) {
-    const control = root.querySelector("[data-kv-kda-checkpoint-control]");
+    const policyControl = root.querySelector("[data-kv-kda-policy-control]");
+    const promptEndRadio = root.querySelector(
+      "[data-kv-input='kdaCheckpointPolicyPromptEnd']",
+    );
+    const fixedIntervalRadio = root.querySelector(
+      "[data-kv-input='kdaCheckpointPolicyFixedInterval']",
+    );
+    const intervalControl = root.querySelector("[data-kv-kda-checkpoint-control]");
     const input = root.querySelector("[data-kv-input='kdaCheckpointInterval']");
     const checkbox = root.querySelector("[data-kv-input='includeLinearAttentionState']");
-    const showCheckpointControl = Boolean(
+    const showPolicyControl = Boolean(
       hasKdaCheckpointInterval(model) && checkbox && checkbox.checked,
     );
-    if (control) control.hidden = !showCheckpointControl;
-    if (!input) return;
+    if (policyControl) policyControl.hidden = !showPolicyControl;
+    if (!promptEndRadio || !fixedIntervalRadio || !input) return;
 
-    if (showCheckpointControl && input.dataset.kvModelId !== model.id) {
-      input.value = optionalField(
-        model,
-        "default_kda_checkpoint_interval",
-        1024,
-      );
+    if (showPolicyControl && input.dataset.kvModelId !== model.id) {
+      promptEndRadio.checked = true;
+      fixedIntervalRadio.checked = false;
+      input.value = "";
       input.dataset.kvModelId = model.id;
     }
-    input.disabled = !showCheckpointControl || !checkbox || !checkbox.checked;
+    if (!showPolicyControl) {
+      promptEndRadio.checked = true;
+      fixedIntervalRadio.checked = false;
+    }
+    if (showPolicyControl && !promptEndRadio.checked && !fixedIntervalRadio.checked) {
+      promptEndRadio.checked = true;
+    }
+
+    const showIntervalControl =
+      showPolicyControl && fixedIntervalRadio.checked;
+    if (intervalControl) intervalControl.hidden = !showIntervalControl;
+    if (!showIntervalControl) input.value = "";
+    input.disabled = !showIntervalControl;
   }
 
   function setCheckboxHelp(root) {
@@ -1329,7 +1382,15 @@
 
   function addInputListeners(inputs, update) {
     Object.values(inputs).forEach((input) => {
-      if (!input || input === inputs.model || input === inputs.modelFamily) return;
+      if (
+        !input ||
+        input === inputs.model ||
+        input === inputs.modelFamily ||
+        input === inputs.kdaCheckpointPolicyPromptEnd ||
+        input === inputs.kdaCheckpointPolicyFixedInterval
+      ) {
+        return;
+      }
       input.addEventListener("input", update);
       input.addEventListener("change", update);
     });
@@ -1349,6 +1410,12 @@
       indexerPrecision: root.querySelector("[data-kv-input='indexerPrecision']"),
       includeDraftKvCache: root.querySelector("[data-kv-input='includeDraftKvCache']"),
       includeLinearAttentionState: root.querySelector("[data-kv-input='includeLinearAttentionState']"),
+      kdaCheckpointPolicyPromptEnd: root.querySelector(
+        "[data-kv-input='kdaCheckpointPolicyPromptEnd']",
+      ),
+      kdaCheckpointPolicyFixedInterval: root.querySelector(
+        "[data-kv-input='kdaCheckpointPolicyFixedInterval']",
+      ),
       kdaCheckpointInterval: root.querySelector("[data-kv-input='kdaCheckpointInterval']"),
     };
 
@@ -1383,10 +1450,16 @@
             indexerPrecision: inputValue(inputs.indexerPrecision, undefined),
             includeDraftKvCache: checkboxValue(inputs.includeDraftKvCache),
             includeLinearAttentionState: checkboxValue(inputs.includeLinearAttentionState),
-            kdaCheckpointInterval: inputValue(
-              inputs.kdaCheckpointInterval,
-              optionalField(model, "default_kda_checkpoint_interval", 1024),
-            ),
+            kdaCheckpointPolicy: checkboxValue(
+              inputs.kdaCheckpointPolicyFixedInterval,
+            )
+              ? KDA_CHECKPOINT_POLICY_FIXED_INTERVAL
+              : "prompt_end",
+            kdaCheckpointInterval: checkboxValue(
+              inputs.kdaCheckpointPolicyFixedInterval,
+            )
+              ? inputValue(inputs.kdaCheckpointInterval, "")
+              : Infinity,
             tensorParallel: 1,
           },
           {
@@ -1424,6 +1497,28 @@
     });
     inputs.model.addEventListener("change", () => {
       syncModelDefaults();
+      update();
+    });
+    inputs.kdaCheckpointPolicyPromptEnd.addEventListener("change", update);
+    inputs.kdaCheckpointPolicyFixedInterval.addEventListener("change", () => {
+      if (
+        inputs.kdaCheckpointPolicyFixedInterval.checked &&
+        inputs.kdaCheckpointInterval.value.trim() === ""
+      ) {
+        inputs.kdaCheckpointInterval.value = String(
+          KDA_CUSTOM_INTERVAL_DEFAULT,
+        );
+      }
+      update();
+    });
+    inputs.kdaCheckpointInterval.addEventListener("blur", () => {
+      const interval = parseKdaCheckpointInterval(
+        inputs.kdaCheckpointInterval.value,
+        defaultKdaCheckpointInterval(selectedModel()),
+      );
+      inputs.kdaCheckpointInterval.value = Number.isFinite(interval)
+        ? String(interval)
+        : "";
       update();
     });
     addInputListeners(inputs, update);

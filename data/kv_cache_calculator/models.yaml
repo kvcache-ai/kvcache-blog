@@ -204,7 +204,7 @@ models:
       kda_conv_state_bytes_per_element: 2
       kda_recurrent_state_bytes_per_element: 4
       default_include_linear_attention_state: true
-      default_kda_checkpoint_interval: 1024
+      default_kda_checkpoint_interval: "infinity"
   - id: kimi-k2.5
     label: "Kimi K2.5"
     family: "Kimi"
