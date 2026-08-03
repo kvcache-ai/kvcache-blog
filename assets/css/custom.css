@@ -13,7 +13,7 @@ article main > h1 {
   line-height: 1.25;
 }
 
-/* Body: override lg:prose-xl (20px / 1.8) → LMSYS 16px / 1.625 */
+/* Body: override lg:prose-xl (20px / 1.8) → 16px / 1.625 */
 .prose,
 .lg\:prose-xl {
   font-size: 1rem;
@@ -56,4 +56,136 @@ article main > h1 {
   font-size: 1rem;
   font-weight: 700;
   line-height: 1.25;
+}
+
+/* —— Blog TOC (left rail) —— */
+.hb-toc--blog {
+  order: 0;
+  width: 250px;
+  flex-shrink: 0;
+  align-self: flex-start;
+  position: sticky;
+  top: 6rem; /* below site header */
+  max-height: calc(100vh - 6rem - env(safe-area-inset-bottom, 0px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain; /* wheel over TOC doesn't scroll the page */
+  border-right: 1px solid rgba(8, 12, 38, 0.11);
+  padding: 2px 16px 0 12px;
+  margin-left: 8px;
+  box-sizing: border-box;
+}
+
+/* Theme .hb-scrollbar adds 1rem padding + stable gutter — reclaim that width for text */
+.hb-toc--blog .hb-toc-inner {
+  position: static;
+  width: 100%;
+  max-height: none;
+  overflow: visible;
+  box-sizing: border-box;
+  padding: 0.5rem 0 0;
+  scrollbar-gutter: auto;
+}
+
+.hb-toc-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: rgb(100, 104, 122);
+  text-decoration: none;
+  margin-bottom: 28px;
+  transition: color 0.15s;
+}
+
+.hb-toc-back:hover {
+  color: rgb(8, 12, 38);
+}
+
+.hb-toc-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(32, 38, 71, 0.55);
+  margin: 0 0 14px;
+}
+
+.hb-toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.hb-toc-item {
+  margin-bottom: 2px;
+}
+
+.hb-toc-h3 {
+  padding-left: 12px;
+}
+
+.hb-toc-h4 {
+  padding-left: 24px;
+}
+
+.hb-toc-link {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: rgba(32, 38, 71, 0.7);
+  text-decoration: none;
+  padding: 5px 0;
+  overflow-wrap: break-word;
+  word-break: normal;
+  transition: color 0.15s;
+}
+
+.hb-toc-link:hover {
+  color: rgb(8, 12, 38);
+}
+
+.hb-toc-link.active {
+  color: rgb(37, 99, 235); /* site primary-600 */
+  font-weight: 500;
+}
+
+/* Breathing room between left TOC and article */
+.hb-toc--blog + article > main {
+  padding-left: 2.5rem;
+}
+
+@media (max-width: 1279px) {
+  .hb-toc--blog {
+    display: none;
+  }
+
+  .hb-toc--blog + article > main {
+    padding-left: 1.5rem;
+  }
+}
+
+.dark .hb-toc--blog {
+  border-right-color: rgba(255, 255, 255, 0.12);
+}
+
+.dark .hb-toc-back,
+.dark .hb-toc-label {
+  color: rgba(163, 163, 163);
+}
+
+.dark .hb-toc-back:hover,
+.dark .hb-toc-link:hover {
+  color: rgb(245, 245, 245);
+}
+
+.dark .hb-toc-link {
+  color: rgba(163, 163, 163);
+}
+
+.dark .hb-toc-link.active {
+  color: rgb(96, 165, 250); /* primary-400 */
 }
