@@ -8,6 +8,8 @@ sections:
     content:
       title: 博客
       text: 阅读关于 LLM 推理、优化技术和系统架构的最新文章。
+      # 0 = 显示全部文章（Hugo Blox collection 默认只显示 5 篇）
+      count: 0
       filters:
         folders:
           - blog

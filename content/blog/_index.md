@@ -9,6 +9,8 @@ sections:
     content:
       title: Blog
       text: Explore our latest articles on LLM inference, optimization techniques, and system architecture.
+      # 0 = show all posts (Hugo Blox collection default is 5)
+      count: 0
       filters:
         folders:
           - blog
