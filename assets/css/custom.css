@@ -5,29 +5,55 @@
   content: none;
 }
 
-/* Article headings: lg:prose-xl makes h2–h4 feel oversized relative to body text. */
-.prose :where(h2) {
-  font-size: 1.35em;
+/* Page title (outside .prose) */
+article main > h1 {
+  font-size: clamp(1.875rem, 5vw, 2.25rem); /* 30–36px */
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
 }
 
-.prose :where(h3) {
-  font-size: 1.2em;
+/* Body: override lg:prose-xl (20px / 1.8) → LMSYS 16px / 1.625 */
+.prose,
+.lg\:prose-xl {
+  font-size: 1rem;
+  line-height: 1.625;
 }
 
-.prose :where(h4) {
-  font-size: 1.1em;
+@media (max-width: 767px) {
+  .prose,
+  .lg\:prose-xl {
+    font-size: 0.9375rem; /* 15px */
+  }
 }
 
-@media (min-width: 1024px) {
-  .lg\:prose-xl :where(h2) {
-    font-size: 1.4em; /* was 1.8em */
-  }
+/* Section headings — absolute rem sizes (not em of enlarged prose) */
+.prose :where(h1),
+.lg\:prose-xl :where(h1) {
+  font-size: 1.875rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
 
-  .lg\:prose-xl :where(h3) {
-    font-size: 1.25em; /* was 1.5em */
-  }
+.prose :where(h2),
+.lg\:prose-xl :where(h2) {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+}
 
-  .lg\:prose-xl :where(h4) {
-    font-size: 1.1em;
-  }
+.prose :where(h3),
+.lg\:prose-xl :where(h3) {
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.prose :where(h4),
+.lg\:prose-xl :where(h4) {
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.25;
 }
