@@ -14,6 +14,9 @@ draft: false
 showathome: true
 commentable: false
 home_weight: 202607150
+image:
+  preview_only: true
+  alt_text: "Mooncake SSD Offloading Architecture"
 
 ---
 
@@ -41,7 +44,7 @@ Even more appealingly, KV cache hit rate translates nonlinearly into prefill spe
 Motivated by this observation, we built SSD offloading support directly into Mooncake Store. As shown in the figure below, Mooncake organizes local SSDs across serving nodes into a distributed KV cache pool, just as it already does for DRAM. DRAM remains the low-latency serving tier for hot data, while the larger, lower-cost SSD tier extends KV cache lifetime. A master coordinates the global metadata of all replicas across both tiers, allowing any compute node to transparently discover and reuse KV blocks stored on another node’s local SSD.
 
 <center>
-<img src="store-arch.png"
+<img src="featured.png"
      alt="Mooncake Store architecture with DRAM and SSD tiered KV cache pool"
      style="width:70%; max-width:1100px"/>
 </center>

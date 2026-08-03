@@ -16,6 +16,10 @@ commentable: false
 draft: false
 showathome: true
 home_weight: 202605290
+
+image:
+  preview_only: true
+  alt_text: "Same local workstation runs LoRA SFT and SGLang+KT serving with the trained adapter"
 ---
 
 Previously, we published a guide on using [KTransformers, LLaMA-Factory, and SGLang](https://kvcache.ai/blog/ktransformers-llamafactory-fine-tuning/) for low-cost local fine-tuning and inference. This post does not replace it; it focuses on what changed with KT-FT v0.6.1 and how the post-v0.6.1 serving work closes the end-to-end loop.
@@ -23,7 +27,7 @@ Previously, we published a guide on using [KTransformers, LLaMA-Factory, and SGL
 The goal is no longer only to run MoE SFT locally. It is to connect the whole path: fit MoE SFT on local hardware, carry the trained adapter into SGLang, and evaluate it through an OpenAI-compatible serving API. MoE training has two bottlenecks—making the job fit (GPU for attention, CPU for experts) and making the trained adapter usable in a real serving stack. v0.6.1 targets both while keeping the LLaMA-Factory training surface unchanged.
 
 <center>
-<img src="local-inference-to-local-finetune.png"
+<img src="featured.png"
      alt="Same local workstation runs LoRA SFT and SGLang+KT serving with the trained adapter"
      style="width:95%; max-width:1100px"/>
 </center>

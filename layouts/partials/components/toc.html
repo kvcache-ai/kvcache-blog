@@ -1,0 +1,144 @@
+{{/* Table of Contents — left rail on blog, theme default order elsewhere */}}
+
+{{- $toc := .Params.toc | default true -}}
+{{- $is_blog := eq .Section "blog" -}}
+{{- $on_this_page := T "on_this_page" -}}
+{{- $edit_this_page := T "edit_page" -}}
+{{- $blog_home := site.GetPage "/blog" -}}
+
+{{- $nav_class := "hb-toc hidden w-64 shrink-0 xl:block print:hidden" -}}
+{{- if $is_blog -}}
+  {{- $nav_class = printf "%s hb-toc--blog" $nav_class -}}
+{{- else -}}
+  {{- $nav_class = printf "%s order-last px-4" $nav_class -}}
+{{- end -}}
+
+<nav class="{{ $nav_class }}" aria-label="table of contents">
+  {{ partial "functions/get_hook" (dict "hook" "toc-start" "context" .) }}
+  {{- if $toc }}
+  <div class="hb-toc-inner hb-scrollbar{{ if not $is_blog }} sticky top-24 overflow-y-auto max-h-[calc(100vh-6rem-env(safe-area-inset-bottom))]{{ end }}">
+    {{- if and $is_blog $blog_home -}}
+    <a class="hb-toc-back" href="{{ $blog_home.RelPermalink }}">
+      <span aria-hidden="true">‹</span>
+      {{ if strings.HasPrefix .Lang "zh" }}返回博客{{ else }}Back to Blog{{ end }}
+    </a>
+    {{- end -}}
+
+    {{- with .Fragments.Headings -}}
+    <p class="hb-toc-label">
+      {{- if $is_blog -}}
+        {{- if strings.HasPrefix $.Lang "zh" -}}目录{{- else -}}Contents{{- end -}}
+      {{- else -}}
+        {{ $on_this_page }}
+      {{- end -}}
+    </p>
+    <ul class="hb-toc-list">
+      {{- range . -}}
+        {{- with .Headings -}}{{ template "toc-headings" (dict "headings" . "level" 0) }}{{- end -}}
+      {{- end -}}
+    </ul>
+    {{- end -}}
+
+    {{- if and (not $is_blog) site.Params.features.repository.url .Params.editable -}}
+    {{- $class := "" -}}
+    {{- if .Fragments.Headings -}}
+      {{- $class = "mt-8 border-t dark:border-neutral-700 pt-8" -}}
+    {{- end -}}
+    <div class="{{ $class }} sticky bottom-0 flex flex-col items-start gap-2 pb-8">
+      {{ $edit_url := site.Params.features.repository.url | default "" }}
+      {{ $branch := site.Params.features.repository.branch | default "main" }}
+      {{ $dir := site.Params.features.repository.content_dir | default "content" }}
+      {{- with .File -}}{{ $edit_url = urls.JoinPath $edit_url "edit" $branch $dir (replace .Path "\\" "/") }}{{- end -}}
+      {{- with .Params.edit_url -}}{{ $edit_url = . }}{{- end -}}
+    </div>
+    {{- end -}}
+
+    {{ partial "functions/get_hook" (dict "hook" "toc-end" "context" .) }}
+  </div>
+  {{ end -}}
+</nav>
+
+{{- if and $toc $is_blog }}
+<script>
+(() => {
+  const nav = document.querySelector(".hb-toc--blog");
+  if (!nav) return;
+
+  /* Keep page scroll and TOC scroll independent while hovering the rail */
+  nav.addEventListener(
+    "wheel",
+    (e) => {
+      const canScroll = nav.scrollHeight > nav.clientHeight + 1;
+      if (!canScroll) {
+        e.preventDefault();
+        return;
+      }
+      const atTop = nav.scrollTop <= 0;
+      const atBottom = nav.scrollTop + nav.clientHeight >= nav.scrollHeight - 1;
+      if ((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom)) {
+        e.preventDefault();
+      }
+    },
+    { passive: false }
+  );
+
+  const links = [...nav.querySelectorAll(".hb-toc-link")];
+  if (!links.length) return;
+
+  const targets = links
+    .map((a) => {
+      const id = decodeURIComponent(a.getAttribute("href") || "").replace(/^#/, "");
+      const el = id && document.getElementById(id);
+      return el ? { a, el } : null;
+    })
+    .filter(Boolean);
+
+  if (!targets.length) return;
+
+  const setActive = (active) => {
+    links.forEach((a) => a.classList.toggle("active", a === active));
+  };
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      const visible = entries
+        .filter((e) => e.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+      if (!visible.length) return;
+      const match = targets.find((t) => t.el === visible[0].target);
+      if (match) setActive(match.a);
+    },
+    { rootMargin: "-20% 0px -70% 0px", threshold: [0, 1] }
+  );
+
+  targets.forEach(({ el }) => observer.observe(el));
+})();
+</script>
+{{- end -}}
+
+{{/* Render Headings */}}
+{{- define "toc-headings" -}}
+  {{- $headings := .headings -}}
+  {{- $level := .level -}}
+  {{- if ge $level 5 -}}
+    {{ return }}
+  {{- end -}}
+
+  {{- $item_class := "hb-toc-item" -}}
+  {{- if eq $level 1 -}}{{- $item_class = "hb-toc-item hb-toc-h3" -}}{{- end -}}
+  {{- if ge $level 2 -}}{{- $item_class = "hb-toc-item hb-toc-h4" -}}{{- end -}}
+
+  {{- range $headings }}
+    {{- if .Title }}
+      <li class="{{ $item_class }}">
+        <a class="hb-toc-link" href="#{{ anchorize .ID }}">
+          {{- .Title | plainify | htmlUnescape -}}
+        </a>
+      </li>
+    {{- end -}}
+
+    {{- with .Headings -}}
+      {{ template "toc-headings" (dict "headings" . "level" (add $level 1)) }}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}

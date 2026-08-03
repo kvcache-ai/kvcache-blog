@@ -1,98 +1,184 @@
 {{ $item := .item }}
 {{ if and $item $item.Title $item.RelPermalink }}
 
-<div class="p-4 border top-item blog-card-shell">
-  <h2 class="text-lg font-semibold leading-snug tracking-tight mt-2">
-    <a href="{{ $item.RelPermalink }}">
-    <span class="bg-gradient-to-r from-primary-200 to-primary-100 bg-[length:0px_10px] bg-left-bottom bg-no-repeat transition-[background-size] duration-500 hover:bg-[length:100%_3px] group-hover:bg-[length:100%_10px] dark:from-primary-800 dark:to-primary-900">
-      {{- $item.Title -}}
-    </span></a>
-  </h2>
+{{ $resource := partial "functions/get_featured_image.html" $item }}
+{{ $anchor := $item.Params.image.focal_point | default "Center" }}
 
-  <!-- date and author -->
-  <div class="mt-2 text-xs opacity-70 flex items-center gap-3">
-    {{ with $item.Date }}
-      <span class="flex items-center gap-1">
-        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-        </svg>
-        {{ if $item.Params.dateshown }}
-          {{ $item.Params.dateshown }}
-        {{ else }}
-          {{ .Format "Jan 2, 2006" }}
-        {{ end }}
-      </span>
-    {{ end }}
-
-    {{ with $item.Params.authors }}
-      <span class="flex items-center gap-1">
-        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
-        </svg>
-        {{ delimit . ", " }}
-      </span>
-    {{ end }}
-  </div>
-
-  <!-- summary -->
-  <hr class="mt-2" />
-    <p class="mt-2 line-clamp-5 text-sm">
-      <a href="{{ $item.RelPermalink }}">
-        {{ ($item.Params.summary | default $item.Summary) | plainify | htmlUnescape | chomp -}}
-      </a>
-    </p>
-
-  <!-- tags -->
-  {{ with $item.Params.tags }}
-    <div class="mt-2 flex flex-wrap gap-1">
-      {{ range . }}
-        <span class="text-xs px-2 py-1 rounded-md blog-card-tag">
-          {{ . }}
-        </span>
-      {{ end }}
-    </div>
+<a href="{{ $item.RelPermalink }}" class="blog-item-full top-item">
+  {{ with $resource }}
+    {{ $image := .Fill (printf "400x296 %s" $anchor) }}
+    {{ if ne $image.MediaType.SubType "gif" }}{{ $image = $image.Process "webp" }}{{ end }}
+    <img
+      class="blog-thumb-lg"
+      loading="lazy"
+      src="{{ $image.RelPermalink }}"
+      width="{{ $image.Width }}"
+      height="{{ $image.Height }}"
+      alt="{{ with $item.Params.image.alt_text }}{{ . }}{{ else }}{{ $item.Title | plainify }}{{ end }}">
+  {{ else }}
+    <div class="blog-thumb-lg-ph" aria-hidden="true"></div>
   {{ end }}
 
-</div>
+  <div class="blog-item-info">
+    <h2 class="blog-item-title">{{ $item.Title }}</h2>
+
+    <p class="blog-item-excerpt">
+      {{ ($item.Params.summary | default $item.Summary) | plainify | htmlUnescape | chomp -}}
+    </p>
+
+    <div class="blog-item-meta">
+      {{ with $item.Date }}
+        <span>
+          {{ if $item.Params.dateshown }}
+            {{ $item.Params.dateshown }}
+          {{ else }}
+            {{ .Format "Jan 2, 2006" }}
+          {{ end }}
+        </span>
+      {{ end }}
+
+      {{ with $item.Params.authors }}
+        <span>{{ delimit . ", " }}</span>
+      {{ end }}
+    </div>
+
+    {{ with $item.Params.tags }}
+      <div class="blog-item-tags">
+        {{ range . }}
+          <span class="blog-card-tag">{{ . }}</span>
+        {{ end }}
+      </div>
+    {{ end }}
+  </div>
+</a>
 
 <style>
   .top-item {
     width: min(100%, 64rem);
-    margin-bottom: 1rem;
+    margin-bottom: 0.75rem;
     margin-left: auto;
     margin-right: auto;
-    border-radius: 0.5rem;
     box-sizing: border-box;
   }
   .top-item:last-child {
     margin-bottom: 0;
   }
-  .blog-card-shell {
+
+  .blog-item-full {
+    display: flex;
+    gap: 1.25rem;
+    padding: 1rem;
+    border-radius: 0.75rem;
+    text-decoration: none;
+    color: inherit;
     background: #f8fafc;
-    color: #0f172a;
-    border-color: #dbe4ee;
+    border: 1px solid #dbe4ee;
     transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
   }
-  .blog-card-shell:hover {
+  .blog-item-full:hover {
     background: #f0f9ff;
     border-color: #bae6fd;
     transform: translateY(-1px);
     box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
   }
-  .blog-card-shell a {
-    color: inherit;
+
+  .blog-thumb-lg,
+  .blog-thumb-lg-ph {
+    width: 200px;
+    height: 148px;
+    border-radius: 0.5rem;
+    flex-shrink: 0;
+    align-self: center;
+  }
+  .blog-thumb-lg {
+    object-fit: contain;
+    background: #fff;
+    display: block;
+  }
+  .blog-thumb-lg-ph {
+    background: #e5e7eb;
+  }
+
+  .blog-item-info {
+    flex: 1 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0.5rem 0.25rem;
+  }
+
+  .blog-item-title {
+    font-size: 1.125rem;
+    font-weight: 600;
+    line-height: 1.375;
+    letter-spacing: -0.01em;
+    margin: 0 0 0.75rem;
+    color: #0f172a;
+  }
+
+  .blog-item-excerpt {
+    font-size: 0.875rem;
+    line-height: 1.625;
+    color: rgba(15, 23, 42, 0.62);
+    margin: 0 0 0.75rem;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+  }
+
+  .blog-item-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    margin-top: auto;
+  }
+  .blog-item-meta span {
+    font-size: 0.75rem;
+    color: rgba(15, 23, 42, 0.4);
+  }
+
+  .blog-item-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin-top: 0.5rem;
   }
   .blog-card-tag {
+    font-size: 0.75rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
     background: #e0f2fe;
     color: #0c4a6e;
   }
 
-  .line-clamp-5 {
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 5
+  @media (max-width: 760px) {
+    .blog-thumb-lg,
+    .blog-thumb-lg-ph {
+      width: 90px;
+      height: 90px;
+    }
+    .blog-item-full {
+      gap: 1rem;
+    }
+    .blog-item-info {
+      padding: 0;
+    }
+    .blog-item-title {
+      font-size: 0.9375rem;
+      margin-bottom: 0.375rem;
+    }
+    .blog-item-excerpt {
+      display: none;
+    }
+    .blog-item-meta {
+      gap: 0.5rem;
+      flex-direction: column;
+    }
+    .blog-item-tags {
+      display: none;
+    }
   }
-
 </style>
 {{ end }}
