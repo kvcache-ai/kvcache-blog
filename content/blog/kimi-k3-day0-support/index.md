@@ -1,7 +1,7 @@
 ---
 title: "When Prefix Cache Meets KDA: How Mooncake Enabled Day-0 Support for Kimi K3"
-summary: "How SGLang, vLLM, and TokenSpeed adapted cache management for Kimi K3, and how Mooncake extended KDA-aware state reuse across distributed inference workers."
-date: 2026-07-31
+summary: "On July 27, Moonshot AI officially open-sourced Kimi K3. Mooncake has been part of the journey across multiple Kimi generations, providing stable and efficient infrastructure for large-scale inference through its disaggregated inference architecture. This time, Mooncake, together with SGLang, vLLM, and TokenSpeed, completed Day-0 integration support on the day K3 was open-sourced."
+date: 2026-08-03
 authors:
   - Mooncake community
 tags:
@@ -11,296 +11,314 @@ tags:
   - vLLM
   - TokenSpeed
   - KV Cache
-  - Disaggregated Inference
+  - LLM
 
 draft: false
 showathome: true
 commentable: false
-home_weight: 202607310
+home_weight: 202608030
 image:
+  preview_only: true
   alt_text: "Kimi K3 hybrid KDA and MLA architecture"
 ---
 
-On July 27, Moonshot AI released the open weights for Kimi K3, a 2.8-trillion-parameter Mixture-of-Experts (MoE) model that activates 16 of 896 experts per token. K3 is the first open model in the 3-trillion-parameter class.
+On July 27, Moonshot AI officially open-sourced its next-generation flagship model, **Kimi K3**. With a total parameter count of **2.8 trillion**, K3 adopts a highly sparse Mixture-of-Experts (MoE) architecture, where only 16 out of 896 experts are activated for each token. It is currently one of the largest open-weight models in the world by parameter scale.
 
-Beyond scale, K3 introduces several architectural changes. Its attention stack combines **Kimi Delta Attention (KDA)**, a recurrent linear-attention mechanism, with **Gated Multi-head Latent Attention (Gated MLA)**, referred to below as MLA. This hybrid design supports a **1-million-token context window** while reducing the memory cost of long-context inference. K3 also provides native vision capabilities and reports strong results across coding, agentic, reasoning, and multimodal benchmarks.
+Beyond its massive parameter size, K3 also introduces comprehensive upgrades to its model architecture. It features a new linear attention mechanism, **Kimi Delta Attention (KDA)**, which works together with MLA (Multi-head Latent Attention) to form a hybrid attention architecture. This design enables native support for a **1 million-token context window** while balancing long-context reasoning efficiency and model performance. Meanwhile, K3 natively supports vision understanding and achieves leading performance among open models across multiple benchmarks, including coding, agent tasks, and complex reasoning.
 
-**Mooncake** has supported multiple generations of Kimi through its disaggregated inference infrastructure. For K3, Mooncake worked with **SGLang**, **vLLM**, and **TokenSpeed** on Day-0 integration covering cross-instance key-value (KV) cache reuse, prefill–decode (PD) disaggregation, and encoder–prefill–decode (EPD) disaggregation. In multi-turn conversations and agentic workloads, these mechanisms reduce repeated prefill computation and extend cache reuse beyond a single worker.
+Mooncake has been part of the journey across multiple Kimi generations, providing stable and efficient infrastructure for large-scale inference through its disaggregated inference architecture. As a key partner in the K3 inference ecosystem, Mooncake, together with SGLang, vLLM, and TokenSpeed, completed Day-0 integration support on the day K3 was open-sourced, covering critical areas such as cross-instance KV Cache reuse, PD disaggregation, and EPD disaggregation. Users can deploy K3 on top of Mooncake and gain large-scale distributed inference capabilities out of the box. In scenarios such as multi-turn conversations and agentic workloads, Mooncake significantly reduces redundant computation overhead and helps fully unlock K3’s long-context capabilities.
 
-The systems implications of K3 are not primarily about model scale. Its KDA–MLA hybrid attention changes the cache abstraction itself: the runtime must manage token-level MLA KV together with mutable KDA recurrent and convolution state. Prefix caching and disaggregated serving therefore require recovery and transfer semantics that go beyond a conventional KV cache.
+However, the impact of K3 goes far beyond simply making the model “larger.” Compared with traditional Transformers, the KDA-based hybrid attention mechanism introduced in K3 fundamentally changes the nature of caching. The system must manage not only traditional KV Cache, but also new model states such as Recurrent States. As a result, conventional designs for Prefix Cache reuse and disaggregated inference architectures must evolve accordingly.
 
-This article examines how SGLang, vLLM, and TokenSpeed adapt their cache-management paths to Kimi K3, and how Mooncake extends those mechanisms across workers through distributed storage and data movement.
+In this article, we will introduce how SGLang, vLLM, and TokenSpeed adapt to Kimi K3’s new caching semantics, and how Mooncake works together with these frameworks to provide complete distributed inference capabilities for K3.
 
-## KDA: A New Cache Abstraction for Kimi K3
+## KDA: A New Attention Architecture for Kimi K3
 
-For inference systems, the most consequential change in Kimi K3 is its hybrid KDA–MLA attention architecture rather than its parameter count.
+For inference systems, the changes brought by Kimi K3 go far beyond simply increasing the model’s parameter scale. More importantly, K3 introduces a fundamentally new hybrid attention architecture that **combines KDA (Kimi Delta Attention) with MLA (Multi-head Latent Attention)**.
 
-The open K3 configuration contains 93 decoder layers: **69 KDA layers interleaved with 24 MLA layers**, at roughly a 3:1 ratio. The runtime therefore maintains two distinct representations of historical context rather than one uniform attention cache.
+In the open-sourced K3 configuration, the model contains a total of 93 decoder layers, among which **69 layers adopt KDA and 24 layers adopt MLA**. These layers are generally organized in a pattern of three consecutive KDA layers followed by one MLA layer. Therefore, unlike traditional models where all layers rely on a unified attention mechanism, K3 simultaneously employs two fundamentally different approaches for representing and maintaining historical information inside the model.
 
-![Kimi K3 hybrid KDA and MLA architecture](featured.png)
+![Kimi K3 hybrid KDA and MLA architecture](kimi-k3-arch.png)
 
 {{< image-source url="https://www.kimi.com/blog/kimi-k3" >}}
 
-MLA retains token-level latent KV representations. Its cache therefore has the familiar property of a Transformer KV cache: storage grows with context length, with a representation associated with each historical token.
+MLA follows the latent attention design: each token produces its own latent KV, so the cache still grows with context length, as in a traditional Transformer KV Cache.
 
-**KDA** uses a different state model. Rather than retaining keys and values for every historical token, it folds history into a fixed-size recurrent state using gated decay and delta-style updates. KDA also maintains a short convolution state for recent tokens.
+The fundamental change comes from **KDA**. Instead of storing every historical Key and Value, it recurrently compresses history into a fixed-size state. Per-channel decay factors and Delta Correction control how new information updates this state, while a fixed-length Convolution Window preserves recent local context.
 
-Each KDA layer therefore maintains two forms of state:
+Therefore, for each KDA layer, the historical information that needs to be continuously maintained is no longer a long sequence of KV pairs, but two types of states:
 
-- **Recurrent state:** a fixed-size state updated as tokens are processed.
-- **Convolution state:** a fixed-length local history used by the causal convolution.
+- **Recurrent state:** the recurrently updated historical state;
+- **Convolution window:** the local window containing the most recent tokens.
 
-Both are updated in place. The working KDA state for each active sequence remains fixed in size regardless of context length, which reduces the memory cost of long-context decoding. Prefix caching introduces a separate cost, however: every retained recovery boundary requires another snapshot of that state.
+As new tokens arrive, both states are updated in place rather than continuously growing like traditional KV Cache. The key advantage of this design is that the amount of cache required during inference no longer scales linearly with the context length. Even with million-token contexts, the recurrent states maintained by KDA layers remain at a fixed size, significantly reducing the memory pressure of long-context inference.
 
-## **New Challenges for Inference Systems**
+## What New Challenges Does KDA Introduce for Inference Systems?
 
-### **Prefix Caching × KDA**
+### When Prefix Cache Meets KDA
 
-KDA reduces long-context cache growth, but it changes the semantics of cache reuse.
+KDA substantially reduces cache overhead during long-context inference, but it also fundamentally changes the semantics of caching.
 
-In a conventional Transformer, an inference engine can match the longest common token prefix, restore the corresponding KV cache, and skip the repeated prefix prefill. Token-prefix matching and cache recovery are therefore closely aligned.
+In a traditional Transformer, each token has its own independent Key and Value. An inference framework can use structures such as a Radix Tree to identify the longest common prefix across requests, reuse the corresponding KV Cache, and skip redundant Prefill computation. In this setting, Prefix Cache reuse is almost equivalent to KV Cache reuse: once a token prefix matches, the cache associated with that prefix can be restored directly.
 
-KDA breaks this equivalence. Kimi K3 stores token-level latent KV for its MLA layers, while each KDA layer maintains a recurrent state together with a short convolution state. A reusable prefix must account for both the token-level MLA history and the mutable KDA state.
+KDA breaks this equivalence. In Kimi K3, MLA layers still maintain token-level latent KV, while KDA layers maintain a Recurrent State produced by processing the entire prefix sequentially. As a result, two fundamentally different forms of cache coexist within the same model.
 
-A KDA state also cannot be truncated to an arbitrary earlier token boundary. If a request has processed 10K tokens and only the 10K KDA state was saved, that state cannot resume an 8K prefix because it already contains information from tokens 8K–10K. The missing 8K state cannot be recovered by running the recurrence backward.
+More importantly, a KDA state cannot be truncated arbitrarily in the way a KV Cache can. Suppose a request has processed 10,000 tokens and the system stores a KDA state only at the 10,000-token position. If another request shares only the first 8,000 tokens, it cannot resume from that state at the 8,000-token boundary. The stored state has already incorporated information from the subsequent 2,000 tokens, and there is no way to reverse the recurrence and reconstruct the earlier state.
 
-A token-prefix hit is therefore insufficient on its own. MLA KV and a complete KDA checkpoint must be available at the same recoverable boundary. If MLA matches farther than the nearest KDA checkpoint, the engine must restore that checkpoint and replay the uncovered suffix.
+Therefore, **a token-level prefix match does not necessarily imply that the corresponding KDA cache can be restored**. To guarantee that restored execution is equivalent to uninterrupted execution, the MLA KV and the complete KDA state must both be available and aligned to the same prefix boundary. This means that a KDA-aware Prefix Cache must explicitly store checkpoints at selected prefix boundaries. Even when the MLA KV matches a longer prefix, the system must fall back to the nearest valid boundary if the corresponding KDA checkpoint is unavailable, and recompute everything after that point.
 
-For Kimi K3, prefix caching is no longer KV reuse alone; it is the coordinated recovery of MLA KV and KDA state at a consistent prefix boundary.
+For Kimi K3, Prefix Cache reuse is therefore no longer a matter of storing and restoring a segment of KV Cache. The system must jointly manage MLA KV and KDA Recurrent States, while ensuring that both can be restored consistently at the same prefix boundary.
 
-A full KDA checkpoint is much larger than a conventional token-level cache entry. With a tensor parallelism (TP) degree of 8, it occupies about 53.6 MiB per GPU, or 428.6 MiB when summed across all eight ranks. Retaining one checkpoint every 128 tokens would require more than 3 TiB of aggregate storage for a 1-million-token sequence. Even at a 10K-token interval, the aggregate checkpoint footprint would remain about 40 GiB.
+DeepSeek V4’s SWA (Sliding Window Attention) presents a similar issue, but its solution is relatively straightforward: the system can store a checkpoint at a fixed interval, such as every 128 tokens. For KDA, however, this strategy is prohibitively expensive because each checkpoint is much larger. According to the [KV Cache Size Calculator](https://kvcache.ai/tools/kv-cache-calculator/), a single KDA checkpoint introduces approximately 0.4 GiB of fixed cache overhead. With a checkpoint interval of 128 tokens, a request with a 1-million-token context would require roughly 3 TB of storage for KDA states alone. Even with a much coarser interval of 10,000 tokens, the same request would still require approximately 40 GB of additional cache.
 
 ![Kimi K3 KV cache and KDA checkpoint size calculation](kda-checkpoint-size.png)
 
-Increasing the interval reduces storage but makes recovery coarser: prefix reuse can resume only from the nearest retained KDA checkpoint.
+Increasing the checkpoint interval, however, introduces another problem. Prefix Cache reuse can only extend to the nearest recoverable KDA checkpoint. The sparser the checkpoints are, the shorter the prefix that can actually be reused.
 
-Consider a 10K-token checkpoint interval:
+Assume that checkpoints are stored every 10,000 tokens:
 
-1. Two 20K-token requests share their first 15K tokens. The nearest checkpoint is at 10K, so the engine must replay 10K tokens instead of only the 5K-token unmatched suffix.
-2. Two 910K-token requests share their first 905K tokens. The nearest checkpoint is at 900K, so the engine again replays 10K rather than 5K tokens, despite a nominal prefix hit above 99%.
+1. If two 20,000-token requests share the first 15,000 tokens, the system can only reuse the prefix up to the 10,000-token checkpoint. Instead of computing only the remaining 5,000 tokens, it must recompute 10,000 tokens, effectively doubling the amount of computation.
 
-This pattern is common in agentic workloads, where adjacent turns often share most of a long context and append only a small amount of new content. A modest loss in recoverable-prefix length can therefore produce a much larger increase in replayed tokens.
+2. If two 910,000-token requests share the first 905,000 tokens, the cache reuse ratio still appears very high. However, because the nearest checkpoint is located at 900,000 tokens, the system must again recompute 10,000 tokens rather than the original 5,000 tokens, resulting in the same twofold increase in computation.
 
-KDA cache management must balance checkpoint density against replay cost. Denser checkpoints improve recovery granularity but consume cache capacity; sparser checkpoints save memory but increase suffix replay.
+These are not rare edge cases. In fact, they closely match the typical characteristics of agentic workloads: many interaction rounds, only a small number of new tokens added in each round, and often more than 95% of the context shared between consecutive turns. In such scenarios, even a decline of only a few percentage points in the effective Prefix Cache hit rate can lead to a substantial increase in the number of tokens that must be recomputed.
 
-This checkpoint-capacity trade-off is the central systems challenge for KDA-aware prefix caching.
+KDA cache management therefore presents a fundamental trade-off. Denser checkpoints provide finer-grained recovery and improve the effective Prefix Cache hit rate, but they also cause cache consumption to grow rapidly. Sparser checkpoints reduce storage overhead, but require the system to recompute a longer suffix after every cache hit, weakening the performance benefits of caching.
 
-### **Disaggregated Inference × KDA**
+This is the core challenge that must be addressed to support efficient Prefix Cache reuse for Kimi K3.
 
-KDA also changes cache management across workers. Conventional cross-instance reuse and PD disaggregation are usually organized around KV blocks. Kimi K3 instead exposes two cache families: token- or block-addressable MLA KV and KDA state that is recoverable only at retained prefix boundaries. Cross-instance reuse must identify a boundary at which both are present and consistent.
+### When Disaggregated Inference Meets KDA
 
-The same constraint applies to PD disaggregation. Prefill and decode workers must exchange MLA latent history, KDA recurrent and convolution state, and the metadata needed to reconstruct them. Treating each state type as a separate transport protocol would push model-specific logic into the communication layer; the more scalable abstraction is model-state transfer rather than KV-only transfer.
+The changes introduced by KDA affect not only Prefix Cache reuse within a single instance, but also cache management in disaggregated inference architectures. In traditional Transformers, both cross-instance cache reuse and Prefill–Decode disaggregation are built around the unified abstraction of KV Blocks. As long as the token prefixes match, the corresponding KV Cache can be reused or transferred directly. For Kimi K3, however, the cache now consists of two different types of state: MLA KV and KDA State. MLA KV can still be managed at token or block granularity, while a KDA State can only be restored from a checkpoint associated with a specific prefix boundary. As a result, cross-instance reuse is no longer simply a matter of finding the longest matching token prefix. The system must ensure that both MLA KV and KDA State are available and consistent at the same recovery point, rather than freely combining cache data from different sources.
 
-Multimodal inference extends the pipeline to EPD. In addition to prefill state, the system must move visual embeddings from the encoder to the prefill worker. Kimi K3 therefore benefits from a common data plane that can move heterogeneous model state across execution stages.
+The same issue also affects Prefill–Decode disaggregation. What must be transferred between the Prefill and Decode stages is no longer just a collection of KV Blocks, but a set of heterogeneous model states, including MLA latent history and KDA Recurrent States. Designing a separate transfer protocol for each state type would not only increase system complexity, but also expose model-specific architectural details to the scheduling and communication layers. Therefore, Prefill–Decode disaggregation must evolve from **KV Cache transfer** into a more general abstraction of **model state transfer**.
 
-## **SGLang × Mooncake: A KDA-Aware Distributed Radix Tree**
+In multimodal workloads, the disaggregated pipeline expands further into Encoder–Prefill–Decode (EPD). The system must transfer not only the MLA and KDA states produced during Prefill, but also the visual embeddings generated by the Encoder. Building a unified data plane that can efficiently move different types of model state across different execution stages therefore becomes a new challenge for disaggregated Kimi K3 inference.
 
-SGLang extends its radix tree with KDA-aware checkpoints. The tree still matches token prefixes, but the longest token match is not necessarily a valid recovery point: MLA KV and KDA state must be available at the same boundary. After a prefix match, SGLang selects the nearest boundary at which the KDA checkpoint and corresponding MLA KV are both present, restores them into the request, and replays the remaining suffix.
+
+## SGLang × Mooncake: A KDA-Aware Radix Tree and Cross-Instance Cache Reuse
+
+To accommodate the changes KDA introduces to Prefix Cache semantics, SGLang extends its existing Radix Tree with a KDA-aware checkpointing mechanism. The Radix Tree still matches token prefixes across requests, but a recoverable position is no longer determined solely by the longest matching token prefix. Instead, both MLA KV and KDA State must be available and consistent at the same prefix boundary.
+
+SGLang therefore maintains sparse KDA checkpoints within the Radix Tree. When a request matches an existing token prefix, the system searches the matched path for the nearest valid checkpoint, restores the corresponding MLA KV and KDA State together, and recomputes the portion not covered by that checkpoint.
+
 
 ![Sparse KDA checkpoints on the SGLang radix tree](sglang-checkpoints.png)
 
 {{< image-source url="https://www.lmsys.org/blog/2026-07-27-kimi-k3-day0-support/" >}}
 
-### **Sparse Checkpoint Management: Balancing Cache Capacity and Replay**
+### Sparse Checkpoint Management: Balancing Cache Cost and Recomputation
 
-SGLang uses sparse checkpoint placement to improve reuse under a fixed state budget. Rather than checkpointing at a uniform interval across the sequence, it favors boundaries that align with execution or are likely to be reused:
+To address the trade-off between checkpoint storage overhead and cache hit rate described above, SGLang adopts a sparse checkpoint management strategy that maximizes the benefits of Prefix Cache reuse under a limited cache budget.
 
-- **Prefill:** checkpoints are taken at aligned chunk boundaries, fitting the existing scheduling flow without adding synchronization solely for checkpoint creation.
-- **Decode:** checkpoints are created at a fixed token interval to trade recovery precision against memory use.
-- **Radix-tree branches:** aligned branch points are prioritized because shared or diverging prefixes are likely future hit points.
+First, for **checkpoint selection**, SGLang does not rely on a simple fixed-interval policy. Instead, it selects higher-value checkpoint locations based on the request execution stage:
 
-If a request diverges in the middle of an edge, SGLang replays from the nearest checkpoint above the fork and places a checkpoint at the aligned branch so later requests can recover there directly.
+* **Prefill stage:** Prefill is typically executed in chunks, so SGLang prioritizes storing checkpoints at chunk boundaries. This aligns checkpoint creation with the existing scheduling flow and avoids introducing additional synchronization overhead solely to preserve intermediate states.
+* **Decode stage:** Because every generated token may become part of a shared prefix for future requests, SGLang creates checkpoints at fixed intervals during Decode, balancing recovery granularity against cache overhead.
+* **Radix Tree branch points:** When multiple requests share a prefix or diverge at a particular position, that position is more likely to become a cache hit point for future requests. SGLang therefore prioritizes retaining checkpoints at these high-reuse-value locations.
 
-SGLang also caps the checkpoint count per radix-tree path and applies least-recently-used (LRU) eviction under memory pressure:
+With this strategy, checkpoints are no longer distributed uniformly across all token positions. Instead, they are concentrated at prefix boundaries that are more likely to be reused.
 
-- Cold checkpoints are reclaimed first.
-- Frequently reused paths retain their checkpoints.
-- New checkpoints displace existing ones only when the state budget and expected reuse justify replacement.
+Second, for **checkpoint budget management**, SGLang must limit the amount of GPU memory consumed by KDA States. Storing too many checkpoints along each Radix Tree path would quickly exhaust cache capacity, even if each individual cache hit provides substantial benefit. SGLang therefore limits the number of checkpoints retained on each path and combines this constraint with an LRU (Least Recently Used) policy to evict lower-value states:
 
-Checkpoint placement therefore becomes an access-pattern-aware cache-allocation problem: state capacity is spent on boundaries with higher expected reuse.
+* Checkpoints that have not been accessed for a long time are reclaimed first.
+* Checkpoints on frequently accessed paths are retained.
+* Newly generated checkpoints replace existing states only when justified by the current cache pressure.
 
-This sparse overlay avoids the memory cost of uniform checkpointing while limiting replay from overly coarse checkpoints.
+In effect, SGLang turns checkpoint management into an access-pattern-aware cache optimization problem. More state budget is allocated to positions with higher value and a greater probability of reuse, while infrequently used states are released promptly.
 
-### **Compressed Checkpoint Storage: Reducing the Cost of Inactive KDA State**
+This sparse checkpointing mechanism avoids the excessive GPU memory overhead of fixed-interval checkpointing, while also reducing the amount of replay caused by checkpoints that are too sparse. As a result, KDA-aware Prefix Cache reuse can scale effectively to long-context and agentic workloads.
 
-SGLang also exposes an optional local INT8 checkpoint pool for cached linear-attention state. Active recurrent state remains in the runtime pool, while inactive checkpoints attached to the radix tree can use a compact representation to increase local prefix-cache capacity.
+### Compressed Checkpoint Storage: Reducing the Residency Cost of Inactive KDA States
 
-This path quantizes the KDA recurrent state—the dominant component of a checkpoint—from FP32 to INT8 using channel-wise quantization parameters. The smaller convolution state remains in BF16. The lossy representation reduces the dominant storage cost of each checkpoint and allows more reusable prefixes to remain in the local cache.
+Building on sparse checkpoint management, SGLang further reduces the storage overhead of KDA States. Not every cached checkpoint is needed for immediate computation, and retaining all states in a high-precision format for extended periods would consume a large amount of GPU memory. SGLang therefore separates the active states used by currently running requests from the cached states stored in the Radix Tree. Active states remain in a runtime state pool, while inactive checkpoints are moved to a separate cache pool and stored in a compressed format.
 
-On a hit, SGLang first restores the checkpoint into a private working slot. The recurrent component is dequantized back to FP32, while the BF16 convolution state is restored without quantization. Subsequent recurrent updates run at the default runtime precision. Quantization is applied only when an inactive checkpoint is stored, and dequantization occurs only when that checkpoint is reused. This optional path is currently local-only and cannot be enabled together with HiCache.
+SGLang currently also provides an optional local checkpoint compression path. It compresses inactive Recurrent States to INT8, trading some restoration accuracy for greater local cache capacity. For the KDA temporal state, which accounts for most of the storage footprint, SGLang computes quantization parameters on a per-channel basis and compresses the state to INT8. The much smaller local window state remains in its original precision. Compared with storing the complete KDA State in BF16, this approach substantially reduces the storage cost of each checkpoint, allowing more reusable prefix states to be retained under the same cache budget.
 
-### **Mutable State Sharing: Reusing KDA State Safely**
+When a request hits a compressed checkpoint, SGLang does not continue execution directly from the compressed representation. Instead, it first restores the checkpoint into a new active-state slot, reconstructs the corresponding local window state, and then resumes computation at normal precision. Because compression occurs only when a checkpoint is stored, and decompression only when that checkpoint is hit, the per-token KDA state update always runs at the original precision. This avoids the accumulation of errors that could otherwise result from repeated quantization and dequantization.
 
-KDA state is mutable: decoding overwrites it in place, whereas a shared prefix-cache entry must remain stable. SGLang separates shared checkpoints from per-request working state with three explicit operations: **copy-on-write, snapshot, and donate**.
+### Mutable State Sharing: Safely Reusing Mutable KDA States in Prefix Cache
 
-**Copy-on-write: restore a shared checkpoint into private state.** On a KDA cache hit, SGLang copies the checkpoint into the request's working slot before the forward pass mutates it. Subsequent updates affect only the private copy.
+KDA States are continuously updated during Decode, while shared states in the Prefix Cache must remain immutable. Unlike MLA KV Cache, which does not change once written, a KDA State cannot be directly shared across multiple requests, because updates from one request could affect the execution of others. To safely reuse KDA States, SGLang separates per-request execution states from shared checkpoints through three mechanisms: Copy-on-Write, Snapshot, and Donate.
 
-**Snapshot: turn working state into reusable state.** At a cacheable boundary, SGLang snapshots the current working state and attaches it to the radix tree. Restore and snapshot copies are ordered on the forward stream, and a ping-pong buffer prevents a new snapshot from overwriting one still referenced by the tree.
+**Copy-on-Write: Safely restoring from a shared checkpoint.** When a request hits a KDA checkpoint in the Radix Tree, SGLang does not continue execution directly on the shared state. Instead, it first copies the KDA State associated with the checkpoint into a private execution slot owned by the request. Subsequent computation updates only this private state, leaving the shared checkpoint attached to the Radix Tree unchanged. This allows multiple requests to safely reuse the same Prefix Cache node while advancing their own states independently.
 
-**Donate: avoid another full-state copy.** Once a snapshot is complete, SGLang can transfer ownership of the slot to the radix tree by moving its index rather than copying the state again.
+**Snapshot: Converting runtime state into reusable state.** By default, a KDA State produced during request execution belongs exclusively to the current request. When the request reaches a new cacheable prefix boundary, SGLang saves the current runtime state as a new Snapshot and attaches it to the Radix Tree for future requests to restore. To prevent the Snapshot operation from racing with state updates during Forward, SGLang schedules the state copy on the Forward Stream and relies on CUDA Stream ordering to guarantee safe reads and writes. Snapshots are also written alternately into additional buffers, preventing a new Snapshot from overwriting an older state that is still referenced by the Radix Tree.
 
-These operations make mutable recurrent state compatible with shared prefix caching without placing device-wide synchronization on the hot path.
+**Donate: Reducing checkpoint creation overhead.** Copying the entire KDA State into the cache tree every time a Snapshot is created would introduce substantial data-movement overhead. SGLang therefore introduces a Donate mechanism. Once a Snapshot is complete, the system transfers ownership of the corresponding state slot directly to the Radix Tree and updates only the state index, without copying the underlying data again. With Donate, checkpoint creation becomes a lightweight metadata transfer rather than a large-scale state copy, significantly reducing the management overhead of integrating KDA States into Prefix Cache reuse.
 
-### **Unified Memory: Sharing Physical Capacity Across MLA KV and KDA State**
+### Unified Memory: Sharing Physical Cache Capacity Between MLA KV and KDA State
 
-MLA KV and KDA state differ by orders of magnitude in allocation size and have different lifetimes. Managing them in separate reserved pools keeps their logical semantics simple, but forces operators to choose a fixed capacity split at startup.
+Because MLA KV and KDA State differ in allocation granularity and lifecycle, SGLang initially manages them through two separate memory pools. MLA KV Blocks and KDA State Blocks are allocated from independently reserved GPU memory pools. This design keeps the two cache types logically isolated, but requires the system to estimate their capacity ratio in advance based on the expected workload.
 
-That split is workload-dependent. Many short requests can exhaust the KDA-state pool first, while fewer long contexts can make MLA KV the bottleneck even when capacity remains unused in the other pool.
+In real-world inference workloads, however, cache demand is often difficult to predict. When short requests dominate, the KDA State Pool may be exhausted first. In long-context workloads, the MLA KV Pool may instead become the bottleneck, even while unused GPU memory remains available in the other pool. This imbalance reduces overall GPU memory utilization.
 
-SGLang's optional **Unified Memory** mode lets both cache families draw from one physical memory region while retaining their own logical structures and allocation granularities.
+To address this issue, SGLang provides an optional **Unified Memory** mode that manages MLA KV Blocks and KDA State Blocks within a shared physical capacity pool. The two cache types retain their own logical structures and allocation granularities, but draw from the same underlying GPU memory capacity, allowing memory usage to shift dynamically according to the actual workload.
 
 ![SGLang unified memory for KDA state and MLA KV](sglang-unified-memory.png)
 
 {{< image-source url="https://www.lmsys.org/blog/2026-07-27-kimi-k3-day0-support/" >}}
 
-The implementation uses one contiguous region: KDA state blocks grow from one end and MLA KV blocks from the other, leaving one free region between them. When an object is freed in the packed region, an object from the corresponding end is moved into the gap to keep free space contiguous.
+In the implementation, Unified Memory reserves a contiguous GPU memory region. KDA State Blocks and MLA KV Blocks grow inward from opposite ends, while the space between them serves as a shared pool of free capacity. When an object is released, the system fills the resulting hole with an object from the corresponding end, keeping the available region contiguous and reducing memory fragmentation during long-running workloads.
 
-Here, unified means **shared physical capacity**, not a common allocation unit. Under TP=8, each rank allocates roughly 54 MiB for one KDA state block covering all 69 KDA layers and about 27 KiB for one token of MLA KV across the 24 MLA layers. These objects retain their natural allocation units while drawing capacity from the same physical pool.
+It is important to note that “unified” refers to unified management of physical capacity. It does not mean forcing MLA KV and KDA State into pages of the same size. Each cache type is still allocated and managed using the layout best suited to its own characteristics; they simply share unused capacity at the GPU memory level.
 
-The mode is opt-in through `--enable-unified-memory`, avoiding a fixed startup partition between KDA state and MLA KV.
+This mode can be enabled explicitly with `--enable-unified-memory`, allowing SGLang to adapt more flexibly to the cache demands of Kimi K3’s hybrid attention architecture across different request distributions.
 
-### **Mooncake Integration: Extending KDA Cache Reuse Across Instances**
+### Mooncake Integration: Extending KDA Cache Reuse Across Instances
 
-The mechanisms above solve KDA-aware reuse within one SGLang instance, but local GPU memory still limits how many long-context prefixes can remain resident.
+The optimizations described above address KDA-aware Prefix Cache management within a single SGLang instance. In large-scale inference deployments, however, the capacity of a single instance’s GPU cache remains limited, and many long-context prefixes with high reuse value cannot be retained indefinitely.
 
-Through HiCache, SGLang extends the KDA-aware cache hierarchy beyond the local GPU. A worker can combine local radix-tree matching with cache objects stored through Mooncake and restore reusable state produced by another inference instance.
+To further expand the scope of cache reuse, SGLang integrates Mooncake into its KDA-aware caching system. Through HiCache, cached objects can extend beyond the GPU memory of a single machine into a much larger shared cache tier. When a new request arrives, the system can query not only the local Radix Tree Cache, but also retrieve cache states produced by other inference instances from Mooncake, restore them on the current instance, and resume execution.
 
-Mooncake does not interpret or update the KDA recurrence. SGLang defines which MLA KV and KDA checkpoints constitute a valid recoverable prefix; Mooncake stores and transfers those objects. Model-aware correctness remains in the runtime, while distributed storage and movement remain in the cache backend.
+Mooncake does not participate in the generation, update, or restoration semantics of KDA States. It therefore does not need to understand the differences between the model’s internal attention mechanisms. Its responsibility is to efficiently manage and transfer cache objects that SGLang has already determined to be valid and reusable. This separation of responsibilities allows SGLang and Mooncake to independently handle correctness and distributed scalability: SGLang determines **which states can be reused**, while Mooncake determines **how those states move across instances**.
 
-This separation expands the reuse domain for long-context sessions, multi-turn conversations, and agentic workloads without coupling Mooncake's transport layer to KDA's model semantics.
+With HiCache and Mooncake’s cross-instance caching capabilities, Kimi K3’s MLA KV and KDA States can move beyond the memory limits of a single GPU instance and be shared across a larger inference cluster. This improves cache hit rates and reduces redundant computation for long-context inference, multi-turn conversations, and agentic workloads.
 
-## **vLLM × Mooncake: Hybrid Cache Management and Cross-Instance Reuse for Kimi K3**
+## vLLM × Mooncake: Hybrid Cache Management and Cross-Instance Reuse for Kimi K3
 
-Where SGLang centers reuse on a KDA-aware radix tree, vLLM extends its hybrid cache-management framework. MLA KV and KDA state participate in one request lifecycle while retaining different storage and recovery rules.
+Unlike SGLang’s Radix Tree–based approach to state management, vLLM starts from a unified cache management framework. It incorporates both MLA KV and KDA State into the Hybrid KV Cache Manager, then combines flexible cache retention policies with Mooncake’s distributed caching capabilities to enable cross-instance reuse.
 
-### **Hybrid KV Cache Manager: Managing MLA KV and KDA State Together**
+### Hybrid KV Cache Manager: Unified Management of MLA KV and KDA State
 
-MLA KV and KDA state differ in lifetime, mutability, and reuse granularity, so a cache manager designed only for append-only KV blocks cannot represent both with one storage rule.
+As discussed earlier, MLA KV Cache and KDA State in Kimi K3 differ significantly in lifecycle, update semantics, and reuse granularity. Traditional KV Cache management mechanisms therefore cannot be applied directly.
 
-vLLM coordinates the two cache groups under its Hybrid KV Cache Manager. MLA layers use paged token-level latent-KV storage; KDA layers keep recurrent and convolution state in state blocks. MLA KV becomes immutable once written, whereas KDA is checkpointed at selected recovery boundaries and copied into private working state before mutation.
+To address this, vLLM extends its existing KV Cache management framework through the Hybrid KV Cache Manager, allowing a single Scheduler to coordinate two types of cache objects with different lifecycles. Full-attention layers continue to use Paged KV Blocks for token-level KV Cache, while KDA layers additionally maintain recurrent states and convolution states. Both types of state share the same request scheduling pipeline, but follow different cache management models: MLA KV is appended at token or block granularity and remains immutable once written, whereas KDA State records recoverable execution points through cacheable recurrent-state checkpoints or state blocks, while each running request maintains its own independent active copy.
 
 ![vLLM hybrid cache management for MLA KV and KDA state](vllm-hybrid-cache.png)
 
 {{< image-source url="https://vllm.ai/blog/2026-07-27-k3" >}}
 
-vLLM separates logical prefix matching from physical state-block allocation. Fine-grained prefix hashes can identify a recoverable boundary inside the logical token span associated with a larger physical block, so KDA checkpoints need to be retained only at selected positions rather than at every token.
+To prevent KDA State management from constraining the matching granularity of Prefix Cache reuse, vLLM decouples logical prefix matching from the physical locations where states are stored. Request matching is based on fine-grained, chained prefix hashes, which can identify a match within a physical state block rather than treating the physical KV block as the minimum matching unit. This allows the system to locate shared prefixes at a finer granularity.
 
-### **Fine-Grained Partial Hits: Matching Beyond Physical State-Block Boundaries**
+KDA State Blocks, meanwhile, do not need to cover every token position. They are stored only at selected prefix boundaries. When a request resumes execution from a shared prefix, vLLM first copies the corresponding KDA State into request-private storage before continuing computation. This prevents in-place updates from corrupting cached states that are shared by other requests.
 
-vLLM allocates recurrent state in relatively large physical blocks to reduce allocation and bookkeeping overhead, but shared prefixes need not end exactly at those block boundaries.
+### Fine-Grained Partial Hits: Decoupling Prefix Cache Reuse from KDA Block Boundaries
 
-If reuse were limited to physical block boundaries, a valid checkpoint inside a block's logical token span would be ignored. For example, with a 4,096-token physical granularity and a 4,480-token shared prefix, a block-aligned lookup would stop at 4,096 and replay 384 tokens even if state is recoverable at 4,480.
+In vLLM, KDA State does not allocate an independent cache entry for every token as MLA KV does. Instead, it uses larger State Blocks as the basic unit of management. Each State Block stores the recurrent state and convolution state produced after processing a contiguous range of tokens. This design reduces state allocation and management overhead, but introduces a new problem: the actual shared-prefix length between requests rarely aligns exactly with State Block boundaries.
+
+If Prefix Cache matching were restricted to KDA State Block boundaries, a valid KDA state checkpoint at a finer-grained prefix position could not be reused directly. For example, suppose a KDA State Block covers 4,096 tokens, while two requests share a prefix of 4,480 tokens. A conventional block-aligned cache could recognize only the first 4,096 tokens, forcing the subsequent request to reuse a shorter prefix than is actually available.
 
 ![Fine-grained prefix matching inside a physical vLLM state block](vllm-fine-grained-prefix-hit.png)
 
 {{< image-source url="https://vllm.ai/blog/2026-07-22-kimi-k3-preview" >}}
 
-Fine-grained partial hits separate three concerns: physical state-block size, scheduler alignment, and prefix-match granularity. vLLM can register a valid KDA state at a fine-grained boundary within a larger physical block. In the example above, position 4,480 becomes a recoverable prefix boundary even though it does not coincide with the physical allocation boundary. A later request can match that boundary and copy the cached state into private working storage before extending it.
+To address this issue, vLLM introduces **Fine-Grained Partial Hits**, decoupling the granularity of Prefix Matching from the physical storage granularity of KDA State. The system continues to use large KDA State Blocks for managing the underlying state, while allowing finer-grained Prefix Entries to be recorded within each State Block.
 
-### **Checkpoint Retention Policies: Structured Boundaries and Runtime Reuse**
+Once a valid KDA State Block has been generated for a particular token boundary, that position can serve as a legal recovery point even if it falls inside a State Block that has not yet been fully populated. In the example above, vLLM can directly record a Prefix Entry at the 4,480-token position, allowing subsequent requests to recover from the longer shared prefix without creating an additional full copy of the KDA State.
 
-Because KDA checkpoints are too large to retain at every candidate boundary, vLLM uses complementary retention policies: interval-based retention for predictable boundaries and Marconi-style selective retention for prefixes that become hot at runtime.
+### Adaptive Checkpoint Retention: Preserving KDA States Based on Reuse Value
 
-**Policy 1: Interval-Based Retention for Structured Boundaries**
+The introduction of KDA State makes checkpoints a critical resource for Prefix Cache reuse. However, because each KDA State has a substantial memory footprint, storing one at every prefix position is impractical. To determine how a limited cache budget should be allocated to the positions most likely to be reused, vLLM provides two complementary KDA State retention policies: **Interval-Based Retention** and **Marconi-Style Selective Retention**. The former uses known structural boundaries to provide stable recovery points, while the latter dynamically identifies prefixes with genuine reuse value based on runtime access patterns.
+
+**Strategy 1: Interval-Based Retention — Storing Checkpoints at Structured Boundaries.**
 
 ![vLLM interval-based KDA checkpoint retention](vllm-interval-retention.png)
 
 {{< image-source url="https://vllm.ai/blog/2026-07-27-k3" >}}
 
-Multi-turn conversations and agentic workloads contain boundaries with predictable reuse value. vLLM can retain periodic KDA checkpoints and always retains prompt-end state.
+In workloads with clear contextual structure, such as multi-turn conversations and agentic tasks, certain prefix boundaries naturally have a higher probability of reuse. vLLM therefore supports storing KDA checkpoints at fixed intervals, while also retaining the state at the end of each Prompt.
 
-Prompt-end retention is especially useful for multi-turn serving because the next turn commonly reuses the previous prompt in full. Periodic retention is controlled by `VLLM_PREFIX_CACHE_RETENTION_INTERVAL`; setting it to `0` disables periodic checkpoints and keeps only prompt-end state.
+For example, the system can create a checkpoint every fixed number of tokens and automatically preserve the KDA State at each Prompt boundary. Compared with mechanically distributing checkpoints at uniform intervals, Prompt-end States are often more valuable for real-world workloads. In multi-turn conversations, the next request typically reuses the entire Prompt from the previous turn, so restoring from the end of that Prompt can eliminate a large amount of redundant computation.
 
-**Policy 2: Marconi-Style Selective Retention for Runtime Hot Prefixes**
+Users can configure the interval through `VLLM_PREFIX_CACHE_RETENTION_INTERVAL`. When this value is set to `0`, vLLM disables periodic checkpointing and retains only Prompt-end States, reducing cache overhead for workloads dominated by multi-turn conversations.
+
+**Strategy 2: Marconi-Style Selective Retention — Caching Only Truly Hot Prefixes.**
 
 ![vLLM Marconi-style selective checkpoint retention](vllm-selective-retention.gif)
 
 {{< image-source url="https://vllm.ai/blog/2026-07-27-k3" >}}
 
-Fixed intervals capture known structure but cannot predict dynamic shared prefixes such as system prompts, repository snapshots, or tool definitions. Retaining a full KDA checkpoint on first sight would let one-off prefixes consume a large state budget.
+A fixed-interval policy can capture predictable reuse patterns, but it cannot determine in advance whether dynamically occurring shared prefixes—such as system prompts, code repository snapshots, or tool definitions—will be reused. Saving a KDA State immediately when such a prefix first appears may allow a one-off prefix to consume a large amount of cache capacity.
 
-Marconi-style selective retention uses a simple rule: cache on the second hit. The first encounter identifies a candidate shared boundary; a repeated encounter provides evidence that the prefix is worth retaining. One-off prefixes therefore do not occupy persistent KDA-state capacity.
+vLLM therefore introduces **Marconi-Style Selective Retention**, built around a simple principle: **cache on the second hit**.
 
-Together, the two policies cover both predictable reuse boundaries and hot prefixes discovered at runtime.
+When a prefix appears for the first time, the system records its access metadata but does not immediately store the corresponding KDA State. Only when a later request hits the same prefix again—demonstrating that it has actual reuse value—does vLLM create a KDA checkpoint at that position. This prevents one-off long Prompts from wasting cache budget, while automatically promoting frequently accessed hot prefixes into reusable states.
 
-### **Mooncake Integration: Extending the Hybrid Cache Across Instances**
+Together, these two policies cover both **predictable reuse boundaries** and **hot-prefix patterns discovered at runtime**.
 
-For distributed serving, vLLM composes hybrid cache management with external cache connectors, including Mooncake-backed offloading. The connector path lets local prefix hits and external hits participate in the same recovery decision.
+### Mooncake Integration: Extending Hybrid Cache Reuse Across Instances
 
-For a hybrid model, an external hit must correspond to a consistent logical prefix across the required cache groups rather than an arbitrary collection of KV blocks. vLLM preserves the identity and layout metadata of each group so that MLA KV, KDA state, and rank-local data can be restored consistently.
+The optimizations described above address unified MLA KV and KDA State management, fine-grained prefix matching, and state restoration within a single vLLM instance. For large-scale distributed inference, vLLM further integrates Mooncake through the KV Connector, extending the Hybrid Cache from per-instance storage to cross-instance sharing.
 
-Fine-grained partial-prefix reuse also composes with external offloading. vLLM tracks the exact reusable token length rather than assuming that every hit ends at a full physical block.
+For hybrid-attention models such as Kimi K3, Mooncake no longer stores a single KV Block. Instead, it stores a collection of Hybrid Cache objects associated with the same prefix. MLA KV continues to be represented as Paged KV Blocks, while KDA State is stored as a Snapshot at the corresponding prefix position. To prevent collisions across different cache types, vLLM distinguishes objects written to Mooncake using information such as the Cache Group, Prefix Hash, and parallelism configuration. This ensures that MLA KV, KDA State, and data from different ranks remain correctly aligned.
 
-On a new request, vLLM may first find a local GPU hit with a partial tail and then discover a longer prefix in Mooncake. The scheduler compares the exact reusable token lengths from both tiers. If the remote hit is longer, it releases the block reserved for the shorter local tail and reconciles all cache groups to the new prefix length; otherwise, it keeps the local result.
+To extend the Fine-Grained Partial Hit mechanism to remote caching, vLLM stores the KDA State associated with each Fine-Grained Prefix Entry in Mooncake as well. During writes, the system preserves not only complete blocks, but also Partial States that have been validated through Scheduler Alignment, allowing remote instances to hit the same fine-grained prefix boundaries. MLA KV and KDA State are managed using consistent prefix identifiers, ensuring that both cache types always correspond to the same logical prefix during remote restoration.
 
-vLLM therefore retains responsibility for hybrid-cache consistency, while Mooncake provides external storage and data movement. The same mechanism extends cache reuse beyond one instance's GPU memory without adding a KDA-specific transport protocol.
+When a request arrives at a new inference instance, vLLM queries both the local cache and Mooncake’s remote cache. It determines the available ranges of MLA KV and KDA State from each source, then coordinates the local and remote results to select the final Hybrid Cache Boundary. If Mooncake provides a longer and complete pair of MLA and KDA states, the system loads the remote cache and supersedes the shorter local hit. If the remote cache cannot provide a longer consistent state, vLLM continues using the local cache and avoids unnecessary data transfer.
 
-## **TokenSpeed × Mooncake: From Flat KV to a Unified Data Plane for Multimodal EPD**
+By integrating Mooncake through the KV Connector, vLLM extends the lifecycle of the Hybrid Cache beyond the GPU memory of a single instance and into a distributed cache tier. vLLM is responsible for maintaining semantic consistency between MLA KV and KDA State, while Mooncake provides efficient cross-instance storage and data movement. Together, they allow Kimi K3’s long-context state to be reused not only within a single machine, but also across large-scale inference clusters, significantly reducing redundant computation in multi-turn conversations, coding agents, and other high-reuse workloads.
 
-Conventional PD disaggregation primarily transfers KV cache from prefill workers to decode workers. Kimi K3 adds a second cache family with different lifetime, update, and layout semantics.
+## TokenSpeed × Mooncake: A Unified Data Plane from Flat KV to Multimodal EPD
 
-Routing MLA KV and KDA state through separate transport paths would duplicate cache-management logic and expose model-specific details to scheduling and networking.
+Traditional Prefill–Decode (PD) disaggregation primarily addresses the transfer of KV Cache between inference nodes. After a Prefill node finishes processing the input context, it sends the resulting KV Blocks to a Decode node, which then continues generation. For next-generation models such as Kimi K3, however, the data being transferred is no longer a homogeneous collection of KV Cache blocks.
 
-TokenSpeed addresses this by representing both state families with Flat KV and using Mooncake as the data-movement layer for PD and multimodal EPD. The transport abstraction is therefore based on transferable pages rather than one specific KV layout.
+Kimi K3 adopts a hybrid attention architecture that combines MLA and KDA, whose state lifecycles, update granularities, and physical layouts all differ from those of conventional KV Cache. Continuing to manage and transfer each state type using traditional KV Cache abstractions would not only increase system complexity, but also allow model-specific architectural details to leak into the scheduling, caching, and network transport layers.
 
-### **Flat KV: A Common Page-Level State Representation**
+The challenge for next-generation disaggregated inference systems is therefore no longer simply **how to transfer KV Cache**, but **how to efficiently transfer heterogeneous model intermediate states**. TokenSpeed addresses this through Flat KV, which represents MLA KV and KDA State as unified, transferable data units. Combined with Mooncake’s high-performance transport capabilities, this data plane extends beyond traditional PD disaggregation to support multimodal Encoder–Prefill–Decode (EPD) disaggregation.
 
-Flat KV maps heterogeneous cache state to a common page-management unit without requiring the underlying state types to share the same tensor layout.
+As a result, Mooncake is no longer merely a KV transport channel between Prefill and Decode. It becomes a unified state-transfer infrastructure spanning the model’s different execution stages.
 
-For Kimi K3, one page holds either 1,536 tokens of MLA latent history or one complete KDA snapshot containing recurrent and convolution state. Token-growing MLA KV and fixed-size KDA state are therefore managed by the same page allocator.
+### Flat KV: A Unified Page-Level State Representation
+
+To address the heterogeneous physical management requirements of MLA KV and KDA State, TokenSpeed introduces **Flat KV**, which brings both state types under a unified page-granularity management model. The core idea is that different model states do not need to share the same internal data layout, but they should be mappable to a common cache management unit.
+
+In Flat KV, a single page can store either the MLA latent history for 1,536 tokens or one complete KDA recurrent snapshot. In other words, both the token-growing MLA KV and the fixed-size KDA State are abstracted as page objects of the same size and managed through a unified page allocator.
 
 ![TokenSpeed Flat KV page and slab layout](tokenspeed-flat-kv.png)
 
 {{< image-source url="https://lightseek.org/blog/tokenspeed-kimi-k3.html" >}}
 
-TokenSpeed divides K3's 69 KDA layers into three groups of 23 and organizes the shared pool into 24 physical slabs. Every slab contains one MLA page, while the first 23 slabs also contain three KDA pages—one for each 23-layer KDA group. A single global page ID indexes the corresponding page across the slabs, allowing prefix caching, copy-on-write snapshots, and decode execution to use the same physical page pool.
+TokenSpeed divides Kimi K3’s 69 KDA layers into three groups of 23 layers each. These groups, together with the full-attention group, are mapped onto 24 physical slabs. Different state types share the same page address space: a given global page ID always maps to a fixed physical location, allowing MLA KV and KDA snapshots to use the same allocation, reclamation, and ownership management mechanisms.
 
-This representation lets the existing cache infrastructure apply the same page-lifecycle operations to both cache families:
+The key value of this design is that it transforms KDA State from a special-purpose model state into a page object that can be managed by existing KV Cache infrastructure:
 
-- Prefix caching can manage MLA and KDA pages through one page abstraction.
-- Copy-on-write and related state operations reuse the same page-lifecycle machinery.
-- PD disaggregation transfers pages without a state-specific transport protocol.
+* Prefix Cache can manage MLA KV pages and KDA State pages through a unified interface.
+* State operations such as Copy-on-Write can reuse the same page lifecycle management.
+* In PD disaggregation, the system only needs to transfer pages, without designing separate transport protocols for different state types.
 
-Flat KV therefore broadens the cache abstraction from token-level key/value tensors to a paged representation of heterogeneous model state.
+Flat KV therefore does more than place two data types in the same memory pool. It redefines the cache abstraction for disaggregated inference: KV Cache is no longer limited to token-level Key and Value tensors, but becomes a unified page-based representation capable of carrying heterogeneous model intermediate states.
 
-### **Mooncake PD Integration: Moving Flat KV Pages**
+### Mooncake PD Integration: Efficiently Transferring Flat KV Pages
 
-With Flat KV, the PD transfer unit becomes a page. MLA KV and KDA state use the same migration interface and are identified by page IDs plus the metadata needed to reconstruct their logical roles.
+Building on Flat KV’s page-based representation, TokenSpeed extends the transfer unit in PD disaggregation from conventional KV Blocks to unified pages. Both MLA KV and KDA State can be represented as the same data-movement unit and managed through a shared page ID space and metadata format.
 
-TokenSpeed identifies transferable state through the Flat KV page table and exports the corresponding global page IDs and metadata. Mooncake moves the referenced pages between prefill and decode workers without interpreting whether a page contains MLA history or a KDA snapshot. On the receiving side, TokenSpeed uses the same Flat KV mapping to reconstruct the logical cache view.
+Mooncake then handles cross-node data transfer at the page level. The Prefill node only needs to provide the page IDs to be transferred, together with their associated metadata. The Mooncake Transfer Engine can directly locate and transfer the corresponding physical regions in GPU buffers, without needing to understand whether a page contains MLA KV or KDA State.
 
-TokenSpeed is responsible for mapping heterogeneous model state into Flat KV pages; Mooncake is responsible for moving those pages. A change in model-state layout is handled by the mapping layer rather than by a new transport protocol.
+In the implementation, the Prefill node first determines which pages must be transferred from the Flat KV page table, then generates the corresponding page metadata, including the global page ID and physical address mapping. Based on this metadata, the Mooncake Transfer Engine directly transfers the physical pages between registered GPU buffers, without CPU staging or additional data-format conversion.
 
-### **EPD Disaggregation: A Unified Data Plane from Encoder to Prefill to Decode**
+After receiving the pages, the Decode node reconstructs the corresponding cache view using the same global page ID space. Because MLA KV pages and KDA State pages share a unified page management model, the Decode side does not need separate receiving and restoration paths for different state types. The Flat KV mapping layer interprets each physical page as the appropriate logical cache object.
 
-Kimi K3's native vision support adds an encoder stage, extending PD to EPD. TokenSpeed separates encoding, prefill, and decode into independently routable service stages and uses Mooncake for the large data transfers between them.
+Flat KV and Mooncake therefore establish a clear separation of responsibilities: TokenSpeed converts heterogeneous model states into a unified page representation, while Mooncake efficiently transfers those pages between Prefill and Decode nodes. Changes to the model architecture affect only the Flat KV mapping logic, leaving the underlying transport path unchanged.
+
+### EPD Disaggregation: A Unified Data Plane from Prefill–Decode to Encoder–Prefill–Decode
+
+Because Kimi K3 natively supports visual inputs, its inference pipeline is no longer limited to the Prefill and Decode stages. Instead, it must be extended into a three-stage Encoder–Prefill–Decode (EPD) architecture. To support this design, TokenSpeed separates the Encoder from the computations previously embedded within Prefill, turns it into an independent serving stage, and uses Mooncake to build a data-transfer path spanning all three stages.
 
 ![TokenSpeed encoder-prefill-decode disaggregation](tokenspeed-epd.png)
 
 {{< image-source url="https://lightseek.org/blog/tokenspeed-kimi-k3.html" >}}
 
-In TokenSpeed's EPD architecture, the encoder, prefill, and decode worker pools can use independent scheduling and scaling policies. The Serving Management Gateway (SMG) routes requests across the three stages.
+In TokenSpeed’s EPD architecture, Encoder, Prefill, and Decode each have their own worker pool, scheduling policy, and scaling capabilities. The SMG (Serving Management Gateway) is responsible for request orchestration, inter-stage routing, and request-state association, allowing all three stages to be deployed and scaled independently according to their workload characteristics.
 
-The encoder processes visual inputs, prefill combines the resulting embeddings with text context, and decode generates output tokens. This separation allows image-heavy workloads to scale independently from language-model prefill and decode.
+The Encoder focuses on visual input processing and can scale independently based on factors such as image count and resolution. Prefill combines visual embeddings with the textual context and performs context computation, while Decode handles subsequent token generation. By decoupling these stages, vision-intensive requests involving multiple images or high-resolution inputs no longer directly compete with the language model’s Prefill and Decode stages for compute resources.
 
-Mooncake carries the two large intermediate transfers in the EPD pipeline:
+At the data-transfer layer, Mooncake evolves from a KV Cache channel for traditional PD disaggregation into a unified data plane spanning the entire EPD pipeline. The end-to-end path includes two types of large-scale data transfer:
 
-- **Encoder → Prefill: multimodal embeddings.** Mooncake moves the encoder output to the selected prefill worker through the same distributed data plane.
-- **Prefill → Decode: Flat KV pages.** Mooncake moves the MLA latent history and KDA snapshots represented by Flat KV to the decode worker.
+* **Encoder → Prefill: Visual embedding transfer.** After completing visual encoding, the Encoder uses Mooncake to transfer the resulting visual embeddings directly from the Encoder node’s GPU to the Prefill node’s GPU. This process requires neither CPU-side serialization nor an intermediate shared file system, substantially reducing data-movement overhead for large-scale visual inputs.
+* **Prefill → Decode: Flat KV page transfer.** After completing language-context computation, the Prefill stage sends the MLA latent history and KDA recurrent state represented in Flat KV to the Decode node through Mooncake. Because Flat KV has already abstracted different model states into unified pages, Mooncake can reuse the same page-based transport mechanism used in PD disaggregation.
 
-The E→P and P→D paths reuse the same transport substrate, while TokenSpeed preserves the model-level interpretation of the transferred objects.
-
-EPD disaggregation lets TokenSpeed scale encoder, prefill, and decode independently, while Mooncake provides one data plane for large intermediate-state transfers between stages.
+TokenSpeed reuses the same memory registration, endpoint discovery, and transfer-completion tracking mechanisms across both the E→P and P→D paths, rather than maintaining separate data channels for visual embeddings and KV states. Mooncake therefore does not need to understand the specific semantics of the objects transferred between stages; it only needs to move data objects in GPU memory efficiently.
 
 ## Conclusion
 
-Architectures such as KDA, Mamba, GDN, and hybrid sliding-window attention expand serving state beyond a conventional KV cache. Inference systems increasingly need to manage token-level KV, recurrent state, convolution state, and other architecture-specific intermediates under one lifecycle.
+As next-generation model architectures such as KDA, Mamba, GDN, and SWA continue to emerge, the scope of what inference systems need to manage is expanding beyond traditional KV Cache. It is gradually evolving into the management of a combination of multiple model intermediate states, including KV states, recurrent states, convolution states, and more.
 
-Mooncake is correspondingly evolving from a backend centered on Transformer KV-cache movement toward a distributed storage and data-transfer layer for heterogeneous model state. Combined with model-aware cache management in SGLang, vLLM, and TokenSpeed, this lets Kimi K3 extend long-context reuse and disaggregated serving across a cluster from Day 0.
+Mooncake is evolving from a cache backend designed primarily for Transformer KV Cache into a distributed storage and data transfer infrastructure built to support diverse model architectures. Meanwhile, the integration of SGLang, vLLM, TokenSpeed, and Mooncake enables Kimi K3 to gain comprehensive and efficient long-context caching capabilities from day-0, delivering lower-latency and higher-throughput inference experiences for key scenarios such as code assistants, agents, and RAG applications.
 
-This work reflects close collaboration across the Kimi K3 serving ecosystem. We thank the **SGLang**, **vLLM**, **TokenSpeed**, **Mooncake**, and broader open-source communities for the engineering, testing, and feedback that made the Day-0 integrations possible.
+This series of efforts would not have been possible without the collective contributions of the open-source community. We would like to thank the teams behind SGLang, vLLM, TokenSpeed, and Mooncake for their continued effort in adapting to emerging model architectures and optimizing inference performance. We also appreciate everyone who shared valuable feedback and hands-on experience throughout testing and deployment.
 
-The broader direction is clear: as model architectures diversify, cache and transport systems must generalize from moving KV tensors to managing reusable model state.
+Together, we will continue exploring the next generation of caching and data transfer systems designed for a broader range of model architectures and increasingly large-scale inference systems.
 
 ## Related Links
 
