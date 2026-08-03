@@ -189,3 +189,32 @@ article main > h1 {
 .dark .hb-toc-link.active {
   color: rgb(96, 165, 250); /* primary-400 */
 }
+
+/* Image source caption: sit close under the preceding figure.
+   Blog images are often <center><img></center> (or Markdown <figure>),
+   and Tailwind Typography adds ~2em bottom margin on img/figure. */
+.prose p.image-source {
+  margin-top: 0.25rem;
+  margin-bottom: 1.5rem;
+  text-align: center;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: #6b7280;
+}
+
+.prose center:has(+ p.image-source),
+.prose figure:has(+ p.image-source),
+.prose p:has(figure):has(+ p.image-source),
+.prose p:has(figure):has(+ p.image-source) figure {
+  margin-bottom: 0;
+}
+
+.prose center:has(+ p.image-source) img,
+.prose figure:has(+ p.image-source) img,
+.prose p:has(figure):has(+ p.image-source) img {
+  margin-bottom: 0;
+}
+
+.dark .prose p.image-source {
+  color: #9ca3af;
+}
