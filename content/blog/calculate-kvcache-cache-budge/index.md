@@ -15,6 +15,10 @@ draft: false
 showathome: true
 commentable: false
 home_weight: 202606260
+
+image:
+  preview_only: true
+  alt_text: "KV Cache Hit Rate Figure"
 ---
 
 In LLM inference clusters, the storage budget for the KV Cache directly affects the KV Cache hit rate and prefill throughput. If the cache is configured too small, reusable KV entries will be evicted too early. If it is configured too large, valuable storage resources will be wasted. Therefore, the key question in KV Cache capacity planning is: **given a specific workload and model configuration, how much cache space should be allocated to achieve a sufficiently high hit rate and reasonable marginal returns?**
@@ -47,7 +51,7 @@ In addition, different models have different KV Cache sizes. Therefore, when run
 After the parameters are selected, the tool automatically calculates the relevant metrics. The first thing to examine is the figure showing how the KV Cache hit rate changes as the KV Cache capacity increases.
 
 <center>
-<img src="kvcache-hit-rate-fig.PNG"
+<img src="featured.PNG"
      alt="KV Cache hit rate versus cache capacity under different eviction algorithms"
      style="width:70%; max-width:1100px"/>
 </center>
