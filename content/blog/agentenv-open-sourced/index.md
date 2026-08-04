@@ -12,6 +12,10 @@ draft: false
 showathome: true
 commentable: false
 home_weight: 202607270
+
+image:
+  preview_only: true
+  alt_text: "AgentENV logo"
 ---
 
 Today, Tsinghua University's MADSys Lab and Moonshot AI are jointly open-sourcing AgentENV (AENV), an agent execution environment for large-scale Agentic RL. Under typical workloads, AgentENV reduces the cost of agent execution environments by 88.6%–96.8%. AgentENV is already being used for the Agentic RL training of several advanced models, including **Kimi K3**.

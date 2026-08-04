@@ -16,17 +16,21 @@ commentable: true
 draft: false
 showathome: true
 home_weight: 202511010
+
+image:
+  preview_only: true
+  alt_text: "Same local workstation runs LoRA SFT and SGLang+KT serving with the trained adapter"
 ---
 
 On a local workstation, the hard part of large-model experimentation is usually the cost of bringing a large MoE model into the same loop as the user's data and evaluation target. A researcher may want to try a domain dataset, a product prototype, or a benchmark, but the model quickly turns into a GPU-memory problem. This guide presents KTransformers, LLaMA-Factory, and SGLang as a low-cost, low-memory end-to-end path: LoRA fine-tuning stays in a familiar training recipe, KTransformers shifts the memory pressure through GPU+CPU heterogeneous execution, and the adapted model can continue into inference and benchmark testing.
 
 <img src="https://typora-tuchuang-jimmy.oss-cn-beijing.aliyuncs.com/img/20251229170124823.png"
-     alt="KTransformers, LLaMA-Factory, and SGLang local fine-tuning and inference pipeline"
+     alt="KTransformers and LLaMA-Factory integration architecture"
      style="zoom:50%"/>
 
 Inside that workflow, LLaMA-Factory sits at the user-facing orchestration layer: it owns dataset preparation, model templates, LoRA configuration, checkpoint output, and the first chat/API validation path. KTransformers plugs in underneath as the LoRA backend engine for Attention and MoE operators, moving memory-heavy expert computation into a GPU+CPU heterogeneous path while preserving the LLaMA-Factory interface. SGLang then takes the trained adapter into the inference side of the same end-to-end flow for batch inference and benchmark traffic.
 
-<img src="https://typora-tuchuang-jimmy.oss-cn-beijing.aliyuncs.com/img/20260525034705-ktransformers-ft-01-architecture.png"
+<img src="featured.png"
      alt="KTransformers and LLaMA-Factory integration architecture"
      style="zoom:45%"/>
 

@@ -15,6 +15,10 @@ showathome: true
 commentable: false
 home_weight: 202602120
 
+image:
+  preview_only: true
+  alt_text: "Mooncake joins PyTorch Ecosystem"
+
 ---
 
 We're excited to announce that **Mooncake has officially joined the PyTorch Ecosystem**.
