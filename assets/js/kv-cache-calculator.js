@@ -14,9 +14,10 @@
   const QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT = 4;
   const KIMI_KDA_CONV_BYTES_PER_ELEMENT = 2;
   const KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT = 4;
-  const KDA_CHECKPOINT_INFINITY = "∞";
-  const KDA_CUSTOM_INTERVAL_DEFAULT = 10240;
-  const KDA_CHECKPOINT_POLICY_FIXED_INTERVAL = "fixed_interval";
+  const INKLING_SCONV_BYTES_PER_ELEMENT = 2;
+  const STATE_CHECKPOINT_INFINITY = "∞";
+  const STATE_CUSTOM_INTERVAL_DEFAULT = 10240;
+  const STATE_CHECKPOINT_POLICY_FIXED_INTERVAL = "fixed_interval";
 
   const DEFAULT_PRECISIONS = {
     bf16_fp16: { label: "BF16 / FP16", bytesPerElement: 2 },
@@ -29,6 +30,7 @@
     mla: "MLA latent KV",
     dsa_mla: "DSA/MLA with indexer",
     kimi_kda_mla_hybrid: "Kimi KDA/MLA hybrid",
+    inkling_hybrid: "Inkling global/SWA with SConv",
     qwen_linear_full_hybrid: "Qwen linear/full hybrid",
     mixed_full_sliding_gqa: "Mixed full/sliding GQA",
     minimax_msa: "MiniMax MSA sparse attention",
@@ -63,6 +65,10 @@
 
   function isDeepSeekV4(model) {
     return model && model.formula === "deepseek_v4_hybrid";
+  }
+
+  function isInkling(model) {
+    return Boolean(model && model.formula === "inkling_hybrid");
   }
 
   function hasIndexerCache(model) {
@@ -109,10 +115,14 @@
     return Boolean(model && model.formula === "kimi_kda_mla_hybrid");
   }
 
-  function parseKdaCheckpointInterval(value, fallback) {
+  function hasSconvState(model) {
+    return isInkling(model);
+  }
+
+  function parseStateCheckpointInterval(value, fallback) {
     if (
       value === Infinity ||
-      value === KDA_CHECKPOINT_INFINITY ||
+      value === STATE_CHECKPOINT_INFINITY ||
       (typeof value === "string" && value.toLowerCase() === "infinity")
     ) {
       return Infinity;
@@ -128,13 +138,27 @@
       model && model.fields
         ? model.fields.default_kda_checkpoint_interval
         : undefined;
-    return parseKdaCheckpointInterval(value, Infinity);
+    return parseStateCheckpointInterval(value, Infinity);
   }
 
-  function formatKdaCheckpointInterval(value) {
+  function defaultSconvCheckpointInterval(model) {
+    const value =
+      model && model.fields
+        ? model.fields.default_sconv_checkpoint_interval
+        : undefined;
+    return parseStateCheckpointInterval(value, Infinity);
+  }
+
+  function defaultStateCheckpointInterval(model) {
+    return hasKdaCheckpointInterval(model)
+      ? defaultKdaCheckpointInterval(model)
+      : defaultSconvCheckpointInterval(model);
+  }
+
+  function formatStateCheckpointInterval(value) {
     return Number.isFinite(value)
       ? String(value)
-      : KDA_CHECKPOINT_INFINITY;
+      : STATE_CHECKPOINT_INFINITY;
   }
 
   function toBoolean(value) {
@@ -246,6 +270,7 @@
     const formula = model.formula;
     const includeDraftKvCache = toBoolean(settings && settings.includeDraftKvCache);
     const includeLinearAttentionState = toBoolean(settings && settings.includeLinearAttentionState);
+    const includeSconvState = toBoolean(settings && settings.includeSconvState);
 
     if (formula === "standard_gqa") {
       const layers = getField(model, "num_hidden_layers");
@@ -392,7 +417,7 @@
       const layers = getField(model, "num_hidden_layers");
       const fullLayers = getField(model, "full_attention_layers");
       const kdaLayers = getField(model, "kda_layers");
-      const kdaCheckpointInterval = parseKdaCheckpointInterval(
+      const kdaCheckpointInterval = parseStateCheckpointInterval(
         settings && settings.kdaCheckpointInterval,
         defaultKdaCheckpointInterval(model),
       );
@@ -543,7 +568,7 @@
           ],
           [
             "KDA checkpoint interval",
-            formatKdaCheckpointInterval(kdaCheckpointInterval),
+            formatStateCheckpointInterval(kdaCheckpointInterval),
             "The infinity default stores one final checkpoint; otherwise this is the number of tokens represented by each retained checkpoint.",
           ],
           [
@@ -590,6 +615,230 @@
               "kda_head_dim",
               "kda_conv_kernel_size",
               "default_kda_checkpoint_interval",
+            ]),
+          ],
+        ],
+      };
+    }
+
+    if (formula === "inkling_hybrid") {
+      const layers = getField(model, "num_hidden_layers");
+      const mainGlobalLayers = getField(model, "full_attention_layers");
+      const mainSwaLayers = getField(model, "sliding_attention_layers");
+      const draftGlobalLayers = includeDraftKvCache
+        ? getField(model, "draft_full_attention_layers")
+        : 0;
+      const draftSwaLayers = includeDraftKvCache
+        ? getField(model, "draft_sliding_attention_layers")
+        : 0;
+      const activeGlobalLayers = mainGlobalLayers + draftGlobalLayers;
+      const activeSwaLayers = mainSwaLayers + draftSwaLayers;
+      const hiddenSize = getField(model, "hidden_size");
+      const globalKvHeads = getField(model, "num_key_value_heads");
+      const globalHeadDim = getField(model, "head_dim");
+      const swaKvHeads = getField(model, "swa_num_key_value_heads");
+      const swaHeadDim = getField(model, "swa_head_dim");
+      const slidingWindow = getField(model, "sliding_window");
+      const retainedSwaTokens = Math.min(tokens, slidingWindow);
+      const sconvKernel = getField(model, "sconv_kernel_size");
+      const sconvBytesPerElement = optionalField(
+        model,
+        "sconv_state_bytes_per_element",
+        INKLING_SCONV_BYTES_PER_ELEMENT,
+      );
+      const sconvCheckpointInterval = parseStateCheckpointInterval(
+        settings && settings.sconvCheckpointInterval,
+        defaultSconvCheckpointInterval(model),
+      );
+      const sconvCheckpointCount = includeSconvState
+        ? Number.isFinite(sconvCheckpointInterval)
+          ? Math.ceil(tokens / sconvCheckpointInterval)
+          : 1
+        : 0;
+
+      const globalElements =
+        tokens * activeGlobalLayers * globalKvHeads * 2 * globalHeadDim;
+      const swaElements =
+        retainedSwaTokens * activeSwaLayers * swaKvHeads * 2 * swaHeadDim;
+      const globalSconvElementsPerLayer =
+        (sconvKernel - 1) *
+        (2 * globalKvHeads * globalHeadDim + 2 * hiddenSize);
+      const swaSconvElementsPerLayer =
+        (sconvKernel - 1) *
+        (2 * swaKvHeads * swaHeadDim + 2 * hiddenSize);
+      const sconvElementsPerCheckpoint =
+        activeGlobalLayers * globalSconvElementsPerLayer +
+        activeSwaLayers * swaSconvElementsPerLayer;
+      const sconvBytesPerCheckpoint =
+        sconvElementsPerCheckpoint * sconvBytesPerElement;
+      const sconvCheckpointBytesPerSequence =
+        sconvCheckpointCount * sconvBytesPerCheckpoint;
+      const byteGroups = [
+        {
+          role: "kv",
+          label: "Full-attention KV cache",
+          elements: globalElements,
+        },
+        {
+          role: "kv",
+          label: "Sliding-window KV cache",
+          elements: swaElements,
+        },
+      ];
+      const formulaRows = [
+        {
+          name: "active_global_layers",
+          expression: "main_global_layers + draft_global_layers_if_enabled",
+          description:
+            "Global-attention MTP layers are counted only when Include draft KV cache is enabled.",
+        },
+        {
+          name: "active_swa_layers",
+          expression: "main_swa_layers + draft_swa_layers_if_enabled",
+          description:
+            "Sliding-window MTP layers are counted only when Include draft KV cache is enabled.",
+        },
+        {
+          name: "global_kv_bytes",
+          expression:
+            "tokens x sequences x active_global_layers x global_kv_heads x 2 x head_dim x kv_precision_bytes",
+          description:
+            "Global-attention layers retain ordinary K and V for every cached token.",
+        },
+        {
+          name: "swa_kv_bytes",
+          expression:
+            "min(tokens, sliding_window) x sequences x active_swa_layers x swa_kv_heads x 2 x swa_head_dim x kv_precision_bytes",
+          description:
+            "Sliding-window layers retain K and V only for the configured local window.",
+        },
+      ];
+
+      if (includeSconvState) {
+        byteGroups.push({
+          role: "sconv_state",
+          label: "SConv checkpoint state",
+          bytesPerSequence: sconvCheckpointBytesPerSequence,
+        });
+        formulaRows.push(
+          {
+            name: "sconv_checkpoint_count",
+            expression:
+              "interval is infinity ? 1 : ceil(tokens / sconv_checkpoint_interval)",
+            description:
+              "The infinity default stores one final checkpoint; finite intervals also count a final partial interval.",
+          },
+          {
+            name: "sconv_checkpoint_bytes",
+            expression:
+              "sequences x checkpoint_count x (kernel_size - 1) x 2 x [active_global_layers x (2 x global_kv_heads x head_dim + 2 x hidden_size) + active_swa_layers x (2 x swa_kv_heads x swa_head_dim + 2 x hidden_size)]",
+            description:
+              "Logical BF16 K, V, attention-output, and MLP-output convolution history stored at each retained prefix boundary.",
+          },
+          {
+            name: "total_bytes",
+            expression:
+              "global_kv_bytes + swa_kv_bytes + sconv_checkpoint_bytes",
+            description:
+              "Combined reusable attention KV and retained short-convolution checkpoint payload.",
+          },
+        );
+      } else {
+        formulaRows.push(
+          {
+            name: "sconv_checkpoint_state",
+            expression: "excluded unless Include SConv state is enabled",
+            description:
+              "Exact prefix continuation requires matching short-convolution state or recomputation from an earlier checkpoint.",
+          },
+          {
+            name: "total_bytes",
+            expression: "global_kv_bytes + swa_kv_bytes",
+            description: "Reusable attention KV payload without SConv state.",
+          },
+        );
+      }
+
+      return {
+        elementsPerSequence:
+          globalElements +
+          swaElements +
+          sconvCheckpointCount * sconvElementsPerCheckpoint,
+        elementsPerToken: (globalElements + swaElements) / tokens,
+        formulaLabel: FORMULA_LABELS[formula],
+        formulaText:
+          "global_kv_bytes = tokens * sequences * active_global_layers * global_kv_heads * 2 * head_dim * kv_precision_bytes\nswa_kv_bytes = min(tokens, sliding_window) * sequences * active_swa_layers * swa_kv_heads * 2 * swa_head_dim * kv_precision_bytes\ntotal_bytes = global_kv_bytes + swa_kv_bytes + optional_sconv_checkpoint_bytes",
+        formulaRows,
+        note: includeSconvState
+          ? "Includes reusable text-generation KV and logical BF16 SConv checkpoints. vLLM page padding, active/ping-pong/speculative buffers, and vision/audio encoder activations are excluded."
+          : "Includes reusable text-generation KV only. SConv state required for exact prefix continuation is excluded.",
+        byteGroups,
+        components: [
+          ["Main layers", layers],
+          ["Main global-attention layers", mainGlobalLayers],
+          ["Main sliding-window layers", mainSwaLayers],
+          [
+            "Draft layers included",
+            draftGlobalLayers + draftSwaLayers,
+            "All eight configured MTP layers are counted as a capacity upper bound when draft KV is enabled.",
+          ],
+          ["Draft global-attention layers", draftGlobalLayers],
+          ["Draft sliding-window layers", draftSwaLayers],
+          ["Active global-attention layers", activeGlobalLayers],
+          ["Active sliding-window layers", activeSwaLayers],
+          [
+            "Retained sliding-window tokens",
+            retainedSwaTokens,
+            "min(tokens, sliding_window) for every SWA layer.",
+          ],
+          [
+            "SConv state included",
+            includeSconvState ? "Yes" : "No",
+            "Adds the short-convolution state required to resume a cached Inkling prefix.",
+          ],
+          [
+            "SConv checkpoint interval",
+            formatStateCheckpointInterval(sconvCheckpointInterval),
+            "The infinity default stores one final checkpoint; otherwise this is the number of tokens represented by each retained checkpoint.",
+          ],
+          [
+            "SConv checkpoints per sequence",
+            sconvCheckpointCount,
+            "One when the interval is infinity; otherwise ceil(tokens / sconv_checkpoint_interval).",
+          ],
+          [
+            "SConv elements per checkpoint",
+            sconvElementsPerCheckpoint,
+            "Logical K, V, attention-output, and MLP-output history across active main and draft layers.",
+          ],
+          [
+            "SConv bytes per checkpoint",
+            sconvBytesPerCheckpoint,
+            "One logical BF16 short-convolution checkpoint.",
+          ],
+          [
+            "SConv checkpoint bytes per sequence",
+            sconvCheckpointBytesPerSequence,
+            "Retained checkpoint count multiplied by bytes per checkpoint.",
+          ],
+          ["SConv state bytes", sconvBytesPerElement, "Current production serving implementations retain this state in BF16."],
+          [
+            "Model fields",
+            fieldList(model, [
+              "num_hidden_layers",
+              "full_attention_layers",
+              "sliding_attention_layers",
+              "hidden_size",
+              "num_key_value_heads",
+              "head_dim",
+              "swa_num_key_value_heads",
+              "swa_head_dim",
+              "sliding_window",
+              "sconv_kernel_size",
+              "num_nextn_predict_layers",
+              "draft_full_attention_layers",
+              "draft_sliding_attention_layers",
+              "default_sconv_checkpoint_interval",
             ]),
           ],
         ],
@@ -993,11 +1242,24 @@
     const elementPlan = calculateElementsPerSequence(model, tokens, {
       includeDraftKvCache: hasDraftKvCache(model) && toBoolean(input.includeDraftKvCache),
       includeLinearAttentionState: hasLinearAttentionState(model) && toBoolean(input.includeLinearAttentionState),
+      includeSconvState:
+        hasSconvState(model) &&
+        (typeof input.includeSconvState === "undefined"
+          ? Boolean(model.fields.default_include_sconv_state)
+          : toBoolean(input.includeSconvState)),
       kdaCheckpointInterval: hasKdaCheckpointInterval(model)
-        ? input.kdaCheckpointPolicy === KDA_CHECKPOINT_POLICY_FIXED_INTERVAL
-          ? parseKdaCheckpointInterval(
+        ? input.kdaCheckpointPolicy === STATE_CHECKPOINT_POLICY_FIXED_INTERVAL
+          ? parseStateCheckpointInterval(
               input.kdaCheckpointInterval,
               defaultKdaCheckpointInterval(model),
+            )
+          : Infinity
+        : undefined,
+      sconvCheckpointInterval: hasSconvState(model)
+        ? input.sconvCheckpointPolicy === STATE_CHECKPOINT_POLICY_FIXED_INTERVAL
+          ? parseStateCheckpointInterval(
+              input.sconvCheckpointInterval,
+              defaultSconvCheckpointInterval(model),
             )
           : Infinity
         : undefined,
@@ -1114,6 +1376,17 @@
     parent.appendChild(help);
   }
 
+  function updateInlineHelp(parent, description) {
+    if (!parent || !description) return;
+    const help = parent.querySelector(".kv-help");
+    if (!help) {
+      appendHelp(parent, description);
+      return;
+    }
+    help.setAttribute("aria-label", description);
+    help.dataset.kvTooltip = description;
+  }
+
   function renderMetricCard(label, value) {
     const item = document.createElement("div");
     const key = document.createElement("span");
@@ -1148,7 +1421,7 @@
       });
     }
     const includesFixedState = result.cacheGroups.some(
-      (group) => group.role === "linear_state",
+      (group) => group.role === "linear_state" || group.role === "sconv_state",
     );
     metrics.push([
       includesFixedState ? "Amortized size per token" : "Per token size",
@@ -1324,22 +1597,74 @@
     }
   }
 
-  function syncKdaCheckpointControl(root, model) {
-    const policyControl = root.querySelector("[data-kv-kda-policy-control]");
+  function syncSconvStateControl(root, model) {
+    const control = root.querySelector("[data-kv-sconv-state-control]");
+    const checkbox = root.querySelector("[data-kv-input='includeSconvState']");
+    const showSconvStateControl = hasSconvState(model);
+    if (control) control.hidden = !showSconvStateControl;
+    if (checkbox) {
+      checkbox.checked = Boolean(
+        showSconvStateControl &&
+          model &&
+          model.fields &&
+          model.fields.default_include_sconv_state === true,
+      );
+    }
+  }
+
+  function stateCheckpointProfile(root, model) {
+    if (hasKdaCheckpointInterval(model)) {
+      return {
+        label: "KDA",
+        enabled: checkboxValue(
+          root.querySelector("[data-kv-input='includeLinearAttentionState']"),
+        ),
+        promptHelp:
+          "Assumes one KDA state is saved only at the end of each sequence.",
+        intervalHelp:
+          "Stores one KDA state checkpoint every N tokens. The final partial interval counts as one checkpoint.",
+      };
+    }
+    if (hasSconvState(model)) {
+      return {
+        label: "SConv",
+        enabled: checkboxValue(
+          root.querySelector("[data-kv-input='includeSconvState']"),
+        ),
+        promptHelp:
+          "Assumes one SConv state is saved only at the end of each sequence.",
+        intervalHelp:
+          "Stores one SConv state checkpoint every N tokens. The final partial interval counts as one checkpoint.",
+      };
+    }
+    return null;
+  }
+
+  function syncStateCheckpointControl(root, model) {
+    const policyControl = root.querySelector("[data-kv-state-policy-control]");
+    const policyLabel = root.querySelector("[data-kv-state-policy-label]");
     const promptEndRadio = root.querySelector(
-      "[data-kv-input='kdaCheckpointPolicyPromptEnd']",
+      "[data-kv-input='stateCheckpointPolicyPromptEnd']",
     );
     const fixedIntervalRadio = root.querySelector(
-      "[data-kv-input='kdaCheckpointPolicyFixedInterval']",
+      "[data-kv-input='stateCheckpointPolicyFixedInterval']",
     );
-    const intervalControl = root.querySelector("[data-kv-kda-checkpoint-control]");
-    const input = root.querySelector("[data-kv-input='kdaCheckpointInterval']");
-    const checkbox = root.querySelector("[data-kv-input='includeLinearAttentionState']");
-    const showPolicyControl = Boolean(
-      hasKdaCheckpointInterval(model) && checkbox && checkbox.checked,
-    );
+    const intervalControl = root.querySelector("[data-kv-state-checkpoint-control]");
+    const intervalLabel = root.querySelector("[data-kv-state-interval-label]");
+    const promptHelp = root.querySelector("[data-kv-state-prompt-help]");
+    const intervalHelp = root.querySelector("[data-kv-state-interval-help]");
+    const input = root.querySelector("[data-kv-input='stateCheckpointInterval']");
+    const profile = stateCheckpointProfile(root, model);
+    const showPolicyControl = Boolean(profile && profile.enabled);
     if (policyControl) policyControl.hidden = !showPolicyControl;
     if (!promptEndRadio || !fixedIntervalRadio || !input) return;
+
+    if (profile) {
+      if (policyLabel) policyLabel.textContent = `${profile.label} Checkpoint Policy:`;
+      if (intervalLabel) intervalLabel.textContent = `${profile.label} checkpoint interval`;
+      updateInlineHelp(promptHelp, profile.promptHelp);
+      updateInlineHelp(intervalHelp, profile.intervalHelp);
+    }
 
     if (showPolicyControl && input.dataset.kvModelId !== model.id) {
       promptEndRadio.checked = true;
@@ -1386,8 +1711,8 @@
         !input ||
         input === inputs.model ||
         input === inputs.modelFamily ||
-        input === inputs.kdaCheckpointPolicyPromptEnd ||
-        input === inputs.kdaCheckpointPolicyFixedInterval
+        input === inputs.stateCheckpointPolicyPromptEnd ||
+        input === inputs.stateCheckpointPolicyFixedInterval
       ) {
         return;
       }
@@ -1410,13 +1735,14 @@
       indexerPrecision: root.querySelector("[data-kv-input='indexerPrecision']"),
       includeDraftKvCache: root.querySelector("[data-kv-input='includeDraftKvCache']"),
       includeLinearAttentionState: root.querySelector("[data-kv-input='includeLinearAttentionState']"),
-      kdaCheckpointPolicyPromptEnd: root.querySelector(
-        "[data-kv-input='kdaCheckpointPolicyPromptEnd']",
+      includeSconvState: root.querySelector("[data-kv-input='includeSconvState']"),
+      stateCheckpointPolicyPromptEnd: root.querySelector(
+        "[data-kv-input='stateCheckpointPolicyPromptEnd']",
       ),
-      kdaCheckpointPolicyFixedInterval: root.querySelector(
-        "[data-kv-input='kdaCheckpointPolicyFixedInterval']",
+      stateCheckpointPolicyFixedInterval: root.querySelector(
+        "[data-kv-input='stateCheckpointPolicyFixedInterval']",
       ),
-      kdaCheckpointInterval: root.querySelector("[data-kv-input='kdaCheckpointInterval']"),
+      stateCheckpointInterval: root.querySelector("[data-kv-input='stateCheckpointInterval']"),
     };
 
     function selectedModel() {
@@ -1434,13 +1760,24 @@
       populateIndexerPrecisionOptions(root, data, model);
       syncDraftControl(root, model);
       syncLinearStateControl(root, model);
-      syncKdaCheckpointControl(root, model);
+      syncSconvStateControl(root, model);
+      syncStateCheckpointControl(root, model);
     }
 
     function update() {
       try {
         const model = selectedModel();
-        syncKdaCheckpointControl(root, model);
+        syncStateCheckpointControl(root, model);
+        const stateCheckpointPolicy = checkboxValue(
+          inputs.stateCheckpointPolicyFixedInterval,
+        )
+          ? STATE_CHECKPOINT_POLICY_FIXED_INTERVAL
+          : "prompt_end";
+        const stateCheckpointInterval = checkboxValue(
+          inputs.stateCheckpointPolicyFixedInterval,
+        )
+          ? inputValue(inputs.stateCheckpointInterval, "")
+          : Infinity;
         const result = calculate(
           model,
           {
@@ -1450,16 +1787,11 @@
             indexerPrecision: inputValue(inputs.indexerPrecision, undefined),
             includeDraftKvCache: checkboxValue(inputs.includeDraftKvCache),
             includeLinearAttentionState: checkboxValue(inputs.includeLinearAttentionState),
-            kdaCheckpointPolicy: checkboxValue(
-              inputs.kdaCheckpointPolicyFixedInterval,
-            )
-              ? KDA_CHECKPOINT_POLICY_FIXED_INTERVAL
-              : "prompt_end",
-            kdaCheckpointInterval: checkboxValue(
-              inputs.kdaCheckpointPolicyFixedInterval,
-            )
-              ? inputValue(inputs.kdaCheckpointInterval, "")
-              : Infinity,
+            includeSconvState: checkboxValue(inputs.includeSconvState),
+            kdaCheckpointPolicy: stateCheckpointPolicy,
+            kdaCheckpointInterval: stateCheckpointInterval,
+            sconvCheckpointPolicy: stateCheckpointPolicy,
+            sconvCheckpointInterval: stateCheckpointInterval,
             tensorParallel: 1,
           },
           {
@@ -1499,24 +1831,24 @@
       syncModelDefaults();
       update();
     });
-    inputs.kdaCheckpointPolicyPromptEnd.addEventListener("change", update);
-    inputs.kdaCheckpointPolicyFixedInterval.addEventListener("change", () => {
+    inputs.stateCheckpointPolicyPromptEnd.addEventListener("change", update);
+    inputs.stateCheckpointPolicyFixedInterval.addEventListener("change", () => {
       if (
-        inputs.kdaCheckpointPolicyFixedInterval.checked &&
-        inputs.kdaCheckpointInterval.value.trim() === ""
+        inputs.stateCheckpointPolicyFixedInterval.checked &&
+        inputs.stateCheckpointInterval.value.trim() === ""
       ) {
-        inputs.kdaCheckpointInterval.value = String(
-          KDA_CUSTOM_INTERVAL_DEFAULT,
+        inputs.stateCheckpointInterval.value = String(
+          STATE_CUSTOM_INTERVAL_DEFAULT,
         );
       }
       update();
     });
-    inputs.kdaCheckpointInterval.addEventListener("blur", () => {
-      const interval = parseKdaCheckpointInterval(
-        inputs.kdaCheckpointInterval.value,
-        defaultKdaCheckpointInterval(selectedModel()),
+    inputs.stateCheckpointInterval.addEventListener("blur", () => {
+      const interval = parseStateCheckpointInterval(
+        inputs.stateCheckpointInterval.value,
+        defaultStateCheckpointInterval(selectedModel()),
       );
-      inputs.kdaCheckpointInterval.value = Number.isFinite(interval)
+      inputs.stateCheckpointInterval.value = Number.isFinite(interval)
         ? String(interval)
         : "";
       update();

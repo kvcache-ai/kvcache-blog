@@ -1,9 +1,12 @@
 metadata:
-  retrieved_at: "2026-07-25"
+  retrieved_at: "2026-08-04"
   note: "Curated from official Hugging Face model config/source files and serving-engine references. Values describe KV cache capacity planning, not model weights or activation memory."
   serving_references:
     deepseek_v4_vllm_indexer_fp4: "https://vllm.ai/blog/deepseek-v4"
     kimi_k3_config: "https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json"
+    inkling_architecture: "https://thinkingmachines.ai/news/introducing-inkling/"
+    inkling_vllm_sconv: "https://github.com/vllm-project/vllm/blob/adbf08d977fb3fa26c4f19826745a02abd6dd7ca/vllm/models/inkling/nvidia/sconv_swa_attn.py"
+    inkling_sglang_sconv: "https://github.com/sgl-project/sglang/blob/1e64fc15633f62df462bbcc6176bc2390911335d/python/sglang/srt/models/inkling_common/sconv.py"
 precision_options:
   - id: bf16_fp16
     label: "BF16 / FP16"
@@ -205,6 +208,64 @@ models:
       kda_recurrent_state_bytes_per_element: 4
       default_include_linear_attention_state: true
       default_kda_checkpoint_interval: "infinity"
+  - id: inkling
+    label: "Inkling"
+    family: "Inkling"
+    formula: "inkling_hybrid"
+    default_tokens: 1024
+    max_position_embeddings: 1048576
+    source_url: "https://huggingface.co/thinkingmachines/Inkling/raw/main/config.json"
+    source_retrieved_at: "2026-08-04"
+    fields:
+      num_hidden_layers: 66
+      full_attention_layers: 11
+      sliding_attention_layers: 55
+      hidden_size: 6144
+      num_attention_heads: 64
+      num_key_value_heads: 8
+      head_dim: 128
+      swa_num_attention_heads: 64
+      swa_num_key_value_heads: 16
+      swa_head_dim: 128
+      sliding_window: 512
+      sliding_window_size: 512
+      sconv_kernel_size: 4
+      sconv_state_bytes_per_element: 2
+      default_precision_id: "bf16_fp16"
+      default_include_sconv_state: true
+      default_sconv_checkpoint_interval: "infinity"
+      num_nextn_predict_layers: 8
+      draft_full_attention_layers: 2
+      draft_sliding_attention_layers: 6
+  - id: inkling-small
+    label: "Inkling-Small"
+    family: "Inkling"
+    formula: "inkling_hybrid"
+    default_tokens: 1024
+    max_position_embeddings: 1048576
+    source_url: "https://huggingface.co/thinkingmachines/Inkling-Small/raw/main/config.json"
+    source_retrieved_at: "2026-08-04"
+    fields:
+      num_hidden_layers: 42
+      full_attention_layers: 7
+      sliding_attention_layers: 35
+      hidden_size: 4096
+      num_attention_heads: 32
+      num_key_value_heads: 8
+      head_dim: 128
+      swa_num_attention_heads: 32
+      swa_num_key_value_heads: 8
+      swa_head_dim: 128
+      sliding_window: 512
+      sliding_window_size: 512
+      sconv_kernel_size: 4
+      sconv_state_bytes_per_element: 2
+      default_precision_id: "bf16_fp16"
+      default_include_sconv_state: true
+      default_sconv_checkpoint_interval: "infinity"
+      num_nextn_predict_layers: 8
+      draft_full_attention_layers: 2
+      draft_sliding_attention_layers: 6
   - id: kimi-k2.5
     label: "Kimi K2.5"
     family: "Kimi"

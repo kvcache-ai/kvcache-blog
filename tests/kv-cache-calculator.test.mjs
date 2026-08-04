@@ -280,6 +280,245 @@ test("Kimi K3 MLA cache scales from the exact logical token count", () => {
   assert.equal(bf16Result.hitRateBytesPerToken, 27648);
 });
 
+const inkling = {
+  id: "inkling",
+  label: "Inkling",
+  family: "Inkling",
+  formula: "inkling_hybrid",
+  default_tokens: 1024,
+  fields: {
+    num_hidden_layers: 66,
+    full_attention_layers: 11,
+    sliding_attention_layers: 55,
+    hidden_size: 6144,
+    num_key_value_heads: 8,
+    head_dim: 128,
+    swa_num_key_value_heads: 16,
+    swa_head_dim: 128,
+    sliding_window: 512,
+    sconv_kernel_size: 4,
+    sconv_state_bytes_per_element: 2,
+    default_precision_id: "bf16_fp16",
+    default_include_sconv_state: true,
+    default_sconv_checkpoint_interval: "infinity",
+    num_nextn_predict_layers: 8,
+    draft_full_attention_layers: 2,
+    draft_sliding_attention_layers: 6,
+  },
+};
+
+const inklingSmall = {
+  id: "inkling-small",
+  label: "Inkling-Small",
+  family: "Inkling",
+  formula: "inkling_hybrid",
+  default_tokens: 1024,
+  fields: {
+    num_hidden_layers: 42,
+    full_attention_layers: 7,
+    sliding_attention_layers: 35,
+    hidden_size: 4096,
+    num_key_value_heads: 8,
+    head_dim: 128,
+    swa_num_key_value_heads: 8,
+    swa_head_dim: 128,
+    sliding_window: 512,
+    sconv_kernel_size: 4,
+    sconv_state_bytes_per_element: 2,
+    default_precision_id: "bf16_fp16",
+    default_include_sconv_state: true,
+    default_sconv_checkpoint_interval: "infinity",
+    num_nextn_predict_layers: 8,
+    draft_full_attention_layers: 2,
+    draft_sliding_attention_layers: 6,
+  },
+};
+
+test("Inkling counts global KV, capped SWA KV, and one BF16 SConv checkpoint", () => {
+  const result = calculate(inkling, {
+    tokens: 1048576,
+    sequences: 1,
+    includeSconvState: true,
+  });
+  const global = result.cacheGroups.find(
+    (group) => group.label === "Full-attention KV cache",
+  );
+  const sliding = result.cacheGroups.find(
+    (group) => group.label === "Sliding-window KV cache",
+  );
+  const sconv = result.cacheGroups.find(
+    (group) => group.label === "SConv checkpoint state",
+  );
+
+  assert.equal(result.precisionLabel, "BF16 / FP16");
+  assert.equal(global.bytes, 47244640256);
+  assert.equal(sliding.bytes, 230686720);
+  assert.equal(sconv.bytes, 6352896);
+  assert.equal(result.totalBytes, 47481679872);
+  assert.ok(Math.abs(result.totalGiB - 44.220760345458984) < 1e-12);
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "SConv checkpoints per sequence",
+    )[1],
+    1,
+  );
+});
+
+test("Inkling-Small uses 7 global and 35 capped SWA layers", () => {
+  const result = calculate(inklingSmall, {
+    tokens: 1048576,
+    sequences: 1,
+    includeSconvState: true,
+  });
+
+  assert.equal(
+    result.cacheGroups.find(
+      (group) => group.label === "Full-attention KV cache",
+    ).bytes,
+    30064771072,
+  );
+  assert.equal(
+    result.cacheGroups.find(
+      (group) => group.label === "Sliding-window KV cache",
+    ).bytes,
+    73400320,
+  );
+  assert.equal(
+    result.cacheGroups.find(
+      (group) => group.label === "SConv checkpoint state",
+    ).bytes,
+    2580480,
+  );
+  assert.equal(result.totalBytes, 30140751872);
+  assert.ok(Math.abs(result.totalGiB - 28.070762634277344) < 1e-12);
+});
+
+test("Inkling fixed interval counts the final partial interval and sequences", () => {
+  const sequences = 3;
+  const result = calculate(inkling, {
+    ...bf16,
+    tokens: 10241,
+    sequences,
+    includeSconvState: true,
+    sconvCheckpointPolicy: "fixed_interval",
+    sconvCheckpointInterval: 10240,
+  });
+  const sconv = result.cacheGroups.find(
+    (group) => group.label === "SConv checkpoint state",
+  );
+
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "SConv checkpoints per sequence",
+    )[1],
+    2,
+  );
+  assert.equal(sconv.bytes, 2 * sequences * 6352896);
+});
+
+test("Inkling treats a blank fixed interval as one prompt-end checkpoint", () => {
+  const result = calculate(inkling, {
+    ...bf16,
+    tokens: 40960,
+    includeSconvState: true,
+    sconvCheckpointPolicy: "fixed_interval",
+    sconvCheckpointInterval: "",
+  });
+
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "SConv checkpoint interval",
+    )[1],
+    "∞",
+  );
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "SConv checkpoints per sequence",
+    )[1],
+    1,
+  );
+});
+
+test("Inkling can exclude SConv state without changing attention KV", () => {
+  const withState = calculate(inkling, {
+    ...bf16,
+    tokens: 4096,
+    includeSconvState: true,
+  });
+  const withoutState = calculate(inkling, {
+    ...bf16,
+    tokens: 4096,
+    includeSconvState: false,
+  });
+
+  assert.equal(
+    withoutState.cacheGroups.some(
+      (group) => group.label === "SConv checkpoint state",
+    ),
+    false,
+  );
+  assert.equal(withState.kvBytes, withoutState.kvBytes);
+  assert.equal(withState.totalBytes - withoutState.totalBytes, 6352896);
+});
+
+test("Inkling SConv checkpoint stays BF16 when attention KV uses FP8", () => {
+  const bf16Result = calculate(inkling, {
+    ...bf16,
+    tokens: 4096,
+    includeSconvState: true,
+  });
+  const fp8Result = calculate(inkling, {
+    ...bf16,
+    tokens: 4096,
+    precision: "fp8_int8",
+    includeSconvState: true,
+  });
+  const bf16Sconv = bf16Result.cacheGroups.find(
+    (group) => group.label === "SConv checkpoint state",
+  );
+  const fp8Sconv = fp8Result.cacheGroups.find(
+    (group) => group.label === "SConv checkpoint state",
+  );
+
+  assert.equal(fp8Result.kvBytes * 2, bf16Result.kvBytes);
+  assert.equal(fp8Sconv.bytes, bf16Sconv.bytes);
+});
+
+test("Inkling draft option adds all 2 global and 6 SWA MTP layers", () => {
+  const result = calculate(inkling, {
+    ...bf16,
+    tokens: 1048576,
+    includeSconvState: true,
+    includeDraftKvCache: true,
+  });
+
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "Draft layers included",
+    )[1],
+    8,
+  );
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "Active global-attention layers",
+    )[1],
+    13,
+  );
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "Active sliding-window layers",
+    )[1],
+    61,
+  );
+  assert.equal(
+    result.cacheGroups.find(
+      (group) => group.label === "SConv checkpoint state",
+    ).bytes,
+    7114752,
+  );
+  assert.ok(Math.abs(result.totalGiB - 52.24490737915039) < 1e-12);
+});
+
 test("Qwen3.6 27B counts only full-attention KV layers", () => {
   const model = {
     id: "qwen3.6-27b",
