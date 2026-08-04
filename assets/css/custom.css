@@ -158,11 +158,13 @@ article main > h1 {
   padding-left: 2.5rem;
 }
 
-@media (max-width: 1279px) {
-  .hb-toc--blog {
-    display: none;
+@media (min-width: 1024px) {
+  nav.hb-toc.hb-toc--blog {
+    display: block;
   }
+}
 
+@media (max-width: 1023px) {
   .hb-toc--blog + article > main {
     padding-left: 1.5rem;
   }

@@ -6,11 +6,11 @@
 {{- $edit_this_page := T "edit_page" -}}
 {{- $blog_home := site.GetPage "/blog" -}}
 
-{{- $nav_class := "hb-toc hidden w-64 shrink-0 xl:block print:hidden" -}}
+{{- $nav_class := "hb-toc hidden w-64 shrink-0 print:hidden" -}}
 {{- if $is_blog -}}
   {{- $nav_class = printf "%s hb-toc--blog" $nav_class -}}
 {{- else -}}
-  {{- $nav_class = printf "%s order-last px-4" $nav_class -}}
+  {{- $nav_class = printf "%s order-last px-4 xl:block" $nav_class -}}
 {{- end -}}
 
 <nav class="{{ $nav_class }}" aria-label="table of contents">

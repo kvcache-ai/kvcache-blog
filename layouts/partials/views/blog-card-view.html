@@ -2,19 +2,20 @@
 {{ if and $item $item.Title $item.RelPermalink }}
 
 {{ $resource := partial "functions/get_featured_image.html" $item }}
-{{ $anchor := $item.Params.image.focal_point | default "Center" }}
 
 <a href="{{ $item.RelPermalink }}" class="blog-item-full top-item">
   {{ with $resource }}
-    {{ $image := .Fill (printf "400x296 %s" $anchor) }}
+    {{/* Fit (not Fill): scale without cropping so the full featured image is visible */}}
+    {{ $image := .Fit "400x296" }}
     {{ if ne $image.MediaType.SubType "gif" }}{{ $image = $image.Process "webp" }}{{ end }}
-    <img
-      class="blog-thumb-lg"
-      loading="lazy"
-      src="{{ $image.RelPermalink }}"
-      width="{{ $image.Width }}"
-      height="{{ $image.Height }}"
-      alt="{{ with $item.Params.image.alt_text }}{{ . }}{{ else }}{{ $item.Title | plainify }}{{ end }}">
+    <div class="blog-thumb-lg">
+      <img
+        loading="lazy"
+        src="{{ $image.RelPermalink }}"
+        width="{{ $image.Width }}"
+        height="{{ $image.Height }}"
+        alt="{{ with $item.Params.image.alt_text }}{{ . }}{{ else }}{{ $item.Title | plainify }}{{ end }}">
+    </div>
   {{ else }}
     <div class="blog-thumb-lg-ph" aria-hidden="true"></div>
   {{ end }}
@@ -89,10 +90,20 @@
     border-radius: 0.5rem;
     flex-shrink: 0;
     align-self: center;
+    overflow: hidden;
   }
   .blog-thumb-lg {
-    object-fit: contain;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     background: #fff;
+  }
+  .blog-thumb-lg img {
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    object-fit: contain;
     display: block;
   }
   .blog-thumb-lg-ph {
