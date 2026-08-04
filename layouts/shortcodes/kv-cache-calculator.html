@@ -45,27 +45,32 @@
         <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. For K3, the checkpoint interval controls how many retained states are counted.">Include linear-attention state</span>
       </label>
 
-      <fieldset class="kv-policy-group" data-kv-kda-policy-control hidden>
-        <legend>KDA Checkpoint Policy:</legend>
+      <label class="kv-checkbox-row" data-kv-sconv-state-control hidden>
+        <input data-kv-input="includeSconvState" type="checkbox">
+        <span data-kv-inline-help="Adds the short-convolution state required to resume a cached Inkling prefix.">Include SConv state</span>
+      </label>
+
+      <fieldset class="kv-policy-group" data-kv-state-policy-control hidden>
+        <legend data-kv-state-policy-label>State Checkpoint Policy:</legend>
         <label class="kv-radio-row">
-          <input data-kv-input="kdaCheckpointPolicyPromptEnd" type="radio" name="kdaCheckpointPolicy" value="prompt_end" checked required>
+          <input data-kv-input="stateCheckpointPolicyPromptEnd" type="radio" name="stateCheckpointPolicy" value="prompt_end" checked required>
           <span class="kv-option-label">
             <span>Prompt-End State</span>
-            <span class="kv-help-target" data-kv-inline-help="Assumes one KDA state is saved only at the end of each sequence."></span>
+            <span class="kv-help-target" data-kv-state-prompt-help></span>
           </span>
         </label>
         <label class="kv-radio-row">
-          <input data-kv-input="kdaCheckpointPolicyFixedInterval" type="radio" name="kdaCheckpointPolicy" value="fixed_interval" required>
+          <input data-kv-input="stateCheckpointPolicyFixedInterval" type="radio" name="stateCheckpointPolicy" value="fixed_interval" required>
           <span>Fixed Interval Checkpoints</span>
         </label>
       </fieldset>
 
-      <div class="kv-field" data-kv-kda-checkpoint-control hidden>
+      <div class="kv-field" data-kv-state-checkpoint-control hidden>
         <span class="kv-control-label">
-          <label for="kv-kda-checkpoint-interval">KDA checkpoint interval</label>
-          <span class="kv-help-target" data-kv-inline-help="Stores one KDA state checkpoint every N tokens. The final partial interval counts as one checkpoint."></span>
+          <label for="kv-state-checkpoint-interval" data-kv-state-interval-label>State checkpoint interval</label>
+          <span class="kv-help-target" data-kv-state-interval-help></span>
         </span>
-        <input id="kv-kda-checkpoint-interval" data-kv-input="kdaCheckpointInterval" type="number" min="1" step="1" value="10240">
+        <input id="kv-state-checkpoint-interval" data-kv-input="stateCheckpointInterval" type="number" min="1" step="1" value="10240">
       </div>
 
       <div class="kv-cta-note">
@@ -153,6 +158,7 @@
 
   .kv-controls,
   .kv-results {
+    min-width: 0;
     border: 1px solid var(--kv-line);
     border-radius: 8px;
     background: var(--kv-panel);
@@ -268,6 +274,10 @@
     display: grid;
     gap: 1rem;
     padding: 1rem;
+  }
+
+  .kv-results > * {
+    min-width: 0;
   }
 
   .kv-total-band {
@@ -528,6 +538,17 @@
 
     .kv-formula-equals {
       display: none;
+    }
+
+    .kv-breakdown-row {
+      align-items: start;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .kv-breakdown-row strong {
+      overflow-wrap: anywhere;
+      text-align: left;
     }
 
     .kv-help::after {
