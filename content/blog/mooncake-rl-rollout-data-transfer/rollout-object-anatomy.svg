@@ -1,87 +1,43 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
-  <title id="title">Miles rollout object anatomy</title>
-  <desc id="desc">Miles rollout data contains ragged typed array lists, scalar lists, object metadata, and lifecycle semantics.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="430" viewBox="0 0 760 430" role="img" aria-labelledby="title desc">
+  <title id="title">Miles rollout bytes per sample</title>
+  <desc id="desc">Tokens, loss masks, and rollout log probabilities account for about 98.9 percent of one captured Miles sample. Smaller fields carry identifiers, lengths, rewards, flags, and version metadata.</desc>
   <defs>
-    <marker id="arrow-control" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5d6b7a"/>
-    </marker>
-    <marker id="arrow-data" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#187a6d"/>
-    </marker>
-    <marker id="arrow-ray" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b85c38"/>
-    </marker>
-    <filter id="soft-shadow" x="-10%" y="-10%" width="120%" height="125%">
-      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#22313f" flood-opacity="0.10"/>
-    </filter>
     <style>
       .bg { fill: #fbfaf7; }
-      .title { font: 600 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #22313f; }
-      .subtitle { font: 400 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #667383; }
-      .h { font: 600 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #22313f; }
-      .label { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #22313f; }
-      .small { font: 400 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #667383; }
-      .tiny { font: 400 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #667383; }
-      .value { font: 600 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #22313f; }
-      .card { fill: #ffffff; stroke: #cfd7dc; stroke-width: 1.2; rx: 8; filter: url(#soft-shadow); }
-      .soft { fill: #f0f2f1; stroke: #cfd7dc; stroke-width: 1.1; rx: 8; }
-      .moon { fill: #e4f3ee; stroke: #187a6d; stroke-width: 1.3; rx: 8; }
-      .ray { fill: #f8e8df; stroke: #b85c38; stroke-width: 1.3; rx: 8; }
-      .amber { fill: #f9ecd8; stroke: #c47a28; stroke-width: 1.3; rx: 8; }
-      .blue { fill: #e7eef6; stroke: #405f82; stroke-width: 1.3; rx: 8; }
-      .control-arrow { fill: none; stroke: #5d6b7a; stroke-width: 2; stroke-dasharray: 6 6; marker-end: url(#arrow-control); }
-      .data-arrow { fill: none; stroke: #187a6d; stroke-width: 6; stroke-linecap: round; marker-end: url(#arrow-data); }
-      .grid { stroke: #dfe5e8; stroke-width: 1; }
-      .axis { stroke: #8996a3; stroke-width: 1.2; }
-      .moon-line { fill: none; stroke: #187a6d; stroke-width: 4; stroke-linejoin: round; stroke-linecap: round; }
-      .ray-line { fill: none; stroke: #b85c38; stroke-width: 4; stroke-linejoin: round; stroke-linecap: round; }
+      .label { font: 600 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #22313f; }
+      .value { font: 500 20px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #425466; }
+      .body { font: 500 19px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #5d6b7a; }
+      .panel { fill: #fff; stroke: #cfd7dc; stroke-width: 1.5; rx: 8; }
+      .token { fill: #b9ddd5; stroke: #187a6d; stroke-width: 1.4; }
+      .mask { fill: #d7e6f3; stroke: #405f82; stroke-width: 1.4; }
+      .prob { fill: #e8ddf1; stroke: #76588b; stroke-width: 1.4; }
+      .other { fill: #f3c784; stroke: #b96d20; stroke-width: 1.4; }
+      .callout { fill: none; stroke: #b96d20; stroke-width: 1.8; }
     </style>
   </defs>
-  <rect class="bg" width="1200" height="700"/>
-<text x="60.0" y="52.0" class="title" text-anchor="start">Miles rollout object anatomy</text>
-<text x="60.0" y="80.0" class="subtitle" text-anchor="start">One logical rollout object combines dominant typed arrays with small scalar and metadata fields.</text>
-<rect x="55.0" y="105.0" width="1090.0" height="545.0" class="card"/>
-<text x="85.0" y="140.0" class="h" text-anchor="start">Rollout Object</text>
-<text x="235.0" y="140.0" class="subtitle" text-anchor="start">~3,422 B/sample logical payload</text>
-<rect x="85.0" y="170.0" width="500.0" height="210.0" class="moon"/>
-<text x="115.0" y="205.0" class="h" text-anchor="start">Ragged typed arrays</text>
-<text x="115.0" y="232.0" class="small" text-anchor="start">dominant transfer volume</text>
-<circle cx="120.0" cy="261.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="133.0" y="265.0" class="small" text-anchor="start">tokens: list[np.ndarray], int32, ragged rows</text>
-<circle cx="120.0" cy="285.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="133.0" y="289.0" class="small" text-anchor="start">loss_masks: list[np.ndarray], int32[256]</text>
-<circle cx="120.0" cy="309.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="133.0" y="313.0" class="small" text-anchor="start">rollout_log_probs: list[np.ndarray], float32[256]</text>
-<circle cx="120.0" cy="333.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="133.0" y="337.0" class="small" text-anchor="start">one small array per sample before transfer</text>
-<text x="418.0" y="356.0" class="value" text-anchor="start">~3,386 B/sample</text>
-<rect x="615.0" y="170.0" width="500.0" height="210.0" class="amber"/>
-<text x="645.0" y="205.0" class="h" text-anchor="start">Scalar lists</text>
-<text x="645.0" y="232.0" class="small" text-anchor="start">small bytes, important per-sample state</text>
-<circle cx="650.0" cy="261.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="663.0" y="265.0" class="small" text-anchor="start">partition, sample_indices: high-cardinality ids</text>
-<circle cx="650.0" cy="285.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="663.0" y="289.0" class="small" text-anchor="start">response_lengths: fixed 256 in this capture</text>
-<circle cx="650.0" cy="309.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="663.0" y="313.0" class="small" text-anchor="start">rewards, raw_reward: float lists</text>
-<circle cx="650.0" cy="333.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="663.0" y="337.0" class="small" text-anchor="start">truncated: completion marker list</text>
-<rect x="85.0" y="405.0" width="500.0" height="190.0" class="blue"/>
-<text x="115.0" y="440.0" class="h" text-anchor="start">Object and metadata fields</text>
-<circle cx="120.0" cy="471.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="133.0" y="475.0" class="small" text-anchor="start">weight_versions: object-preserving list field</text>
-<circle cx="120.0" cy="495.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="133.0" y="499.0" class="small" text-anchor="start">total_lengths: per-sample sequence length list</text>
-<circle cx="120.0" cy="519.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="133.0" y="523.0" class="small" text-anchor="start">metadata round-trips with Python-level semantics</text>
-<rect x="615.0" y="405.0" width="500.0" height="190.0" class="soft"/>
-<text x="645.0" y="440.0" class="h" text-anchor="start">Semantics Mooncake preserves</text>
-<circle cx="650.0" cy="471.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="663.0" y="475.0" class="small" text-anchor="start">key path, dtype, shape, and row boundaries</text>
-<circle cx="650.0" cy="495.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="663.0" y="499.0" class="small" text-anchor="start">explicit None versus missing field behavior</text>
-<circle cx="650.0" cy="519.0" r="3.2" fill="#187a6d" opacity="0.75"/>
-<text x="663.0" y="523.0" class="small" text-anchor="start">short-lived rollout cleanup and buffer release</text>
-<rect x="225.0" y="615.0" width="750.0" height="42.0" class="ray"/>
-<text x="600.0" y="642.0" class="label" text-anchor="middle">A single pickle blob hides these differences; structured transfer keeps them visible.</text>
+
+  <rect class="bg" width="760" height="430"/>
+  <rect x="22" y="22" width="716" height="386" class="panel"/>
+
+  <rect x="50" y="78" width="258" height="112" class="token"/>
+  <text x="179" y="124" class="label" text-anchor="middle">tokens</text>
+  <text x="179" y="157" class="value" text-anchor="middle">~1,338 B</text>
+
+  <rect x="308" y="78" width="197" height="112" class="mask"/>
+  <text x="406.5" y="124" class="label" text-anchor="middle">loss_masks</text>
+  <text x="406.5" y="157" class="value" text-anchor="middle">1,024 B</text>
+
+  <rect x="505" y="78" width="197" height="112" class="prob"/>
+  <text x="603.5" y="116" class="label" text-anchor="middle">rollout</text>
+  <text x="603.5" y="143" class="label" text-anchor="middle">log_probs</text>
+  <text x="603.5" y="172" class="value" text-anchor="middle">1,024 B</text>
+
+  <rect x="702" y="78" width="8" height="112" class="other"/>
+  <path d="M706 78 V54 H612" class="callout"/>
+  <text x="600" y="61" class="value" text-anchor="end">other · ~36 B</text>
+
+  <text x="50" y="250" class="label">~98.9% in three array-list fields</text>
+  <text x="50" y="302" class="label">Smaller fields still preserve:</text>
+  <text x="50" y="340" class="body">IDs · lengths · rewards · flags · weight versions</text>
+  <text x="50" y="378" class="body">~3,422 logical bytes per sample in this capture</text>
 </svg>

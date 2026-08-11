@@ -1,77 +1,57 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
-  <title id="title">RL rollout data movement</title>
-  <desc id="desc">Rollout workers put structured payloads into Mooncake while the scheduler passes lightweight references to trainer workers.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="590" viewBox="0 0 760 590" role="img" aria-labelledby="title desc">
+  <title id="title">Synchronous completed-object handoff</title>
+  <desc id="desc">The producer synchronously writes a completed rollout dictionary to Mooncake. The scheduler passes the returned reference to the trainer, which synchronously reads the payload from the Store.</desc>
   <defs>
-    <marker id="arrow-control" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5d6b7a"/>
+    <marker id="arrow-data" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#187a6d"/>
     </marker>
-    <marker id="arrow-data" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#187a6d"/>
+    <marker id="arrow-ref" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5d6b7a"/>
     </marker>
-    <marker id="arrow-ray" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b85c38"/>
-    </marker>
-    <filter id="soft-shadow" x="-10%" y="-10%" width="120%" height="125%">
-      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#22313f" flood-opacity="0.10"/>
-    </filter>
     <style>
       .bg { fill: #fbfaf7; }
-      .title { font: 600 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #22313f; }
-      .subtitle { font: 400 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #667383; }
-      .h { font: 600 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #22313f; }
-      .label { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #22313f; }
-      .small { font: 400 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #667383; }
-      .tiny { font: 400 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #667383; }
-      .value { font: 600 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #22313f; }
-      .card { fill: #ffffff; stroke: #cfd7dc; stroke-width: 1.2; rx: 8; filter: url(#soft-shadow); }
-      .soft { fill: #f0f2f1; stroke: #cfd7dc; stroke-width: 1.1; rx: 8; }
-      .moon { fill: #e4f3ee; stroke: #187a6d; stroke-width: 1.3; rx: 8; }
-      .ray { fill: #f8e8df; stroke: #b85c38; stroke-width: 1.3; rx: 8; }
-      .amber { fill: #f9ecd8; stroke: #c47a28; stroke-width: 1.3; rx: 8; }
-      .blue { fill: #e7eef6; stroke: #405f82; stroke-width: 1.3; rx: 8; }
-      .control-arrow { fill: none; stroke: #5d6b7a; stroke-width: 2; stroke-dasharray: 6 6; marker-end: url(#arrow-control); }
-      .data-arrow { fill: none; stroke: #187a6d; stroke-width: 6; stroke-linecap: round; marker-end: url(#arrow-data); }
-      .grid { stroke: #dfe5e8; stroke-width: 1; }
-      .axis { stroke: #8996a3; stroke-width: 1.2; }
-      .moon-line { fill: none; stroke: #187a6d; stroke-width: 4; stroke-linejoin: round; stroke-linecap: round; }
-      .ray-line { fill: none; stroke: #b85c38; stroke-width: 4; stroke-linejoin: round; stroke-linecap: round; }
+      .label { font: 600 23px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #22313f; }
+      .small { font: 500 20px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #5d6b7a; }
+      .lane { font: 600 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #667383; }
+      .panel { fill: #fff; stroke: #cfd7dc; stroke-width: 1.5; rx: 8; }
+      .soft { fill: #f2f4f3; stroke: #cfd7dc; stroke-width: 1.3; rx: 7; }
+      .green { fill: #e4f3ee; stroke: #187a6d; stroke-width: 1.5; rx: 7; }
+      .blue { fill: #e7eef6; stroke: #405f82; stroke-width: 1.5; rx: 7; }
+      .data-arrow { fill: none; stroke: #187a6d; stroke-width: 4; stroke-linecap: round; marker-end: url(#arrow-data); }
+      .ref-arrow { fill: none; stroke: #5d6b7a; stroke-width: 2.5; stroke-dasharray: 8 7; marker-end: url(#arrow-ref); }
     </style>
   </defs>
-  <rect class="bg" width="1200" height="560"/>
-<text x="60.0" y="52.0" class="title" text-anchor="start">RL rollout data movement</text>
-<text x="60.0" y="80.0" class="subtitle" text-anchor="start">The scheduler carries lightweight refs; Mooncake carries the structured payload.</text>
-<rect x="70.0" y="130.0" width="245.0" height="275.0" class="card"/>
-<text x="95.0" y="165.0" class="h" text-anchor="start">Rollout workers</text>
-<rect x="100.0" y="195.0" width="170.0" height="44.0" class="soft"/>
-<text x="125.0" y="222.0" class="label" text-anchor="start">sample + response</text>
-<rect x="100.0" y="252.0" width="170.0" height="44.0" class="soft"/>
-<text x="125.0" y="279.0" class="label" text-anchor="start">reward + logprob</text>
-<rect x="100.0" y="309.0" width="170.0" height="44.0" class="soft"/>
-<text x="125.0" y="336.0" class="label" text-anchor="start">rollout object</text>
-<rect x="460.0" y="105.0" width="280.0" height="110.0" class="blue"/>
-<text x="500.0" y="145.0" class="h" text-anchor="start">Framework scheduler</text>
-<text x="500.0" y="174.0" class="small" text-anchor="start">routes refs and training work</text>
-<rect x="395.0" y="325.0" width="410.0" height="135.0" class="moon"/>
-<text x="430.0" y="365.0" class="h" text-anchor="start">Mooncake structured-object store</text>
-<text x="430.0" y="394.0" class="small" text-anchor="start">leaf manifest, schema, typed payloads</text>
-<text x="430.0" y="421.0" class="small" text-anchor="start">cleanup/release after consumption</text>
-<rect x="885.0" y="130.0" width="245.0" height="275.0" class="card"/>
-<text x="910.0" y="165.0" class="h" text-anchor="start">Trainer workers</text>
-<rect x="930.0" y="195.0" width="160.0" height="44.0" class="soft"/>
-<text x="958.0" y="222.0" class="label" text-anchor="start">GET selected data</text>
-<rect x="930.0" y="252.0" width="160.0" height="44.0" class="soft"/>
-<text x="963.0" y="279.0" class="label" text-anchor="start">reconstruct object</text>
-<rect x="930.0" y="309.0" width="160.0" height="44.0" class="soft"/>
-<text x="967.0" y="336.0" class="label" text-anchor="start">train + cleanup</text>
-<path d="M 315 160 C 375 132, 405 127, 460 153" class="control-arrow"/>
-<path d="M 740 153 C 800 127, 830 132, 885 160" class="control-arrow"/>
-<text x="600.0" y="86.0" class="small" text-anchor="middle">control plane: refs / scheduling</text>
-<path d="M 314 337 C 365 365, 365 392, 395 392" class="data-arrow"/>
-<path d="M 805 392 C 835 392, 835 337, 885 337" class="data-arrow"/>
-<text x="355.0" y="312.0" class="label" text-anchor="start">PUT structured object</text>
-<text x="830.0" y="312.0" class="label" text-anchor="middle">GET + decode</text>
-<line x1="820" y1="492" x2="910" y2="492" class="control-arrow"/>
-<text x="925.0" y="496.0" class="small" text-anchor="start">refs</text>
-<line x1="820" y1="525" x2="910" y2="525" class="data-arrow"/>
-<text x="925.0" y="529.0" class="small" text-anchor="start">payload</text>
+
+  <rect class="bg" width="760" height="590"/>
+  <rect x="28" y="28" width="704" height="530" class="panel"/>
+
+  <text x="48" y="62" class="lane">FRAMEWORK</text>
+  <rect x="48" y="82" width="190" height="72" class="soft"/>
+  <text x="143" y="126" class="label" text-anchor="middle">Rollout producer</text>
+  <rect x="522" y="82" width="190" height="72" class="soft"/>
+  <text x="617" y="126" class="label" text-anchor="middle">Trainer</text>
+
+  <text x="48" y="210" class="lane">HANDOFF</text>
+  <rect x="48" y="230" width="190" height="72" class="green"/>
+  <text x="143" y="274" class="label" text-anchor="middle">sync put(dict)</text>
+  <rect x="285" y="230" width="190" height="72" class="blue"/>
+  <text x="380" y="260" class="label" text-anchor="middle">Scheduler</text>
+  <text x="380" y="286" class="small" text-anchor="middle">passes ref</text>
+  <rect x="522" y="230" width="190" height="72" class="green"/>
+  <text x="617" y="274" class="label" text-anchor="middle">sync get(ref)</text>
+
+  <text x="48" y="408" class="lane">DATA PLANE</text>
+  <rect x="118" y="430" width="524" height="92" class="blue"/>
+  <text x="380" y="470" class="label" text-anchor="middle">Mooncake Store</text>
+  <text x="380" y="499" class="small" text-anchor="middle">rollout payload</text>
+
+  <path d="M143 154 V230" class="data-arrow"/>
+  <path d="M238 266 H285" class="ref-arrow"/>
+  <path d="M475 266 H522" class="ref-arrow"/>
+  <path d="M617 230 V154" class="data-arrow"/>
+  <text x="632" y="194" class="small">dict</text>
+  <path d="M143 302 V370 H250 V430" class="data-arrow"/>
+  <path d="M510 430 V370 H617 V302" class="data-arrow"/>
+  <text x="255" y="255" class="small">ref</text>
+  <text x="487" y="255" class="small">ref</text>
 </svg>
