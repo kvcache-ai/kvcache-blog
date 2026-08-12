@@ -65,7 +65,7 @@ The DataProto path preserves three sections: row-aligned tensor fields in `batch
 
 A consumer can select fields and rows together, so a worker that needs two columns for part of the batch does not have to materialize the rest. Mooncake skips unrequested members and, where the stored layout supports it, reads only the byte ranges for the selected rows.
 
-![DataProto incremental publication and partial reads](dataproto-staged-transfer.svg?v=7)
+![DataProto incremental publication and partial reads](dataproto-staged-transfer.svg?v=8)
 
 _Figure 2. DataProto can grow logically by adding fields to existing rows or by publishing new row fragments. These are different operations: only the first uses `append_dataproto_fields()`. A partial GET materializes the intersection of the requested fields and rows._
 

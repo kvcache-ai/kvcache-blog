@@ -90,11 +90,11 @@
   <text class="heading" x="65" y="448">3. Partial read</text>
   <text class="body" x="65" y="473">get(..., fields=..., rows=...)</text>
 
-  <rect class="panel" x="75" y="492" width="520" height="238" rx="6"/>
+  <rect class="panel" x="75" y="492" width="500" height="238" rx="6"/>
   <text class="field" x="225" y="522" text-anchor="middle">input_ids</text>
   <text class="field" x="375" y="522" text-anchor="middle">responses</text>
   <text class="field" x="525" y="522" text-anchor="middle">old_log_probs</text>
-  <line class="divider" x1="95" y1="532" x2="575" y2="532"/>
+  <line class="divider" x1="95" y1="532" x2="555" y2="532"/>
   <text class="body" x="95" y="562">row 0</text>
   <text class="body" x="95" y="607">row 1</text>
   <text class="body" x="95" y="652">row 2</text>
@@ -113,20 +113,18 @@
   <rect class="neutral" x="475" y="677" width="100" height="27" rx="4"/>
   <rect class="selected" x="317" y="580" width="266" height="87" rx="7"/>
 
-  <path class="flow" d="M595 610 H750"/>
-  <text class="time" x="672" y="568" text-anchor="middle">FIELDS</text>
-  <text class="body" x="672" y="589" text-anchor="middle">responses / old_log_probs</text>
-  <text class="time" x="672" y="637" text-anchor="middle">ROWS</text>
-  <text class="body" x="672" y="658" text-anchor="middle">1 / 2</text>
+  <text class="time" x="687" y="574" text-anchor="middle">SELECTED</text>
+  <text class="body" x="687" y="597" text-anchor="middle">fields + rows</text>
+  <path class="flow" d="M590 630 H785"/>
 
-  <rect class="panel" x="765" y="525" width="355" height="165" rx="6"/>
-  <text class="field" x="885" y="555" text-anchor="middle">responses</text>
-  <text class="field" x="1030" y="555" text-anchor="middle">old_log_probs</text>
-  <line class="divider" x1="785" y1="566" x2="1100" y2="566"/>
-  <text class="body" x="785" y="603">row 1</text>
-  <text class="body" x="785" y="655">row 2</text>
-  <rect class="base" x="835" y="581" width="100" height="30" rx="4"/>
-  <rect class="added" x="980" y="581" width="100" height="30" rx="4"/>
-  <rect class="base" x="835" y="633" width="100" height="30" rx="4"/>
-  <rect class="added" x="980" y="633" width="100" height="30" rx="4"/>
+  <rect class="panel" x="800" y="525" width="320" height="165" rx="6"/>
+  <text class="field" x="910" y="555" text-anchor="middle">responses</text>
+  <text class="field" x="1040" y="555" text-anchor="middle">old_log_probs</text>
+  <line class="divider" x1="820" y1="566" x2="1100" y2="566"/>
+  <text class="body" x="815" y="603">row 1</text>
+  <text class="body" x="815" y="655">row 2</text>
+  <rect class="base" x="865" y="581" width="90" height="30" rx="4"/>
+  <rect class="added" x="995" y="581" width="90" height="30" rx="4"/>
+  <rect class="base" x="865" y="633" width="90" height="30" rx="4"/>
+  <rect class="added" x="995" y="633" width="90" height="30" rx="4"/>
 </svg>
