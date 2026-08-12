@@ -1,6 +1,6 @@
 ---
-title: "Moving RL Rollout Data with Mooncake Structured-Object Transfer"
-summary: "Mooncake moves dict and DataProto rollout batches as structured objects, with incremental DataProto publication and field- or row-level partial reads."
+title: "Miles Rollout Data Transfer with Mooncake"
+summary: "Miles now supports Mooncake as a rollout data-transfer backend for heterogeneous, fragmented Python rollout batches."
 date: 2026-08-11
 authors:
   - Mooncake community
@@ -16,7 +16,7 @@ commentable: false
 home_weight: 202608110
 image:
   preview_only: true
-  alt_text: "Mooncake structured-object transfer for RL rollout data"
+  alt_text: "Miles rollout data transfer with Mooncake"
 ---
 
 ## Rollout Data in Disaggregated RL Systems
@@ -161,119 +161,127 @@ Pipeline-level asynchrony comes from publishing completed field groups or row gr
 
 ## How Mooncake Preserves and Transfers a Rollout Object
 
-Mooncake accepts the dict or DataProto object already used by the framework; callers do not flatten it first. The object contract, field meaning, and physical payload layout stay separate.
+Take one completed Miles rollout batch. At the producer it is a flat Python dict. Miles passes that dict to `put(data, type="dict")`; at the trainer, `get(ref, type="dict")` returns the same mapping. Four pieces of work connect those two calls.
 
-### Schema-Driven Field Encoding
+### 1. Identify Fields and Expand Leaves
 
-A Python list carries too little information on its own: it might hold scalars, typed ragged rows, bytes, or arbitrary objects. Mooncake can infer an encoding from runtime values, so a schema is not required for every field. The recommended integration is still for the framework to provide schemas for ambiguous or performance-sensitive fields because the framework owns the stable data contract. Numeric ndarrays and tensors already expose native type information, although native tensor transport still depends on backend support.
+At the API boundary, `type="dict"` fixes the contract. Every top-level key remains an ordinary Miles field, even if it happens to be named `batch` or `meta_info`.
 
-An explicit schema fixes the codec and can also declare the intended section while batch size, sequence length, and values change. This prevents an unusual batch from selecting a different inferred path. Structured metadata records how one instance was encoded, and the bundle manifest records its Store keys and chunk layout. A DataProto handle maps row-aligned fields to stages and sections.
+The first pass does not touch the network. It works out what is in the dict. A dense ndarray can be described directly by its dtype and shape. The Miles `tokens` field is different: it is one Python list on paper, but one ndarray allocation per sample in memory. Object arrays and nested containers may hide another level of typed data. Mooncake opens those containers, identifies the leaves, and records enough path, row, and null information to put the original structure back together on GET.
 
-### Dict and DataProto Contracts
+Bandwidth is not the bottleneck yet. The expensive mistake here is to give up on the structure and serialize the whole Python graph as an opaque object. Mooncake first uses a framework-provided schema, then the native type information carried by ndarrays and tensors, and only then falls back to runtime inference. The schema is particularly valuable for ambiguous fields: a rare value or an extra `None` should not send the next batch down a different codec path.
 
-The `type` argument selects the object contract, not just a codec. Miles uses `type="dict"` for a flat rollout dictionary. DataProto-based frameworks use `type="dataproto"` because their fields carry batch semantics.
+### 2. Encode Fields and Plan Their Physical Layout
 
-The dict path preserves a flat mapping and reconstructs the same mapping on GET. Its keys do not acquire DataProto meaning: a field named `batch` or `meta_info` remains an ordinary dict field.
+Once the leaves are known, Mooncake chooses how each field should live in the Store. Treating every field alike would throw away information that is already available: tensors know their shape, ragged rows have boundaries, and Python metadata still needs its original value semantics.
 
-A DataProto-like object has three explicit sections:
-
-- `batch` contains tensor or ndarray fields indexed by batch row;
-- `non_tensor_batch` contains per-row non-tensor fields;
-- `meta_info` contains object-level metadata.
-
-The DataProto handle records the section of each row-aligned field in its field index, while `meta_info` is carried separately. Mooncake enforces one batch size across `batch` and `non_tensor_batch`. GET can return the three-section envelope as a dictionary or reconstruct the framework's DataProto class.
-
-### Tensor, Non-Tensor, and Multimodal Payloads
-
-Field representation and schema determine the transfer path. Numeric ndarrays use typed members. Tensors use native Store paths when the backend supports them and a serialized fallback otherwise.
-
-Scalar values, strings, bytes, lists, JSON-like values, object arrays, and ragged fields use structured codecs. Their metadata preserves the field path and any dtype, shape, row boundary, or null state needed to reconstruct the value.
-
-Multimodal is not a third contract. Decoded image tensors follow the tensor path; image bytes, media metadata, and external references use non-tensor codecs.
-
-### PUT and GET Data Path
-
-The public API stays small: `put(data, type=...)` and `get(ref, type=...)`. DataProto producers may append fields, and consumers may select `fields` and `rows` during GET. Scheduling, trainer placement, and the decision that all readers have finished remain framework responsibilities.
-
-The transfer path is:
-
-1. `put` receives a flat dict or DataProto object.
-2. Mooncake walks the object into fields and leaves, then applies the field schema or native type handling.
-3. The encoder creates payload members and the structured metadata needed to reconstruct them.
-4. The bundle manifest records the Store keys and chunk layout for those payloads.
-5. Mooncake writes the payloads through the Store, using BufferPool staging when the capability is available and the transfer policy permits it.
-6. `get` resolves the requested object, reads the required payloads, decodes them, and reconstructs the result.
-
-Each flat-dict key remains one logical field, but its codec may use several physical members, such as values, offsets, and a null mask for ragged data. DataProto locations also record whether a row-aligned field belongs to `batch` or `non_tensor_batch`; object-level `meta_info` remains separate. The returned handle carries routing and field-location metadata instead of the bulk tensor payloads.
-
-| Field Shape | Mooncake Handling | Why It Matters |
+| Field Shape | Stored Layout | What It Avoids |
 | --- | --- | --- |
-| Numeric ndarray | Store as a typed member with dtype and shape metadata. | Avoids turning numeric buffers into one opaque Python object. |
-| Tensor | Use the native Store path when available, with a serialized fallback. | Preserves correctness across backends while retaining the fast path where supported. |
-| Ragged typed arrays | Pack values with row-boundary metadata. | Preserves per-sample boundaries for fields such as Miles `tokens`. |
-| Scalar lists and object fields | Use structured codecs that preserve Python values. | Keeps routing IDs, rewards, lengths, and object metadata intact. |
-| Bytes, strings, and multimodal metadata | Encode according to the field representation. | Supports media payloads, references, and metadata without forcing them into tensor form. |
-| Missing or explicit `None` values | Preserve null state in structured metadata. | Prevents data loss during reconstruction and partial reads. |
+| Dense ndarray | Typed bytes plus dtype and shape. | Generic serialization and an extra decode copy. |
+| Tensor | Native tensor payload when supported; a correctness fallback otherwise. | Flattening a large contiguous tensor into a Python blob. |
+| List of typed ndarray rows | Values plus offsets, shapes, dimensions, and null bits. | Thousands of small serialized arrays and lost row boundaries. |
+| Numeric scalar list | One typed numeric buffer. | Per-item Python serialization. |
+| Byte strings | Packed bytes plus row offsets and null bits. | Per-row serialization and a whole-field temporary buffer. |
+| PIL images | Pixel payload plus reconstruction metadata. | Encoding decoded pixels through a generic Python serializer. |
+| Variable-length media lists | Flat media items plus row and item offsets. | Padding every sample to the same media count or losing item boundaries. |
+| Per-sample tensor dictionaries | One ragged tensor sub-payload per dictionary key, plus row and null metadata. | Pickling the dictionary list or padding all media tensors to one shape. |
+| Strings | Packed UTF-8 bytes plus row offsets and null bits. | Per-item Python serialization. |
+| Nested or general Python values | Recursive leaves, then MessagePack or JSON only where needed. | Pickling typed children together with unrelated Python structure. |
 
-### DataProto Handles, Catalog, and Partial Reads
+The three large Miles fields show why this choice matters. `tokens`, `loss_masks`, and `rollout_log_probs` each arrive as one ndarray allocation per sample. Serializing every row separately creates thousands of small objects. Calling `np.concatenate` first swings too far in the other direction: it builds a second, full-size copy before the Store can send anything.
 
-Incremental DataProto publication is optional and is not the transfer mode currently used by Miles or slime. `append_dataproto_fields()` adds fields without rewriting existing payloads and returns a new handle for the expanded view. The previous handle remains a valid snapshot of the earlier view; it does not gain the appended fields.
+Mooncake keeps the rows where they are and builds a copy plan instead. The plan describes how to fill each Store chunk when that chunk is needed. Row boundaries, shapes, and nulls become compact metadata; the bulk values remain typed bytes. One logical field can therefore produce several physical members, such as `data`, `offsets`, `shapes`, and `nulls`, without losing its identity as one dict field. Bytes-like fields use a similar multi-buffer plan rather than one large `bytes.join`.
 
-Pipelines that address samples by logical key can first write an immutable, single-stage fragment and then register its handle with `DataProtoCatalog`. The Catalog maps `(partition, key, field)` to fragment rows, and a reader resolves those mappings before fetching data. It stores metadata only; data transfer and payload lifetime remain outside the Catalog.
+Multimodal data makes the value of this field-level choice easier to see. The same image may reach a framework before or after preprocessing, and Mooncake does not force every representation through one media serializer. An encoded image held as `bytes` stays a byte string. A decoded PIL image uses the `media_bytes` path: Mooncake transfers its pixel payload with the reconstruction metadata needed on GET, avoiding another PNG or JPEG encode-decode cycle. A sample may also contain a variable number of PIL images or byte strings; `media_list_ragged` flattens those items while separate row and item offsets preserve which media belong to which sample. Null rows remain explicit in each layout.
 
-Each Store PUT or GET remains synchronous. Pipeline-level asynchrony comes from field or row groups being published at different times. During a partial read, the consumer selects fields and supplies rows as a slice or index list. Mooncake skips unrequested members and uses range reads when the stored layout permits; the reconstructed result retains the original DataProto sections and requested row order.
+Miles currently uses another common representation: tensors produced by its multimodal processor. `multimodal_train_inputs` holds one `dict[str, Tensor] | None` per sample, with keys such as `pixel_values` and model-specific grid tensors. Its field schema selects the ragged-tensor-dict codec. Mooncake stores each dictionary key as an independent ragged tensor sub-payload, preserving dtype, shape, sample order, missing keys, and samples without multimodal input. GET rebuilds the per-sample dictionaries for Miles to assemble the model inputs. No image is converted back to PIL on this path because the trainer asked for processed tensors, not image objects.
 
-### BufferPool and Fragmented Payloads
+### 3. PUT Payloads and Publish the Manifest
 
-Registering every small allocation can cost more than copying the data once. When BufferPool and the Store fast-path APIs are available, and policy permits them, Mooncake stages fragmented payloads in reusable registered buffers. Otherwise it uses the ordinary Store path.
+The encoder now knows what bytes to send, but those bytes are still scattered across memory. A large Miles batch can contain tens of thousands of ndarray allocations. Sending them in place would mean registering and unregistering a long list of small memory regions, and that setup cost can exceed the transfer itself.
 
-That one copy can replace many register/unregister calls with a few bulk copies and Store writes. Typed ragged rows are packed into contiguous chunks within each field, with row boundaries stored beside the values. Eligible large contiguous tensors still take the direct path.
+Mooncake pays for one controlled copy instead. It borrows registered memory from BufferPool, fills it in chunks of up to 64 MiB, and sends those chunks through the Store. The native copy path writes ndarray rows directly into the borrowed buffer while releasing the Python GIL. It replaces a Python row-by-row loop without first creating a full concatenated array. Multi-buffer payloads take the same route, so a bytes-like field does not need a whole-field temporary either.
 
-During GET, Mooncake uses structured metadata and bundle manifests to derive the payload keys and ranges required by the selection, fetches and decodes those payloads, and reconstructs the result. The optional DataProto Catalog identifies the published fragment for a logical field; it does not describe the fragment's physical layout.
+Large bundles can keep several chunk PUTs in flight, with a fixed limit so staging does not consume memory without bound. Small bundles stay on the simpler path and avoid paying for unnecessary parallel work. In this workload, the BufferPool copy is deliberate: one sequential memory copy is cheaper than thousands of registrations, temporary concatenations, and Store requests. True source-buffer zero-copy remains available when the caller supplies a suitable tensor-object buffer in registered memory, while native tensors have their own direct path. A backend without the pooled fast path still uses the same object contract and falls back to ordinary Store operations.
 
-Rollout data is short-lived, but release order still matters. A consumer calls `release_result()` after it is finished with a BufferPool-backed GET result. Once no reader can use a direct DataProto handle, the framework calls `cleanup_dataproto()` to remove the referenced Store payloads and manifests. Removing Catalog entries does not perform that physical cleanup.
+The last write is the manifest: a small map from every physical member to its Store keys and chunk ranges. Mooncake publishes it only after the metadata and payload chunks are in place. A reader therefore finds a complete bundle, not a reference to chunks that are still being written. If a payload write fails, the writer removes the keys it has already created and never publishes the manifest.
+
+That manifest is all Miles needs because it publishes one completed dict at a time.
+
+### 4. GET Payloads, Decode Fields, and Rebuild the Dict
+
+The read side reverses the same path. The manifest points to the required chunks; the structured metadata says how those bytes become fields again. A straightforward implementation would still waste most of the gain by fetching every member into a new Python `bytes` object, copying it again into an ndarray, and decoding ragged rows one at a time.
+
+On the fast path, Mooncake reads into BufferPool-backed or caller-provided destinations instead. Members that belong together are fetched together. Typed-ragged rows become views over the contiguous result buffer, and MessagePack ragged values are decoded as one stream rather than sliced and reparsed for every sample. Because the caller asked for a dict, the decoder rebuilds that dict directly; it does not construct a DataProto-shaped intermediate object and then convert it back.
+
+Most of the GET win comes from work that no longer happens: fewer temporary objects, fewer copies, and no per-row decode loop on the typed hot path. That matters for Miles because the trainer needs both halves of the object, the large numeric fields and the small Python fields, before it can begin the next step.
+
+The returned arrays may still point into BufferPool memory, so their lease follows the result into the trainer. Once training is finished with the dict, Miles calls `release_result()` to return that memory. Miles removes the short-lived Store reference only after its consumers are done, at which point Mooncake can reclaim the payload chunks and manifest.
 
 ![Mooncake structured-object transfer architecture](structured-transfer-architecture.svg)
 
-_Figure 4. The codec hands one structured bundle to the Bundle Store. The manifest is the small entry index, while typed payloads carry most bytes. The payload transport uses reusable BufferPool memory for eligible fragmented PUT and GET paths, avoiding repeated buffer registration._
+_Figure 2. A Miles dict is expanded into typed members and metadata, copied into registered BufferPool chunks where needed, and published through a bundle manifest. GET follows the same structure in reverse._
 
 ## Performance Results
 
 For a fixed framework configuration, switching models does not by itself change the field contract. Transfer size instead follows the number of samples, prompt and response lengths, and optional fields such as teacher log probabilities, routing information, or multimodal inputs.
 
-The benchmark measures the completed flat-dict protocol used by Miles; it does not cover staged DataProto publication or partial reads. It compares the Miles Ray backend with Mooncake structured-object transfer. The source data was generated by Miles with Qwen3-0.6B on math prompts (`rollout_id=0`, 8 captured rollout-source samples). Larger cases repeat the same field layout and per-sample representation, varying only the logical sample count shown in the table.
+### Benchmark Payload
+
+Miles generated the source data with Qwen3-0.6B on math prompts (`rollout_id=0`, 8 source samples). Every response in this capture has 256 tokens. Averaged across those samples, the logical payload breaks down as follows:
+
+| Part of One Captured Sample | Calculation | Logical Bytes |
+| --- | ---: | ---: |
+| `tokens` | Average prompt-plus-response token count x 4 B (`int32`) | ~1,338 B |
+| `loss_masks` | 256 entries x 4 B (`int32`) | 1,024 B |
+| `rollout_log_probs` | 256 entries x 4 B (`float32`) | 1,024 B |
+| Scalar and object fields | IDs, lengths, rewards, flags, and version metadata | ~36 B |
+| **Total** | | **~3,422 B** |
+
+The first three fields account for about 3,386 bytes, or 98.9% of this particular sample layout. Larger benchmark payloads repeat the eight captured samples, preserving their field types and fragmented allocation pattern while increasing the logical sample count. The calculation describes this capture; it does not define a fixed Miles sample size.
+
+![Miles rollout object anatomy](rollout-object-anatomy.svg)
+
+_Figure 3. The measured composition of one sample in the Qwen3-0.6B benchmark capture._
+
+### Transfer Results
+
+The benchmark measures the completed flat-dict handoff used by Miles and compares the Miles Ray backend with Mooncake structured-object transfer.
 
 PUT is one timed backend call after the producer loads the payload. GET is the mean of three remote-consumer trials after one warmup. Reference serialization and scheduler handoff are outside the timed region. These numbers cover payload transfer and reconstruction, not end-to-end training throughput.
 
-| Payload | Samples / Transfer Round | Mooncake PUT | Ray PUT | Mooncake GET | Ray GET | GET Speedup |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 128 MiB | 39,221 | 583 ms | 930 ms | 47.4 ms | 501.3 ms | 10.6x |
-| 512 MiB | 156,888 | 2,830 ms | 3,489 ms | 173.2 ms | 2,134.2 ms | 12.3x |
-| 1 GiB | 313,776 | 4,636 ms | 7,469 ms | 356.3 ms | 5,035.4 ms | 14.1x |
-| 4 GiB | 1,255,104 | 20,320 ms | 31,830 ms | 1,425.9 ms | 20,034.3 ms | 14.1x |
+Across the tested payload sizes, Mooncake makes Miles GET roughly 10–14x faster than the Ray backend. PUT improves by about 1.2–1.6x.
 
 ![Miles GET latency benchmark](miles-get-latency.svg)
 
-_Figure 5. Mooncake provides 10.6x to 14.1x faster GET for this fragmented Miles rollout layout. The vertical axis uses a logarithmic scale._
-
-Mooncake GET sustains roughly 2.6 to 2.9 GiB/s on these payloads; Ray reaches about 0.20 to 0.25 GiB/s in the same setup. For this fragmented Python layout, the Ray object-store GET path is slower than fetching Mooncake's typed members and reconstructing the framework object at the consumer.
+_Figure 4. Mooncake provides roughly 10–14x faster GET for this fragmented Miles rollout layout. The vertical axis uses a logarithmic scale._
 
 PUT shows a smaller gain. Its timed path includes Python-object traversal, ragged-row packing, metadata and manifest construction, and payload transfer. GET improves more for this workload, and the trainer must finish it before starting the training step.
 
-The structured-object path is not limited to rollout data. It can also carry layouts such as a COO sparse tensor represented by typed `indices` and `values` plus `shape` and metadata.
+## Beyond the Miles Integration
+
+The same structured-object layer also supports DataProto-shaped batches. It preserves the `batch`, `non_tensor_batch`, and `meta_info` sections, while adding staged publication and partial reads for frameworks whose rollout contract carries row and field semantics.
+
+DataProto producers do not have to wait for one complete batch. They can add fields for existing rows with `append_dataproto_fields()` or publish newly completed row groups as separate fragments. Earlier payloads are not rewritten, and readers use the resulting handle to select only the fields and rows they need. A Catalog locates those logical row and field fragments; each fragment's manifest still describes its physical Store layout. Each Store operation is synchronous; the asynchronous pipeline comes from publishing completed stages at different times while rollout and training continue elsewhere.
+
+This is a different handoff protocol from the completed flat dict used by Miles, so it remains a secondary topic here. The same machinery is also useful outside RL: it has already been validated and used for COO sparse tensors, where typed `indices` and `values` travel with `shape` and structural metadata.
+
+## What Comes Next
+
+The Miles integration establishes the basic data path. The main priority now is to validate, optimize, and integrate it across a wider range of RL workloads.
+
+- **Validate and integrate more RL workloads.** Multimodal and agentic RL, VLA and world-model training, and RL for video-generation or diffusion models produce different combinations of media, trajectories, actions, rewards, and intermediate state. The next step is to capture those real rollout objects, verify their contracts in end-to-end training, and connect the frameworks that produce them.
+- **Optimize for their actual data shapes.** Media-heavy samples, long or incrementally growing trajectories, and batches with many small fields stress different parts of the path. Profiling real workloads will guide codec, packing, request-count, metadata, and partial-read improvements instead of relying on dense synthetic buffers.
+- **Isolate rollout data from KV cache workloads.** Mooncake needs separate accounting, quotas, and eviction policy for short-lived rollout data and KV cache data, so a burst of rollout traffic cannot evict latency-sensitive cache entries.
+- **Explore other structured AI data paths.** Multimodal preprocessing outputs and other intermediate artifacts may fit the same typed-payload-plus-metadata model. They should be added only after their real layout, access pattern, and lifetime are understood.
 
 ## Acknowledgements
 
-This work crossed several repository boundaries, and so did its review and validation. The Miles integration has merged. The slime and ROLL contributors are acknowledged for design feedback, review, and testing during development; those downstream integrations had not merged when this post was written. Some contributors appear in more than one group:
+Xinpeng Zhao ([@zxpdemonio](https://github.com/zxpdemonio)) led the Mooncake structured-transfer design and implementation. Yufeng He ([@he-yufeng](https://github.com/he-yufeng)) and [@yokinoshitayoki](https://github.com/yokinoshitayoki) reviewed the Mooncake implementation.
 
-- **Mooncake implementation and review:** Xinpeng Zhao ([@zxpdemonio](https://github.com/zxpdemonio)), Yufeng He ([@he-yufeng](https://github.com/he-yufeng)), [@yokinoshitayoki](https://github.com/yokinoshitayoki), and Teng Ma ([@stmatengss](https://github.com/stmatengss)).
-- **Miles integration and validation:** Xinpeng Zhao ([@zxpdemonio](https://github.com/zxpdemonio)), Teng Ma ([@stmatengss](https://github.com/stmatengss)), [@fzyzcjy](https://github.com/fzyzcjy), [@guapisolo](https://github.com/guapisolo), and Xuchun Shang ([@XucSh](https://github.com/XucSh)).
-- **slime design feedback and testing:** Xinpeng Zhao ([@zxpdemonio](https://github.com/zxpdemonio)), Zilin Zhu ([@zhuzilin](https://github.com/zhuzilin)), Teng Ma ([@stmatengss](https://github.com/stmatengss)), Bo Gao ([@Bo-Vincent](https://github.com/Bo-Vincent)), and Lei Li ([@lilei199908](https://github.com/lilei199908)).
-- **ROLL design feedback and testing:** Xinpeng Zhao ([@zxpdemonio](https://github.com/zxpdemonio)), Haizhou Zhao ([@hydrozhao](https://github.com/hydrozhao)), Zhiyuan Cheng ([@SendoRay](https://github.com/SendoRay)), and Wei Gao ([@gaow0007](https://github.com/gaow0007)).
+The Miles integration was developed and refined with Teng Ma ([@stmatengss](https://github.com/stmatengss)) and [@fzyzcjy](https://github.com/fzyzcjy). Thanks to [@guapisolo](https://github.com/guapisolo) and Xuchun Shang ([@XucSh](https://github.com/XucSh)) for CI work and review, and to Bo Gao ([@Bo-Vincent](https://github.com/Bo-Vincent)) for testing and validation.
 
 ## Related Links
 
-- Miles PR: [radixark/miles#591](https://github.com/radixark/miles/pull/591)
-- DataProto structured-object usage: [Mooncake documentation](https://github.com/kvcache-ai/Mooncake/blob/main/docs/source/api-reference/python/dataproto-structured-object-transfer.md)
 - Mooncake project: [https://github.com/kvcache-ai/Mooncake](https://github.com/kvcache-ai/Mooncake)
 - Mooncake documentation: [https://kvcache-ai.github.io/Mooncake/](https://kvcache-ai.github.io/Mooncake/)

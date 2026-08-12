@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1000" height="580" viewBox="0 0 1000 580" role="img" aria-labelledby="title desc">
-  <title id="title">Mooncake structured-object transfer</title>
-  <desc id="desc">Symmetric PUT and GET lanes connect a dict or DataProto object to leaf expansion or object rebuild, the codec, and Bundle Store. Bundle Store contains a manifest, structured metadata, typed payloads, and the BufferPool fast path.</desc>
+  <title id="title">Mooncake transfer path for a Miles rollout dictionary</title>
+  <desc id="desc">PUT and GET connect a Miles rollout dictionary to field expansion or object rebuild, the codec, and Bundle Store. Bundle Store contains a manifest, structured metadata, typed payloads, and the BufferPool fast path.</desc>
   <defs>
     <marker id="arrow-right" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 0 L10 5 L0 10 z" fill="#187a6d"/>
@@ -35,16 +35,16 @@
   </defs>
 
   <rect class="bg" width="1000" height="580"/>
-  <text class="title" x="38" y="48">Mooncake structured-object transfer</text>
-  <text class="subtitle" x="38" y="78">Symmetric object paths around the codec and Bundle Store</text>
+  <text class="title" x="38" y="48">How Mooncake transfers a Miles rollout dict</text>
+  <text class="subtitle" x="38" y="78">The codec preserves fields while the Bundle Store moves their payloads</text>
 
   <rect class="panel" x="35" y="104" width="930" height="430" rx="7"/>
 
   <!-- Symmetric public object lanes. -->
   <text class="lane-put" x="48" y="220">PUT</text>
   <rect class="neutral" x="85" y="176" width="130" height="74" rx="6"/>
-  <text class="box-label" x="150" y="207" text-anchor="middle">dict / DataProto</text>
-  <text class="small" x="150" y="231" text-anchor="middle">complete input</text>
+  <text class="box-label" x="150" y="207" text-anchor="middle">Miles rollout dict</text>
+  <text class="small" x="150" y="231" text-anchor="middle">completed batch</text>
 
   <path class="put" d="M215 213 H255"/>
   <rect class="neutral" x="260" y="176" width="120" height="74" rx="6"/>
@@ -54,13 +54,13 @@
 
   <text class="lane-get" x="45" y="437">GET</text>
   <rect class="neutral" x="85" y="393" width="130" height="74" rx="6"/>
-  <text class="box-label" x="150" y="424" text-anchor="middle">dict / DataProto</text>
-  <text class="small" x="150" y="448" text-anchor="middle">selected subset</text>
+  <text class="box-label" x="150" y="424" text-anchor="middle">Miles rollout dict</text>
+  <text class="small" x="150" y="448" text-anchor="middle">reconstructed batch</text>
 
   <path class="get" d="M260 430 H219"/>
   <rect class="neutral" x="260" y="393" width="120" height="74" rx="6"/>
   <text class="box-label" x="320" y="424" text-anchor="middle">Object rebuild</text>
-  <text class="small" x="320" y="448" text-anchor="middle">fields / rows</text>
+  <text class="small" x="320" y="448" text-anchor="middle">original field values</text>
   <path class="get" d="M430 430 H384"/>
 
   <!-- Central codec. -->
@@ -75,7 +75,7 @@
 
   <line class="divider" x1="450" y1="342" x2="630" y2="342"/>
   <text class="label" x="540" y="411" text-anchor="middle">DECODE</text>
-  <text class="small" x="540" y="435" text-anchor="middle">members to fields / rows</text>
+  <text class="small" x="540" y="435" text-anchor="middle">typed members to fields</text>
 
   <path class="put" d="M650 213 H715"/>
   <path class="get" d="M720 430 H654"/>

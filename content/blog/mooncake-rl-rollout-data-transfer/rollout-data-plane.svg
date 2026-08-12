@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="590" viewBox="0 0 760 590" role="img" aria-labelledby="title desc">
-  <title id="title">Synchronous completed-object handoff</title>
+  <title id="title">Miles rollout handoff with Mooncake</title>
   <desc id="desc">The producer synchronously writes a completed rollout dictionary to Mooncake. The scheduler passes the returned reference to the trainer, which synchronously reads the payload from the Store.</desc>
   <defs>
     <marker id="arrow-data" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">

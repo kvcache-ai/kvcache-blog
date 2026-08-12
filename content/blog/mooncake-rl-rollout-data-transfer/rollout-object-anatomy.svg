@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="430" viewBox="0 0 760 430" role="img" aria-labelledby="title desc">
-  <title id="title">Miles rollout bytes per sample</title>
-  <desc id="desc">Tokens, loss masks, and rollout log probabilities account for about 98.9 percent of one captured Miles sample. Smaller fields carry identifiers, lengths, rewards, flags, and version metadata.</desc>
+  <title id="title">Qwen3-0.6B Miles benchmark capture</title>
+  <desc id="desc">In one Qwen3-0.6B Miles benchmark capture, tokens, loss masks, and rollout log probabilities account for about 98.9 percent of the average logical bytes per sample. These values are capture-specific.</desc>
   <defs>
     <style>
       .bg { fill: #fbfaf7; }
@@ -39,5 +39,5 @@
   <text x="50" y="250" class="label">~98.9% in three array-list fields</text>
   <text x="50" y="302" class="label">Smaller fields still preserve:</text>
   <text x="50" y="340" class="body">IDs · lengths · rewards · flags · weight versions</text>
-  <text x="50" y="378" class="body">~3,422 logical bytes per sample in this capture</text>
+  <text x="50" y="378" class="body">Qwen3-0.6B capture · ~3,422 B/sample average</text>
 </svg>
