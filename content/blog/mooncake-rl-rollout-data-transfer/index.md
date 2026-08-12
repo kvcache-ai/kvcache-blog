@@ -19,17 +19,52 @@ image:
   alt_text: "Mooncake structured-object transfer for RL rollout data"
 ---
 
-Every policy update starts with data produced by rollout workers. They run the current policy and collect prompts, generated tokens, masks, log probabilities, rewards, and metadata. That batch then has to reach a trainer before the next learning step can begin. A slow handoff leaves the trainer waiting and keeps rollout-worker memory occupied; an incorrect one changes the training input itself.
+## Rollout Data in Disaggregated RL Systems
 
-This path is now available in Miles: [radixark/miles#591](https://github.com/radixark/miles/pull/591) adds Mooncake as a rollout data-transfer backend without changing the framework's scheduler, rollout manager, or trainer.
+Reinforcement learning for large language models combines two very different workloads: **rollout generation** and **model training**.
 
-## Why Rollout Data Needs Structured Transfer
+During rollout, inference workers run the current policy on a set of prompts and generate responses. Along the way, they produce the information required by the learning algorithm, including generated tokens, masks, log probabilities, rewards, sequence lengths, sample identifiers, and other metadata. Together, these outputs form the **rollout data** that will be consumed by the next training step.
 
-A rollout batch is not one contiguous tensor or a convenient byte string. It is a dict or DataProto object containing tensors, ndarrays, ragged per-sample values, scalar lists, metadata, and sometimes multimodal fields. Putting a generic serializer in front of the Store misses three parts of the problem.
+At small scale, generation and training can share the same execution environment. At larger scale, however, modern RL systems increasingly adopt a **disaggregated architecture**, where rollout generation and training are deployed as separate worker groups, often across different processes, GPUs, or machines.
 
-1. **The object may be highly fragmented in memory.** What looks like one field in Python can be a list of thousands of small NumPy arrays. Pickle has to walk, copy, and later rebuild that object graph. Writing every leaf separately simply turns the same fragmentation into many Store operations and repeated memory registration. Mooncake keeps the structure visible and, when the fast path is available, packs fragmented data into reusable registered buffers.
-2. **Different field types need different performance paths.** Dense tensors, ragged rows, scalar lists, bytes, and Python objects do not benefit from the same encoding. Sending all of them through one generic serializer adds conversion and reconstruction work and gives up bulk copies, typed buffers, and compact ragged layouts. Mooncake chooses a codec for each field while retaining the dtype, shape, row boundaries, null state, and Python values needed on the other side.
-3. **DataProto fields or row groups may be ready at different times.** A pipeline should be able to publish completed fields for existing rows or publish newly completed rows without rewriting earlier payloads, then read only the fields and rows it needs. Each Mooncake call is synchronous; a framework can still build an asynchronous pipeline by publishing completed groups at different times.
+The two stages have fundamentally different resource and execution characteristics. Rollout is an inference-heavy workload whose throughput depends on decoding efficiency, batching, and request scheduling, while training relies on large, highly synchronized tensor computations. Separating them allows each side to be scaled and scheduled independently instead of forcing both workloads into the same execution pattern.
+
+This separation also enables **pipeline-level concurrency**. Systems such as **Miles and slime** can train on rollout *N* while rollout workers are already generating rollout *N+1*. Asynchronous RL systems can therefore allow rollout and training workers to progress at different rates rather than making one stage wait for the other after every operation.
+The benefit is better resource utilization and greater flexibility in how inference and training capacity are provisioned. But disaggregation also introduces a new systems boundary: **the data produced by rollout workers must now move to a different set of workers before training can consume it**.
+
+That handoff sits directly between generation and the next policy update. A slow transfer can leave trainers waiting for data and keep memory occupied on rollout workers longer than necessary. For distributed RL systems such as Miles and slime, efficiently moving this **structured rollout data from the inference side to the training side** therefore becomes an important part of the end-to-end RL pipeline.
+
+## What Makes RL Rollout Data Transfer Challenging
+
+RL rollout data differs significantly from the large, regular tensors commonly moved in distributed training.
+
+A rollout batch is usually a **heterogeneous structured object** rather than a single contiguous tensor. Depending on the framework and algorithm, it may contain generated tokens, loss masks, log probabilities, rewards, sequence lengths, sample identifiers, routing information, metadata, and other auxiliary fields. These values can be represented as tensors, NumPy arrays, Python scalar lists, variable-length per-sample arrays, bytes, or arbitrary Python objects.
+
+Several properties make this data particularly challenging to move efficiently.
+
+**Challenge 1: Heterogeneous Data Types and Complex Semantics**
+
+Different rollout fields have fundamentally different representations and semantics. Dense tensors and numeric arrays can be transferred efficiently as typed buffers, while ragged sequences need row-boundary information, scalar lists need their original values preserved, and metadata or Python objects may require more general encoding. At the same time, the trainer must reconstruct the exact structure expected by the RL framework, including dtype, shape, row order, null state, and metadata. A generic serializer can handle these objects functionally, but often at the cost of extra conversion, copying, and reconstruction. Efficient rollout transfer therefore needs to understand both the physical representation and the logical structure of each field.
+
+**Challenge 2: Highly Fragmented Memory Layout**
+
+Rollout data can contain a very large number of small memory allocations. In the captured Miles workload, major fields such as tokens, loss_masks, and rollout_log_probs are represented as list[np.ndarray], with one NumPy array allocated for each sample. As batch size grows, transferring these fragments individually introduces repeated memory registration and Store operations, while serializing the full Python object requires walking, copying, and rebuilding a large object graph. The challenge is to turn fragmented logical data into efficient bulk transfers without losing its original structure.
+
+**Challenge 3: Incremental Production and Partial Consumption**
+
+In asynchronous RL pipelines, rollout data may not become ready all at once. Different DataProto fields may be completed at different times for the same rows, while new row groups may also arrive later. An efficient data path should allow producers to publish newly completed fields or rows without rewriting payloads that have already been transferred. On the consumer side, different workers may only need a subset of the available fields or rows, so they should be able to fetch only the data they actually need instead of materializing the full object every time. This enables pipeline-level asynchrony even when individual transfer operations themselves remain synchronous.
+
+Together, these challenges make rollout data movement more than a bandwidth problem: the system must efficiently move fragmented, heterogeneous data while preserving its structure and supporting incremental production and selective consumption.
+
+
+An effective data path needs to satisfy several requirements at the same time:
+
+* **Efficiency:** avoid excessive serialization, copying, object reconstruction, and per-allocation transfer overhead.
+* **Correctness:** preserve field types, shapes, row boundaries, null state, metadata, and Python-level values through the round trip.
+* **Scalability:** continue to perform well as the number of samples, object fragments, and total payload size increase.
+* **Flexibility:** support heterogeneous fields without forcing the RL framework to flatten or rewrite its native rollout representation.
+* **Predictable handoff latency:** deliver the batch quickly enough that the trainer does not stall waiting for rollout data.
+
 
 ## References on the Control Plane, Payloads on the Data Plane
 
