@@ -56,7 +56,6 @@ In asynchronous RL pipelines, rollout data may not become ready all at once. Dif
 
 Together, these challenges make rollout data movement more than a bandwidth problem: the system must efficiently move fragmented, heterogeneous data while preserving its structure and supporting incremental production and selective consumption.
 
-
 An effective data path needs to satisfy several requirements at the same time:
 
 * **Efficiency:** avoid excessive serialization, copying, object reconstruction, and per-allocation transfer overhead.
@@ -65,78 +64,100 @@ An effective data path needs to satisfy several requirements at the same time:
 * **Flexibility:** support heterogeneous fields without forcing the RL framework to flatten or rewrite its native rollout representation.
 * **Predictable handoff latency:** deliver the batch quickly enough that the trainer does not stall waiting for rollout data.
 
+## Powering Miles Rollout Data Transfer with Mooncake
 
-## References on the Control Plane, Payloads on the Data Plane
+**Miles** is a high-performance reinforcement learning framework for large-scale model post-training. It combines **SGLang for high-throughput rollout generation** with **Megatron-LM for scalable training**, and also provides a PyTorch FSDP2 backend for workloads that prefer to train Hugging Face model implementations directly. Miles supports fully asynchronous RL, where rollout and training workers are decoupled and can progress independently, together with features such as fast in-loop weight updates, agentic rollout, low-precision training, and fault tolerance for large-scale production RL workloads.
 
-Asynchronous RL lets rollout and trainer workers run at different speeds. Once they live in separate processes or on separate machines, each completed batch has to cross that boundary before training can use it.
+This disaggregated and asynchronous design makes the rollout-to-training data path a critical part of the RL pipeline. Rollout batches are structured and heterogeneous, often containing fragmented per-sample data and framework-specific metadata, making efficient transfer and reconstruction increasingly important as workload scale grows.
 
-The scheduler should decide where the batch goes, not carry the batch itself. It passes a transfer reference that excludes tensor payloads and Store chunk layouts, although the reference may still contain JSON-safe metadata. The payload takes a separate route:
+**Mooncake** provides a high-performance data plane for distributed AI workloads. For RL rollout data, it extends this data plane with structured-object transfer, allowing heterogeneous and fragmented rollout objects to be moved while preserving their original structure and semantics.
 
-- the framework scheduler passes the transfer reference;
-- Mooncake stores and transfers the payload;
-- the training worker reconstructs the original object before running the step;
-- framework cleanup removes the short-lived Store object after its readers finish.
+Mooncake has now been integrated into Miles as a rollout data-transfer backend. On rollout data captured from Miles, the integration delivers substantially lower transfer latency than the existing Ray path: Mooncake achieves **10.6× to 14.1× faster remote GET**, while also improving PUT performance across payload sizes from 128 MiB to 4 GiB.
 
-## Two Rollout Handoff Protocols
+The result is a faster rollout-to-training handoff without changing the RL programming model, providing Miles with a more efficient data path for large, structured rollout workloads.
 
-Two handoff patterns sit above the Store data plane. Here, protocol means when an object becomes visible and what a reader may request, not whether the bytes move over RDMA or TCP.
+## How Rollout Data Moves Through the RL Pipeline
 
-### Flat Dict: Completed-Object Handoff
+In asynchronous RL systems, rollout generation and training can progress at different speeds. Once rollout workers and trainers are deployed in separate processes or on separate machines, each completed rollout batch must cross that boundary before it can be consumed by the next training step.
 
-In Miles and slime, the handoff starts after the complete rollout dict is ready. The producer calls `put(data, type="dict")`, the scheduler carries the returned reference, and the trainer calls `get` to rebuild the dict.
+A useful design principle is to separate the **control plane** from the **data plane**. The framework scheduler decides where a rollout batch should go, but it should not carry the bulk payload itself. Instead, it passes a lightweight transfer reference that excludes tensor payloads and Store chunk layouts, while still allowing JSON-safe metadata when needed. The actual rollout payload takes a separate path:
 
-![Synchronous rollout transfer for Miles and slime](rollout-data-plane.svg)
+* the framework scheduler passes the transfer reference;
+* Mooncake stores and transfers the payload;
+* the training worker reconstructs the original object before running the training step;
+* after all readers finish, the framework removes the short-lived Store object.
 
-_Figure 1. Miles and slime use synchronous `put` and `get` for a completed rollout dict. The reference travels through the scheduler, while Mooncake moves the payload through the Store data plane._
+This separation keeps scheduling decisions lightweight while allowing the bulk rollout payload to move through a dedicated data path.
 
-Both frameworks also provide asynchronous RL loops, but that concurrency sits above the transfer call. They can generate rollout *N+1* while training on rollout *N*; the producer returns the reference only after `put` completes, and the trainer waits for `get` before consuming the object.
+### What Miles Actually Transfers
 
-### DataProto: Incremental Publication and Partial Reads
+The rollout data captured from **Miles** makes this data path concrete. For a given framework configuration, the set of fields is stable, but those fields do not share a single convenient in-memory representation.
 
-The DataProto path preserves three sections: row-aligned tensor fields in `batch`, row-aligned non-tensor fields in `non_tensor_batch`, and object-level values in `meta_info`. Incremental publication can happen in two dimensions:
+The benchmark uses rollout-source data captured directly from Miles. Each additional sample contributes approximately **3,422 logical bytes** to the rollout dictionary. Larger benchmark cases repeat the captured samples while preserving their original field types and memory fragmentation, rather than replacing them with synthetic dense tensors.
 
-- **Fields arrive later for the same rows.** `append_dataproto_fields()` writes a structured object for the new fields and returns an updated handle. Earlier payloads are not rewritten, and the appended row-aligned fields must use the original batch size.
-- **New rows arrive later.** Each completed row group is stored as a separate DataProto fragment with `put(..., type="dataproto")`. A framework index or `DataProtoCatalog` maps logical keys to fragment rows, so readers can compose the requested row order without physically extending an existing handle.
+Most of the payload is stored as per-sample NumPy arrays inside Python lists instead of as one contiguous tensor:
 
-A consumer can select fields and rows together, so a worker that needs two columns for part of the batch does not have to materialize the rest. Mooncake skips unrequested members and, where the stored layout supports it, reads only the byte ranges for the selected rows.
+| Field               | Layout Before Transfer | Data Type        |  Size Per Sample | Layout Characteristic                                                                    |
+| ------------------- | ---------------------- | ---------------- | ---------------: | ---------------------------------------------------------------------------------------- |
+| `tokens`            | `list[np.ndarray]`     | `int32`          |         ~1,338 B | Ragged per-sample token arrays.                                                          |
+| `loss_masks`        | `list[np.ndarray]`     | `int32`          |          1,024 B | One array per sample; fixed length 256 in this data set.                                 |
+| `rollout_log_probs` | `list[np.ndarray]`     | `float32`        |          1,024 B | One array per sample; fixed length 256 in this data set.                                 |
+| `partition`         | Python list            | `int`            |            small | High-cardinality scalar field; one distinct value per sample in the generated benchmark. |
+| `sample_indices`    | Python list            | `int`            |            small | High-cardinality scalar field; one distinct value per sample.                            |
+| `response_lengths`  | Python list            | `int`            |            small | Low-cardinality scalar field; all values are 256.                                        |
+| `rewards`           | Python list            | `float`          |            small | Low-cardinality scalar field in this capture; all values are 0.0.                        |
+| `truncated`         | Python list            | `int`            |            small | Low-cardinality scalar field in this capture; all values are 1.                          |
+| `weight_versions`   | Python list of objects | list-like object | ~25 B serialized | Low-cardinality object field in this capture; still needs object-preserving encoding.    |
+| `raw_reward`        | Python list            | `float`          |            small | Metadata-style list; all values are 0.0 in this capture.                                 |
+| `total_lengths`     | Python list            | `int`            |            small | Per-sample total sequence length; values vary with prompt length in this capture.        |
 
-![DataProto incremental publication and partial reads](dataproto-staged-transfer.svg?v=8)
+The three array-list fields—`tokens`, `loss_masks`, and `rollout_log_probs`—contribute about **3,386 bytes per sample** and dominate the transfer volume. The smaller scalar and object fields account for far fewer bytes, but they still carry routing, length, reward, and bookkeeping state required by training.
 
-_Figure 2. DataProto can grow logically by adding fields to existing rows or by publishing new row fragments. These are different operations: only the first uses `append_dataproto_fields()`. A partial GET materializes the intersection of the requested fields and rows._
-
-The calls themselves are synchronous: a group becomes visible after its PUT and index update finish, and GET returns after the requested data is materialized. Pipeline-level asynchrony comes from the framework publishing completed field or row groups at different times while other work continues.
-
-## What Miles Sends
-
-_A fragmented, heterogeneous rollout batch_
-
-The captured Miles batch makes the layout problem concrete. Its fields are stable for a given configuration, but they do not share one useful in-memory representation.
-
-The benchmark uses rollout-source data captured from Miles. Each additional sample contributes about 3,422 logical bytes to the dict. Larger cases repeat those samples, preserving the original field types and fragmentation instead of replacing them with synthetic dense tensors.
-
-Most bytes arrive as per-sample arrays held in Python lists, not as one dense tensor:
-
-| Field | Layout Before Transfer | Data Type | Size Per Sample | Layout Characteristic |
-| --- | --- | --- | ---: | --- |
-| `tokens` | `list[np.ndarray]` | `int32` | ~1,338 B | Ragged per-sample token arrays. |
-| `loss_masks` | `list[np.ndarray]` | `int32` | 1,024 B | One array per sample; fixed length 256 in this data set. |
-| `rollout_log_probs` | `list[np.ndarray]` | `float32` | 1,024 B | One array per sample; fixed length 256 in this data set. |
-| `partition` | Python list | `int` | small | High-cardinality scalar field; one distinct value per sample in the generated benchmark. |
-| `sample_indices` | Python list | `int` | small | High-cardinality scalar field; one distinct value per sample. |
-| `response_lengths` | Python list | `int` | small | Low-cardinality scalar field; all values are 256. |
-| `rewards` | Python list | `float` | small | Low-cardinality scalar field in this capture; all values are 0.0. |
-| `truncated` | Python list | `int` | small | Low-cardinality scalar field in this capture; all values are 1. |
-| `weight_versions` | Python list of objects | list-like object | ~25 B serialized | Low-cardinality object field in this capture; still needs object-preserving encoding. |
-| `raw_reward` | Python list | `float` | small | Metadata-style list; all values are 0.0 in this capture. |
-| `total_lengths` | Python list | `int` | small | Per-sample total sequence length; values vary with prompt length in this capture. |
-
-The three array-list fields add up to about 3,386 bytes per sample and dominate transfer volume. The smaller scalar and object fields still carry routing, length, reward, and bookkeeping state.
-
-Fragmentation matters as much as byte count. Each array-list field contains one allocation per sample, so the object count grows with the batch. The smaller fields cannot be dropped or normalized: some are identifiers, while others merely happen to be constant in this capture. Both the typed bytes and the original Python values must survive the round trip.
+Fragmentation matters as much as total byte count. Each of the three array-list fields contains one allocation per sample, so the number of objects grows with the batch size. At the same time, the smaller fields cannot simply be dropped or normalized away: some are identifiers, while others only happen to be constant in this particular capture. Both the typed payload bytes and the original Python values must survive the transfer and reconstruction process.
 
 ![Miles rollout object anatomy](rollout-object-anatomy.svg)
 
-_Figure 3. One sample adds about 3,422 logical bytes in this Miles capture. Three array-list fields contribute about 98.9% of those bytes; the remaining fields are smaller but still required by training._
+*Figure 1. One sample adds about 3,422 logical bytes in this Miles capture. Three array-list fields contribute about 98.9% of those bytes; the remaining fields are smaller but still required by training.*
+
+### Two Rollout Handoff Protocols
+
+Above the Store data plane, rollout data can follow different handoff protocols. Here, **protocol** refers to when an object becomes visible to consumers and what a reader is allowed to request—not whether the underlying bytes move over RDMA or TCP.
+
+#### Flat Dict: Completed-Object Handoff
+
+In **Miles and slime**, the current handoff begins after the complete rollout dictionary is ready. The producer calls `put(data, type="dict")`, the scheduler carries the returned reference, and the trainer calls `get` to reconstruct the original dictionary.
+
+![Synchronous rollout transfer for Miles and slime](rollout-data-plane.svg)
+
+*Figure 2. Miles and slime use synchronous `put` and `get` for a completed rollout dict. The reference travels through the scheduler, while Mooncake moves the payload through the Store data plane.*
+
+The individual transfer calls are synchronous. The producer returns the reference only after `put` completes, and the trainer waits for `get` to finish before consuming the object.
+
+This does not prevent the RL pipeline itself from being asynchronous. Miles and slime can generate rollout *N+1* while training on rollout *N*. In other words, the concurrency sits above the transfer operation: each individual handoff is synchronous, while different rollout and training stages can overlap at the pipeline level.
+
+#### DataProto: Incremental Publication and Partial Reads
+
+Some RL pipelines need finer-grained handoff than a completed rollout dictionary. The **DataProto** path preserves three explicit sections:
+
+* `batch` for row-aligned tensor fields;
+* `non_tensor_batch` for row-aligned non-tensor fields;
+* `meta_info` for object-level values.
+
+Unlike the completed-object handoff, DataProto allows rollout data to become visible incrementally in two dimensions.
+
+**Fields may arrive later for the same rows.** `append_dataproto_fields()` writes a new structured object containing the newly completed fields and returns an updated handle. Existing payloads are not rewritten, and appended row-aligned fields must use the original batch size.
+
+**New rows may arrive later.** Each completed row group is stored as a separate DataProto fragment using `put(..., type="dataproto")`. A framework index or `DataProtoCatalog` maps logical keys to fragment rows, allowing readers to compose the requested logical row order without physically extending an existing handle.
+
+Consumers can also select **fields and rows together**. A worker that needs only two fields for part of a batch does not have to materialize the rest of the DataProto object. Mooncake skips unrequested members and, where the stored layout supports it, reads only the byte ranges corresponding to the selected rows.
+
+![DataProto incremental publication and partial reads](dataproto-staged-transfer.svg?v=8)
+
+*Figure 3. DataProto can grow logically by adding fields to existing rows or by publishing new row fragments. These are different operations: only the first uses `append_dataproto_fields()`. A partial GET materializes the intersection of the requested fields and rows.*
+
+The individual operations remain synchronous. A newly published group becomes visible only after its PUT and index update complete, and GET returns only after the requested data has been materialized.
+
+Pipeline-level asynchrony comes from publishing completed field groups or row groups at different times while other work continues. This allows rollout production, data movement, and downstream consumption to overlap without requiring each individual Store operation to become asynchronous.
 
 ## How Mooncake Preserves and Transfers a Rollout Object
 
