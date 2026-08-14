@@ -1,5 +1,5 @@
 ---
-title: "Miles Rollout Data Transfer with Mooncake"
+title: "Mooncake for Miles: From Fragmented Rollout Data to Efficient Bulk I/O"
 summary: "Miles now supports Mooncake as a rollout data-transfer backend for heterogeneous, fragmented Python rollout batches."
 date: 2026-08-11
 authors:
@@ -111,7 +111,9 @@ This does not prevent the RL pipeline itself from being asynchronous. Miles can 
 
 ## How Mooncake Preserves and Transfers Miles Rollout Data
 
-Mooncake does not ask Miles to flatten or rewrite its rollout dict. The public path remains `put(data, type="dict")` and `get(ref, type="dict")`; the structured-object layer chooses the physical layout underneath. Its optimizations follow directly from the challenges above.
+Mooncake tackles the two challenges at different layers. It keeps the structure visible long enough to choose an efficient representation for each field: tensors and arrays stay typed, ragged rows carry compact boundary metadata, and Python values retain what GET needs to rebuild them. It then turns fragmented memory into bulk I/O. A copy plan packs eligible small rows directly into reusable, registered BufferPool chunks, while large contiguous tensors and arrays can use native Store paths. This avoids both extremes: serializing the entire dict as one opaque blob or issuing a Store operation for every small allocation.
+
+The resulting payload members are published as a bundle. Its manifest records where those members live and how they fit together, and becomes visible only after the payload is ready. GET follows that description in reverse to fetch and reconstruct the original Miles dict. Miles still uses the small public interface, `put(data, type="dict")` and `get(ref, type="dict")`; the schema, field layouts, transfer plan, and reconstruction remain inside Mooncake.
 
 ![Mooncake structured-object transfer architecture](structured-transfer-architecture.svg)
 
@@ -190,7 +192,7 @@ The Miles integration establishes the basic data path. The main priority now is 
 
 ## Acknowledgements
 
-We thank Xinpeng Zhao ([@zxpdemonio](https://github.com/zxpdemonio)), Yufeng He ([@he-yufeng](https://github.com/he-yufeng)), [@yokinoshitayoki](https://github.com/yokinoshitayoki), Teng Ma ([@stmatengss](https://github.com/stmatengss)), [@fzyzcjy](https://github.com/fzyzcjy), [@guapisolo](https://github.com/guapisolo), Xuchun Shang ([@XucSh](https://github.com/XucSh)), and Bo Gao ([@Bo-Vincent](https://github.com/Bo-Vincent)) for their contributions to Mooncake's structured transfer, the Miles integration, review, CI, and end-to-end validation.
+This work crossed several repository boundaries, and so did its review and validation. Beyond the completed Miles integration, integration work with slime and ROLL is also ongoing. We thank Xinpeng Zhao ([@zxpdemonio](https://github.com/zxpdemonio)), Yufeng He ([@he-yufeng](https://github.com/he-yufeng)), Teng Ma ([@stmatengss](https://github.com/stmatengss)), [@fzyzcjy](https://github.com/fzyzcjy), [@guapisolo](https://github.com/guapisolo), Xuchun Shang ([@XucSh](https://github.com/XucSh)), Zilin Zhu ([@zhuzilin](https://github.com/zhuzilin)), Bo Gao ([@Bo-Vincent](https://github.com/Bo-Vincent)), Lei Li ([@lilei199908](https://github.com/lilei199908)), Haizhou Zhao ([@hydrozhao](https://github.com/hydrozhao)), Zhiyuan Cheng ([@SendoRay](https://github.com/SendoRay)), Xingyuan Wu ([@yokinoshitayoki](https://github.com/yokinoshitayoki)) and Wei Gao ([@gaow0007](https://github.com/gaow0007)) for their contributions across Mooncake implementation and review, Miles integration and validation, and design feedback, review, and testing for the slime and ROLL integrations.
 
 ## Related Links
 
