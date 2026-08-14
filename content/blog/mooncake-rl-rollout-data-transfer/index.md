@@ -50,11 +50,7 @@ Different rollout fields have fundamentally different representations and semant
 
 Rollout data can contain a very large number of small memory allocations. In the captured Miles workload, major fields such as tokens, loss_masks, and rollout_log_probs are represented as list[np.ndarray], with one NumPy array allocated for each sample. As batch size grows, transferring these fragments individually introduces repeated memory registration and Store operations, while serializing the full Python object requires walking, copying, and rebuilding a large object graph. The challenge is to turn fragmented logical data into efficient bulk transfers without losing its original structure.
 
-**Challenge 3: Incremental Production and Partial Consumption**
-
-In asynchronous RL pipelines, rollout data may not become ready all at once. Different DataProto fields may be completed at different times for the same rows, while new row groups may also arrive later. An efficient data path should allow producers to publish newly completed fields or rows without rewriting payloads that have already been transferred. On the consumer side, different workers may only need a subset of the available fields or rows, so they should be able to fetch only the data they actually need instead of materializing the full object every time. Mooncake supports this through its DataProto path; the current Miles integration uses the simpler completed-dict handoff described below.
-
-Together, these challenges make rollout data movement more than a bandwidth problem: the system must efficiently move fragmented, heterogeneous data while preserving its structure and supporting incremental production and selective consumption.
+Together, these challenges make rollout data movement more than a bandwidth problem: the system must efficiently move fragmented, heterogeneous data while preserving its structure.
 
 An effective data path needs to satisfy several requirements at the same time:
 
@@ -101,11 +97,7 @@ The rollout data captured from **Miles** makes this data path concrete. For a gi
 
 The first group carries most of the bytes in our capture. The other fields are smaller, but they cannot be discarded or normalized away: they carry sample identity, lengths, rewards, feature state, and bookkeeping information. Their exact size depends on the workload; the benchmark section gives one measured example.
 
-### Two Rollout Handoff Protocols
-
-Above the Store data plane, rollout data can follow different handoff protocols. Here, **protocol** refers to when an object becomes visible to consumers and what a reader is allowed to request—not whether the underlying bytes move over RDMA or TCP.
-
-#### Flat Dict: Completed-Object Handoff
+### Miles Uses a Completed-Dict Handoff
 
 In **Miles**, the current handoff begins after the complete rollout dictionary is ready. The producer calls `put(data, type="dict")`, the scheduler carries the returned reference, and the trainer calls `get` to reconstruct the original dictionary.
 
@@ -117,37 +109,13 @@ The individual transfer calls are synchronous. The producer returns the referenc
 
 This does not prevent the RL pipeline itself from being asynchronous. Miles can generate rollout *N+1* while training on rollout *N*. In other words, the concurrency sits above the transfer operation: each individual handoff is synchronous, while different rollout and training stages can overlap at the pipeline level.
 
-#### DataProto: Incremental Publication and Partial Reads
-
-Some RL pipelines need finer-grained handoff than a completed rollout dictionary. The **DataProto** path preserves three explicit sections:
-
-* `batch` for row-aligned tensor fields;
-* `non_tensor_batch` for row-aligned non-tensor fields;
-* `meta_info` for object-level values.
-
-Unlike the completed-object handoff, DataProto allows rollout data to become visible incrementally in two dimensions.
-
-**Fields may arrive later for the same rows.** `append_dataproto_fields()` writes a new structured object containing the newly completed fields and returns an updated handle. Existing payloads are not rewritten, and appended row-aligned fields must use the original batch size.
-
-**New rows may arrive later.** Each completed row group is stored as a separate DataProto fragment using `put(..., type="dataproto")`. A framework index or `DataProtoCatalog` maps logical keys to fragment rows, allowing readers to compose the requested logical row order without physically extending an existing handle.
-
-Consumers can also select **fields and rows together**. A worker that needs only two fields for part of a batch does not have to materialize the rest of the DataProto object. Mooncake skips unrequested members and, where the stored layout supports it, reads only the byte ranges corresponding to the selected rows.
-
-![DataProto incremental publication and partial reads](dataproto-staged-transfer.svg?v=8)
-
-*Figure 2. DataProto can grow logically by adding fields to existing rows or by publishing new row fragments. These are different operations: only the first uses `append_dataproto_fields()`. A partial GET materializes the intersection of the requested fields and rows.*
-
-The individual operations remain synchronous. A newly published group becomes visible only after its PUT and index update complete, and GET returns only after the requested data has been materialized.
-
-Pipeline-level asynchrony comes from publishing completed field groups or row groups at different times while other work continues. This allows rollout production, data movement, and downstream consumption to overlap without requiring each individual Store operation to become asynchronous.
-
 ## How Mooncake Preserves and Transfers Miles Rollout Data
 
 Mooncake does not ask Miles to flatten or rewrite its rollout dict. The public path remains `put(data, type="dict")` and `get(ref, type="dict")`; the structured-object layer chooses the physical layout underneath. Its optimizations follow directly from the challenges above.
 
 ![Mooncake structured-object transfer architecture](structured-transfer-architecture.svg)
 
-*Figure 3. Schema and leaf expansion expose each field's type and structure. Field-specific encoding produces typed payload members and reconstruction metadata; the Bundle Store publishes their manifest last. Eligible fragmented transfers use BufferPool-backed staging, and GET follows the same structure in reverse.*
+*Figure 2. Schema and leaf expansion expose each field's type and structure. Field-specific encoding produces typed payload members and reconstruction metadata; the Bundle Store publishes their manifest last. Eligible fragmented transfers use BufferPool-backed staging, and GET follows the same structure in reverse.*
 
 ### Choose a Layout for Each Field
 
@@ -167,7 +135,7 @@ The trainer releases its local BufferPool-backed result after use. Once all read
 
 ![Rollout data challenges and Mooncake optimizations](challenge-response.svg)
 
-*Figure 4. Each rollout data challenge maps to a specific structured-transfer optimization. Miles uses the completed-dict path; DataProto adds incremental publication and partial reads for pipelines that need them.*
+*Figure 3. The two main Miles rollout data challenges map directly to Mooncake's structured encoding and bulk-transfer optimizations.*
 
 ## Performance Results
 
@@ -189,7 +157,7 @@ The first three fields account for about 3,386 bytes, or 98.9% of this particula
 
 ![Miles rollout object anatomy](rollout-object-anatomy.svg)
 
-_Figure 5. The measured composition of one sample in the Qwen3-0.6B benchmark capture._
+_Figure 4. The measured composition of one sample in the Qwen3-0.6B benchmark capture._
 
 ### Transfer Results
 
@@ -201,17 +169,15 @@ Across the tested payload sizes, Mooncake makes Miles GET roughly 10–14x faste
 
 ![Miles GET latency benchmark](miles-get-latency.svg)
 
-_Figure 6. Mooncake provides roughly 10–14x faster GET for this fragmented Miles rollout layout. The vertical axis uses a logarithmic scale._
+_Figure 5. Mooncake provides roughly 10–14x faster GET for this fragmented Miles rollout layout. The vertical axis uses a logarithmic scale._
 
 PUT shows a smaller gain. Its timed path includes Python-object traversal, ragged-row packing, metadata and manifest construction, and payload transfer. GET improves more for this workload, and the trainer must finish it before starting the training step.
 
 ## Beyond the Miles Integration
 
-The same structured-object layer also supports DataProto-shaped batches. It preserves the `batch`, `non_tensor_batch`, and `meta_info` sections, while adding incremental publication and partial reads for frameworks whose rollout contract carries row and field semantics.
+Mooncake also supports DataProto-based integrations that publish rollout fields incrementally and read selected fields or rows. This is a separate handoff protocol from the completed flat dict used by Miles, so its API and lifecycle are outside the scope of this integration.
 
-DataProto producers do not have to wait for one complete batch. They can add fields for existing rows with `append_dataproto_fields()` or publish newly completed row groups as separate fragments. Earlier payloads are not rewritten, and readers use the resulting handle to select only the fields and rows they need. A Catalog locates logical row and field fragments; each fragment's manifest still describes its physical Store layout. Each Store operation is synchronous; the asynchronous pipeline comes from publishing completed stages at different times while rollout and training continue elsewhere.
-
-This is a different handoff protocol from the completed flat dict used by Miles, so it remains a secondary topic here. The same machinery is also useful outside RL: it has already been validated and used for COO sparse tensors, where typed `indices` and `values` travel with `shape` and structural metadata.
+The structured-object layer is not limited to rollout data. It has also been validated and used for COO sparse tensors, where typed `indices` and `values` travel with their shape and structural metadata.
 
 ## What Comes Next
 
