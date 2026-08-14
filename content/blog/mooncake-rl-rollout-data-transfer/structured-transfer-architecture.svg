@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1000" height="580" viewBox="0 0 1000 580" role="img" aria-labelledby="title desc">
   <title id="title">Mooncake transfer path for a Miles rollout dictionary</title>
-  <desc id="desc">PUT and GET connect a Miles rollout dictionary to field expansion or object rebuild, the codec, and Bundle Store. Bundle Store contains a manifest, structured metadata, typed payloads, and the BufferPool fast path.</desc>
+  <desc id="desc">PUT and GET connect a Miles rollout dictionary to field expansion or object rebuild, field-specific encoding, and Bundle Store. Bundle Store contains a manifest, structured metadata, typed payloads, and the BufferPool fast path.</desc>
   <defs>
     <marker id="arrow-right" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 0 L10 5 L0 10 z" fill="#187a6d"/>
@@ -36,7 +36,7 @@
 
   <rect class="bg" width="1000" height="580"/>
   <text class="title" x="38" y="48">How Mooncake transfers a Miles rollout dict</text>
-  <text class="subtitle" x="38" y="78">The codec preserves fields while the Bundle Store moves their payloads</text>
+  <text class="subtitle" x="38" y="78">Field encoding preserves values while the Bundle Store moves their payloads</text>
 
   <rect class="panel" x="35" y="104" width="930" height="430" rx="7"/>
 
@@ -63,15 +63,15 @@
   <text class="small" x="320" y="448" text-anchor="middle">original field values</text>
   <path class="get" d="M430 430 H384"/>
 
-  <!-- Central codec. -->
+  <!-- Central field encoding. -->
   <rect class="codec" x="430" y="135" width="220" height="340" rx="8"/>
-  <text class="heading" x="540" y="170" text-anchor="middle">CODEC</text>
+  <text class="heading" x="540" y="170" text-anchor="middle">FIELD ENCODING</text>
   <text class="label" x="540" y="213" text-anchor="middle">ENCODE</text>
   <text class="small" x="540" y="237" text-anchor="middle">fields to typed members</text>
 
   <rect class="schema" x="450" y="264" width="180" height="54" rx="6"/>
   <text class="label" x="540" y="286" text-anchor="middle">Field schema</text>
-  <text class="small" x="540" y="307" text-anchor="middle">selects the field codec</text>
+  <text class="small" x="540" y="307" text-anchor="middle">selects the stored layout</text>
 
   <line class="divider" x1="450" y1="342" x2="630" y2="342"/>
   <text class="label" x="540" y="411" text-anchor="middle">DECODE</text>
