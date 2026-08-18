@@ -1,7 +1,7 @@
 ---
 title: "Mooncake for Miles: From Fragmented Rollout Data to Efficient Bulk I/O"
-summary: "Miles now supports Mooncake as a rollout data-transfer backend for heterogeneous, fragmented Python rollout batches."
-date: 2026-08-11
+summary: "Mooncake introduces high-performance structured-object transfer for heterogeneous and fragmented data, bringing this capability to Miles as a new rollout data-transfer backend. The integration delivers 10–14× faster remote GET and 1.2–1.6× faster PUT compared with the existing Ray path."
+date: 2026-08-18
 authors:
   - Mooncake community
 tags:
@@ -13,7 +13,7 @@ tags:
 draft: false
 showathome: true
 commentable: false
-home_weight: 202608110
+home_weight: 202608180
 image:
   preview_only: true
   alt_text: "Miles rollout data transfer with Mooncake"
@@ -101,7 +101,11 @@ The first group carries most of the bytes in our capture. The other fields are s
 
 In **Miles**, the current handoff begins after the complete rollout dictionary is ready. The producer calls `put(data, type="dict")`, the scheduler carries the returned reference, and the trainer calls `get` to reconstruct the original dictionary.
 
-![Synchronous rollout transfer for Miles](rollout-data-plane.svg)
+<center>
+<img src="rollout-data-plane.svg"
+     alt="Synchronous rollout transfer for Miles"
+     style="width:60%; max-width:1100px"/>
+</center>
 
 *Figure 1. Miles uses synchronous `put` and `get` for a completed rollout dict. The reference travels through the scheduler, while Mooncake moves the payload through the Store data plane.*
 
@@ -115,7 +119,11 @@ Mooncake tackles the two challenges at different layers. It keeps the structure 
 
 The resulting payload members are published as a bundle. Its manifest records where those members live and how they fit together, and becomes visible only after the payload is ready. GET follows that description in reverse to fetch and reconstruct the original Miles dict. Miles still uses the small public interface, `put(data, type="dict")` and `get(ref, type="dict")`; the schema, field layouts, transfer plan, and reconstruction remain inside Mooncake.
 
-![Mooncake structured-object transfer architecture](structured-transfer-architecture.svg)
+<center>
+<img src="structured-transfer-architecture.svg"
+     alt="Mooncake structured-object transfer architecture"
+     style="width:70%; max-width:1100px"/>
+</center>
 
 *Figure 2. Schema and leaf expansion expose each field's type and structure. Field-specific encoding produces typed payload members and reconstruction metadata; the Bundle Store publishes their manifest last. Eligible fragmented transfers use BufferPool-backed staging, and GET follows the same structure in reverse.*
 
@@ -135,7 +143,11 @@ Mooncake publishes the bundle manifest only after all payloads and metadata are 
 
 The trainer releases its local BufferPool-backed result after use. Once all readers finish, Miles removes the short-lived Store object and Mooncake reclaims its payload chunks and manifest.
 
-![Rollout data challenges and Mooncake optimizations](challenge-response.svg)
+<center>
+<img src="challenge-response.svg"
+     alt="Rollout data challenges and Mooncake optimizations"
+     style="width:50%; max-width:1100px"/>
+</center>
 
 *Figure 3. The two main Miles rollout data challenges map directly to Mooncake's structured encoding and bulk-transfer optimizations.*
 
@@ -157,7 +169,11 @@ Miles generated the source data with Qwen3-0.6B on math prompts (`rollout_id=0`,
 
 The first three fields account for about 3,386 bytes, or 98.9% of this particular sample layout. Larger benchmark payloads repeat the eight captured samples, preserving their field types and fragmented allocation pattern while increasing the logical sample count. The calculation describes this capture; it does not define a fixed Miles sample size.
 
-![Miles rollout object anatomy](rollout-object-anatomy.svg)
+<center>
+<img src="rollout-object-anatomy.svg"
+     alt="Miles rollout object anatomy"
+     style="width:50%; max-width:1100px"/>
+</center>
 
 _Figure 4. The measured composition of one sample in the Qwen3-0.6B benchmark capture._
 
@@ -169,7 +185,11 @@ PUT is one timed backend call after the producer loads the payload. GET is the m
 
 Across the tested payload sizes, Mooncake makes Miles GET roughly 10–14x faster than the Ray backend. PUT improves by about 1.2–1.6x.
 
-![Miles GET latency benchmark](miles-get-latency.svg)
+<center>
+<img src="miles-get-latency.svg"
+     alt="Miles GET latency benchmark"
+     style="width:40%; max-width:1100px"/>
+</center>
 
 _Figure 5. Mooncake provides roughly 10–14x faster GET for this fragmented Miles rollout layout. The vertical axis uses a logarithmic scale._
 
