@@ -1,7 +1,7 @@
 ---
 title: "Mooncake for Miles: From Fragmented Rollout Data to Efficient Bulk I/O"
 summary: "Mooncake introduces high-performance structured-object transfer for heterogeneous and fragmented data, bringing this capability to Miles as a new rollout data-transfer backend. The integration delivers 10–14× faster remote GET and 1.2–1.6× faster PUT compared with the existing Ray path."
-date: 2026-08-18
+date: 2026-08-20
 authors:
   - Mooncake community
 tags:
