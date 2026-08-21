@@ -25,6 +25,11 @@
     fp4_int4: { label: "FP4 / INT4", bytesPerElement: 0.5 },
   };
 
+  const DEFAULT_RECURRENT_STATE_PRECISIONS = {
+    bf16_fp16: { label: "BF16 / FP16", bytesPerElement: 2 },
+    fp32: { label: "FP32", bytesPerElement: 4 },
+  };
+
   const FORMULA_LABELS = {
     standard_gqa: "Standard MHA/GQA",
     mla: "MLA latent KV",
@@ -61,6 +66,13 @@
 
   function precisionOptions(options) {
     return normalizePrecisionOptions(options && options.precisionOptions, DEFAULT_PRECISIONS);
+  }
+
+  function recurrentStatePrecisionOptions(options) {
+    return normalizePrecisionOptions(
+      options && options.recurrentStatePrecisionOptions,
+      DEFAULT_RECURRENT_STATE_PRECISIONS,
+    );
   }
 
   function isDeepSeekV4(model) {
@@ -115,6 +127,10 @@
     return Boolean(model && model.formula === "kimi_kda_mla_hybrid");
   }
 
+  function hasQwenCheckpointInterval(model) {
+    return Boolean(model && model.formula === "qwen_linear_full_hybrid");
+  }
+
   function hasSconvState(model) {
     return isInkling(model);
   }
@@ -149,10 +165,18 @@
     return parseStateCheckpointInterval(value, Infinity);
   }
 
+  function defaultQwenCheckpointInterval(model) {
+    const value =
+      model && model.fields
+        ? model.fields.default_linear_state_checkpoint_interval
+        : undefined;
+    return parseStateCheckpointInterval(value, Infinity);
+  }
+
   function defaultStateCheckpointInterval(model) {
-    return hasKdaCheckpointInterval(model)
-      ? defaultKdaCheckpointInterval(model)
-      : defaultSconvCheckpointInterval(model);
+    if (hasKdaCheckpointInterval(model)) return defaultKdaCheckpointInterval(model);
+    if (hasQwenCheckpointInterval(model)) return defaultQwenCheckpointInterval(model);
+    return defaultSconvCheckpointInterval(model);
   }
 
   function formatStateCheckpointInterval(value) {
@@ -174,6 +198,18 @@
     if (modelDefault && optionsById[modelDefault]) return modelDefault;
     if (isDeepSeekV4(model) && optionsById.fp8_int8) return "fp8_int8";
     return optionsById.bf16_fp16 ? "bf16_fp16" : Object.keys(optionsById)[0];
+  }
+
+  function defaultRecurrentStatePrecisionId(model, options) {
+    const optionsById = recurrentStatePrecisionOptions(options || {});
+    const modelDefault =
+      model &&
+      model.fields &&
+      typeof model.fields.default_recurrent_state_precision_id === "string"
+        ? model.fields.default_recurrent_state_precision_id
+        : "fp32";
+    if (optionsById[modelDefault]) return modelDefault;
+    return optionsById.fp32 ? "fp32" : Object.keys(optionsById)[0];
   }
 
   function indexerPrecisionOptions(options) {
@@ -216,6 +252,18 @@
       optionsById[precisionId] ||
       optionsById[defaultIndexerPrecisionId(model, options, fallbackPrecisionId)] ||
       DEFAULT_PRECISIONS.fp4_int4;
+    return {
+      label: selected.label,
+      bytesPerElement: selected.bytesPerElement,
+    };
+  }
+
+  function getRecurrentStatePrecisionProfile(precisionId, options, model) {
+    const optionsById = recurrentStatePrecisionOptions(options || {});
+    const selected =
+      optionsById[precisionId] ||
+      optionsById[defaultRecurrentStatePrecisionId(model, options)] ||
+      DEFAULT_RECURRENT_STATE_PRECISIONS.fp32;
     return {
       label: selected.label,
       bytesPerElement: selected.bytesPerElement,
@@ -857,18 +905,33 @@
       const linearValueDim = getField(model, "linear_value_head_dim");
       const linearConvKernel = getField(model, "linear_conv_kernel_dim");
       const mtpLayers = optionalField(model, "mtp_num_hidden_layers", 0);
+      const recurrentBytesPerElement = toPositiveNumber(
+        settings && settings.qwenRecurrentStateBytesPerElement,
+        QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT,
+      );
+      const recurrentPrecisionLabel =
+        (settings && settings.qwenRecurrentStatePrecisionLabel) || "FP32";
+      const linearCheckpointInterval = parseStateCheckpointInterval(
+        settings && settings.qwenCheckpointInterval,
+        defaultQwenCheckpointInterval(model),
+      );
+      const linearCheckpointCount = includeLinearAttentionState
+        ? Number.isFinite(linearCheckpointInterval)
+          ? Math.ceil(tokens / linearCheckpointInterval)
+          : 1
+        : 0;
       const elementsPerToken = fullLayers * 2 * kvHeads * headDim;
       const fullElements = elementsPerToken * tokens;
       const linearConvElements =
         linearLayers *
-        linearConvKernel *
+        (linearConvKernel - 1) *
         (2 * linearKeyHeads * linearKeyDim + linearValueHeads * linearValueDim);
       const linearRecurrentElements = linearLayers * linearValueHeads * linearKeyDim * linearValueDim;
-      const linearStateBytesPerSequence =
-        includeLinearAttentionState
-          ? linearConvElements * QWEN_LINEAR_CONV_BYTES_PER_ELEMENT +
-            linearRecurrentElements * QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT
-          : 0;
+      const linearStateBytesPerCheckpoint =
+        linearConvElements * QWEN_LINEAR_CONV_BYTES_PER_ELEMENT +
+        linearRecurrentElements * recurrentBytesPerElement;
+      const linearCheckpointBytesPerSequence =
+        linearCheckpointCount * linearStateBytesPerCheckpoint;
       const byteGroups = [{ role: "kv", label: "Full-attention KV cache", elements: fullElements }];
       const formulaRows = [
         {
@@ -881,26 +944,36 @@
       if (includeLinearAttentionState) {
         byteGroups.push({
           role: "linear_state",
-          label: "Linear-attention state",
-          bytesPerSequence: linearStateBytesPerSequence,
+          label: "Linear-attention checkpoint state",
+          bytesPerSequence: linearCheckpointBytesPerSequence,
         });
         formulaRows.push(
           {
+            name: "linear_state_checkpoint_count",
+            expression:
+              "interval is infinity ? 1 : ceil(tokens / linear_state_checkpoint_interval)",
+            description:
+              "The Prompt-End default stores one final GDN state; finite intervals also count a final partial interval.",
+          },
+          {
             name: "linear_conv_state_bytes",
             expression:
-              "sequences x linear_attention_layers x linear_conv_kernel_dim x (2 x linear_num_key_heads x linear_key_head_dim + linear_num_value_heads x linear_value_head_dim) x 2",
-            description: "Fixed-size Qwen linear-attention convolution state, estimated at BF16/FP16 precision.",
+              "sequences x checkpoint_count x linear_attention_layers x (linear_conv_kernel_dim - 1) x (2 x linear_num_key_heads x linear_key_head_dim + linear_num_value_heads x linear_value_head_dim) x 2",
+            description:
+              "Each retained checkpoint stores the three-token BF16/FP16 short-convolution history when kernel size is four.",
           },
           {
             name: "linear_recurrent_state_bytes",
             expression:
-              "sequences x linear_attention_layers x linear_num_value_heads x linear_key_head_dim x linear_value_head_dim x 4",
-            description: "Fixed-size Qwen Gated DeltaNet recurrent state, estimated at FP32 precision.",
+              "sequences x checkpoint_count x linear_attention_layers x linear_num_value_heads x linear_value_head_dim x linear_key_head_dim x recurrent_state_bytes",
+            description:
+              "Each retained checkpoint stores the Qwen Gated DeltaNet recurrent matrices at the selected recurrent-state precision.",
           },
           {
             name: "total_bytes",
             expression: "full_kv_bytes + linear_conv_state_bytes + linear_recurrent_state_bytes",
-            description: "Ordinary full-attention KV plus optional Qwen linear-attention runtime state.",
+            description:
+              "Ordinary full-attention KV plus retained Qwen linear-attention checkpoints.",
           },
         );
       } else {
@@ -920,26 +993,34 @@
 
       return {
         elementsPerSequence:
-          fullElements + (includeLinearAttentionState ? linearConvElements + linearRecurrentElements : 0),
+          fullElements +
+          linearCheckpointCount * (linearConvElements + linearRecurrentElements),
         elementsPerToken,
         formulaLabel: FORMULA_LABELS[formula],
         formulaText:
-          "full_kv_bytes = tokens * sequences * full_attention_layers * 2 * num_key_value_heads * head_dim * precision_bytes\ntotal_bytes = full_kv_bytes + optional_linear_attention_state_bytes",
+          "full_kv_bytes = tokens * sequences * full_attention_layers * 2 * num_key_value_heads * head_dim * precision_bytes\nlinear_state_checkpoint_count = interval_is_infinity ? 1 : ceil(tokens / interval)\ntotal_bytes = full_kv_bytes + optional_linear_state_checkpoint_bytes",
         formulaRows,
         note: includeLinearAttentionState
-          ? "Qwen3.5/3.6 linear-attention state is sequence-level runtime state, not per-token KV. It does not grow linearly with tokens, so it matters more for short prompts and is diluted by full-attention KV at long context."
-          : "Qwen3.5/3.6 linear-attention recurrent/conv state is not ordinary per-token KV and is excluded by default. Enable the linear-attention state option to add a fixed runtime-state estimate.",
+          ? "Includes retained Qwen3.5/3.6/3.8 Gated DeltaNet checkpoints. Active, ping-pong, and speculative runtime buffers are excluded."
+          : "Qwen3.5/3.6/3.8 linear-attention recurrent/conv state is not ordinary per-token KV and is excluded. Enable the linear-attention state option to include retained checkpoints.",
         byteGroups,
         components: [
           ["Main layers", layers],
           ["Full-attention layers", fullLayers, "Layers counted as ordinary token-linear KV cache."],
           ["Linear-attention layers", linearLayers, "Qwen Gated DeltaNet layers whose runtime state is optional and does not grow linearly with token count."],
-          ["Linear state included", includeLinearAttentionState ? "Yes" : "No", "When enabled, adds fixed convolution and recurrent state for Qwen linear-attention layers."],
-          ["Linear conv elements", linearConvElements, "Fixed convolution-state scalar elements per sequence before applying the 2-byte estimate."],
-          ["Linear recurrent elements", linearRecurrentElements, "Fixed recurrent-state scalar elements per sequence before applying the 4-byte estimate."],
-          ["MTP layers not included", mtpLayers, "Qwen3.5/3.6 configs expose MTP layers, but the cache shape is not explicit enough to include defensibly."],
+          ["Linear state included", includeLinearAttentionState ? "Yes" : "No", "When enabled, adds retained convolution and recurrent checkpoints for Qwen linear-attention layers."],
+          ["GDN checkpoint interval", formatStateCheckpointInterval(linearCheckpointInterval), "Prompt-End stores one final checkpoint; otherwise this is the number of tokens represented by each retained checkpoint."],
+          ["GDN checkpoints per sequence", linearCheckpointCount, "One for Prompt-End; otherwise ceil(tokens / linear_state_checkpoint_interval)."],
+          ["Linear conv elements per checkpoint", linearConvElements, "Convolution-state scalar elements across all GDN layers, using kernel size minus one history positions."],
+          ["Linear recurrent elements per checkpoint", linearRecurrentElements, "Recurrent-state scalar elements across all GDN layers."],
+          ["Linear state bytes per checkpoint", linearStateBytesPerCheckpoint, "One convolution plus recurrent GDN checkpoint."],
+          ["Linear checkpoint bytes per sequence", linearCheckpointBytesPerSequence, "Retained checkpoint count multiplied by bytes per checkpoint."],
+          ["Linear conv-state bytes", QWEN_LINEAR_CONV_BYTES_PER_ELEMENT, "Short-convolution history remains BF16 / FP16."],
+          ["Linear recurrent-state precision", recurrentPrecisionLabel, "Serving stacks can retain the recurrent matrices in BF16 / FP16 or FP32."],
+          ["Linear recurrent-state bytes", recurrentBytesPerElement],
+          ["MTP layers not included", mtpLayers, "Qwen3.5/3.6/3.8 MTP state belongs to the optional speculative path and is excluded from this base cache estimate."],
           ["Per-token elements", elementsPerToken, "Ordinary full-attention KV scalar elements per token before multiplying by precision bytes."],
-          ["Model fields", fieldList(model, ["num_hidden_layers", "full_attention_layers", "linear_attention_layers", "num_key_value_heads", "head_dim", "linear_num_key_heads", "linear_key_head_dim", "linear_num_value_heads", "linear_value_head_dim", "linear_conv_kernel_dim"])],
+          ["Model fields", fieldList(model, ["num_hidden_layers", "full_attention_layers", "linear_attention_layers", "num_key_value_heads", "head_dim", "linear_num_key_heads", "linear_key_head_dim", "linear_num_value_heads", "linear_value_head_dim", "linear_conv_kernel_dim", "mamba_ssm_dtype", "mtp_num_hidden_layers", "default_linear_state_checkpoint_interval"])],
         ],
       };
     }
@@ -1231,6 +1312,14 @@
           precisionId,
         )
       : null;
+    const recurrentStatePrecision = hasQwenCheckpointInterval(model)
+      ? getRecurrentStatePrecisionProfile(
+          input.recurrentStatePrecision ||
+            defaultRecurrentStatePrecisionId(model, options),
+          options,
+          model,
+        )
+      : null;
     const cachePrecision = indexerPrecision
       ? {
           label: precision.label,
@@ -1247,6 +1336,20 @@
         (typeof input.includeSconvState === "undefined"
           ? Boolean(model.fields.default_include_sconv_state)
           : toBoolean(input.includeSconvState)),
+      qwenRecurrentStateBytesPerElement: recurrentStatePrecision
+        ? recurrentStatePrecision.bytesPerElement
+        : undefined,
+      qwenRecurrentStatePrecisionLabel: recurrentStatePrecision
+        ? recurrentStatePrecision.label
+        : undefined,
+      qwenCheckpointInterval: hasQwenCheckpointInterval(model)
+        ? input.qwenCheckpointPolicy === STATE_CHECKPOINT_POLICY_FIXED_INTERVAL
+          ? parseStateCheckpointInterval(
+              input.qwenCheckpointInterval,
+              defaultQwenCheckpointInterval(model),
+            )
+          : Infinity
+        : undefined,
       kdaCheckpointInterval: hasKdaCheckpointInterval(model)
         ? input.kdaCheckpointPolicy === STATE_CHECKPOINT_POLICY_FIXED_INTERVAL
           ? parseStateCheckpointInterval(
@@ -1291,6 +1394,9 @@
       modelLabel: model.label,
       precisionLabel: precision.label,
       indexerPrecisionLabel: indexerPrecision ? indexerPrecision.label : undefined,
+      recurrentStatePrecisionLabel: recurrentStatePrecision
+        ? recurrentStatePrecision.label
+        : undefined,
       bytesPerElement: precision.bytesPerElement,
       tokens,
       sequences,
@@ -1530,6 +1636,13 @@
     return data.indexer_precision_options || data.precision_options || [];
   }
 
+  function rawRecurrentStatePrecisionOptions(data) {
+    return data.recurrent_state_precision_options || [
+      { id: "bf16_fp16", label: "BF16 / FP16", bytes_per_element: 2 },
+      { id: "fp32", label: "FP32", bytes_per_element: 4 },
+    ];
+  }
+
   function populateSelect(select, options, preferredValue) {
     if (!select) return;
     select.innerHTML = "";
@@ -1573,6 +1686,20 @@
     }
   }
 
+  function populateRecurrentStatePrecisionOptions(root, data, model) {
+    const select = root.querySelector(
+      "[data-kv-input='recurrentStatePrecision']",
+    );
+    const preferredValue = defaultRecurrentStatePrecisionId(model, {
+      recurrentStatePrecisionOptions: data.recurrent_state_precision_options,
+    });
+    populateSelect(
+      select,
+      rawRecurrentStatePrecisionOptions(data),
+      preferredValue,
+    );
+  }
+
   function syncDraftControl(root, model) {
     const control = root.querySelector("[data-kv-draft-control]");
     const checkbox = root.querySelector("[data-kv-input='includeDraftKvCache']");
@@ -1594,6 +1721,18 @@
           model.fields &&
           model.fields.default_include_linear_attention_state === true,
       );
+    }
+  }
+
+  function syncRecurrentStatePrecisionControl(root, model) {
+    const control = root.querySelector(
+      "[data-kv-recurrent-state-precision-control]",
+    );
+    const includeState = checkboxValue(
+      root.querySelector("[data-kv-input='includeLinearAttentionState']"),
+    );
+    if (control) {
+      control.hidden = !(hasQwenCheckpointInterval(model) && includeState);
     }
   }
 
@@ -1623,6 +1762,18 @@
           "Assumes one KDA state is saved only at the end of each sequence.",
         intervalHelp:
           "Stores one KDA state checkpoint every N tokens. The final partial interval counts as one checkpoint.",
+      };
+    }
+    if (hasQwenCheckpointInterval(model)) {
+      return {
+        label: "GDN",
+        enabled: checkboxValue(
+          root.querySelector("[data-kv-input='includeLinearAttentionState']"),
+        ),
+        promptHelp:
+          "Assumes one Gated DeltaNet state is saved only at the end of each sequence.",
+        intervalHelp:
+          "Stores one Gated DeltaNet state checkpoint every N tokens. The final partial interval counts as one checkpoint.",
       };
     }
     if (hasSconvState(model)) {
@@ -1733,6 +1884,9 @@
       sequences: root.querySelector("[data-kv-input='sequences']"),
       precision: root.querySelector("[data-kv-input='precision']"),
       indexerPrecision: root.querySelector("[data-kv-input='indexerPrecision']"),
+      recurrentStatePrecision: root.querySelector(
+        "[data-kv-input='recurrentStatePrecision']",
+      ),
       includeDraftKvCache: root.querySelector("[data-kv-input='includeDraftKvCache']"),
       includeLinearAttentionState: root.querySelector("[data-kv-input='includeLinearAttentionState']"),
       includeSconvState: root.querySelector("[data-kv-input='includeSconvState']"),
@@ -1758,8 +1912,10 @@
       const model = selectedModel();
       populatePrecisionOptions(root, data, model);
       populateIndexerPrecisionOptions(root, data, model);
+      populateRecurrentStatePrecisionOptions(root, data, model);
       syncDraftControl(root, model);
       syncLinearStateControl(root, model);
+      syncRecurrentStatePrecisionControl(root, model);
       syncSconvStateControl(root, model);
       syncStateCheckpointControl(root, model);
     }
@@ -1767,6 +1923,7 @@
     function update() {
       try {
         const model = selectedModel();
+        syncRecurrentStatePrecisionControl(root, model);
         syncStateCheckpointControl(root, model);
         const stateCheckpointPolicy = checkboxValue(
           inputs.stateCheckpointPolicyFixedInterval,
@@ -1785,9 +1942,15 @@
             sequences: inputValue(inputs.sequences, 1),
             precision: inputValue(inputs.precision, undefined),
             indexerPrecision: inputValue(inputs.indexerPrecision, undefined),
+            recurrentStatePrecision: inputValue(
+              inputs.recurrentStatePrecision,
+              undefined,
+            ),
             includeDraftKvCache: checkboxValue(inputs.includeDraftKvCache),
             includeLinearAttentionState: checkboxValue(inputs.includeLinearAttentionState),
             includeSconvState: checkboxValue(inputs.includeSconvState),
+            qwenCheckpointPolicy: stateCheckpointPolicy,
+            qwenCheckpointInterval: stateCheckpointInterval,
             kdaCheckpointPolicy: stateCheckpointPolicy,
             kdaCheckpointInterval: stateCheckpointInterval,
             sconvCheckpointPolicy: stateCheckpointPolicy,
@@ -1797,6 +1960,8 @@
           {
             precisionOptions: data.precision_options,
             indexerPrecisionOptions: data.indexer_precision_options,
+            recurrentStatePrecisionOptions:
+              data.recurrent_state_precision_options,
           },
         );
 
