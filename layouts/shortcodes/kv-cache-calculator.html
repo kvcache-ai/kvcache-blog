@@ -1,5 +1,5 @@
 {{ $data := site.Data.kv_cache_calculator.models }}
-{{ $payload := dict "models" $data.models "precision_options" $data.precision_options "indexer_precision_options" $data.indexer_precision_options "metadata" $data.metadata }}
+{{ $payload := dict "models" $data.models "precision_options" $data.precision_options "indexer_precision_options" $data.indexer_precision_options "recurrent_state_precision_options" $data.recurrent_state_precision_options "metadata" $data.metadata }}
 {{ $script := resources.Get "js/kv-cache-calculator.js" | minify | fingerprint }}
 
 <section id="kv-cache-calculator" class="kv-calculator-shell" data-state="loading">
@@ -42,7 +42,12 @@
 
       <label class="kv-checkbox-row" data-kv-linear-state-control hidden>
         <input data-kv-input="includeLinearAttentionState" type="checkbox">
-        <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. For K3, the checkpoint interval controls how many retained states are counted.">Include linear-attention state</span>
+        <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. The checkpoint policy controls how many retained states are counted.">Include linear-attention state</span>
+      </label>
+
+      <label data-kv-recurrent-state-precision-control hidden>
+        <span data-kv-inline-help="Sets the precision of Qwen Gated DeltaNet recurrent state. Its short-convolution history remains BF16 / FP16.">Recurrent state precision</span>
+        <select data-kv-input="recurrentStatePrecision"></select>
       </label>
 
       <label class="kv-checkbox-row" data-kv-sconv-state-control hidden>

@@ -545,7 +545,7 @@ test("Qwen3.6 27B counts only full-attention KV layers", () => {
   assert.equal(result.elementPlan.components.find(([label]) => label === "Linear-attention layers")[1], 48);
   assert.equal(result.elementPlan.components.find(([label]) => label === "Linear state included")[1], "No");
   assert.equal(result.elementPlan.components.find(([label]) => label === "MTP layers not included")[1], 1);
-  assert.match(result.elementPlan.note, /excluded by default/);
+  assert.match(result.elementPlan.note, /is excluded/);
   assert.ok(Math.abs(result.totalGiB - 7.8125) < 1e-9);
 });
 
@@ -571,14 +571,112 @@ test("Qwen3.6 27B optional linear-attention state adds fixed conv and recurrent 
 
   const result = calculate(model, { ...bf16, tokens: 128000, includeLinearAttentionState: true });
   const fullBytes = 128000 * 16 * 2 * 4 * 256 * 2;
-  const convBytes = 48 * 4 * (2 * 16 * 128 + 48 * 128) * 2;
+  const convBytes = 48 * 3 * (2 * 16 * 128 + 48 * 128) * 2;
   const recurrentBytes = 48 * 48 * 128 * 128 * 4;
 
   assert.equal(result.cacheGroups.find((group) => group.label === "Full-attention KV cache").bytes, fullBytes);
-  assert.equal(result.cacheGroups.find((group) => group.label === "Linear-attention state").bytes, convBytes + recurrentBytes);
+  assert.equal(result.cacheGroups.find((group) => group.label === "Linear-attention checkpoint state").bytes, convBytes + recurrentBytes);
   assert.equal(result.elementPlan.components.find(([label]) => label === "Linear state included")[1], "Yes");
   assert.match(result.elementPlan.formulaRows.find((row) => row.name === "total_bytes").expression, /linear_recurrent_state_bytes/);
   assert.equal(result.totalBytes, fullBytes + convBytes + recurrentBytes);
+});
+
+const qwen38 = {
+  id: "qwen3.8-2.4t-a95b",
+  label: "Qwen3.8-2.4T-A95B",
+  family: "Qwen3.8",
+  formula: "qwen_linear_full_hybrid",
+  fields: {
+    num_hidden_layers: 92,
+    full_attention_layers: 23,
+    linear_attention_layers: 69,
+    num_key_value_heads: 4,
+    head_dim: 256,
+    linear_num_key_heads: 16,
+    linear_key_head_dim: 128,
+    linear_num_value_heads: 128,
+    linear_value_head_dim: 128,
+    linear_conv_kernel_dim: 4,
+    mtp_num_hidden_layers: 1,
+    default_recurrent_state_precision_id: "bf16_fp16",
+    default_linear_state_checkpoint_interval: "infinity",
+  },
+};
+
+test("Qwen3.8 counts 23 full-attention layers and one BF16 GDN checkpoint", () => {
+  const tokens = 262144;
+  const result = calculate(qwen38, {
+    ...bf16,
+    tokens,
+    includeLinearAttentionState: true,
+    recurrentStatePrecision: "bf16_fp16",
+  });
+  const fullBytes = tokens * 23 * 2 * 4 * 256 * 2;
+  const convBytes = 69 * 3 * (2 * 16 * 128 + 128 * 128) * 2;
+  const recurrentBytes = 69 * 128 * 128 * 128 * 2;
+  const state = result.cacheGroups.find(
+    (group) => group.label === "Linear-attention checkpoint state",
+  );
+
+  assert.equal(fullBytes, 23 * 1024 ** 3);
+  assert.equal(state.bytes, convBytes + recurrentBytes);
+  assert.equal(result.totalBytes, fullBytes + convBytes + recurrentBytes);
+  assert.equal(result.recurrentStatePrecisionLabel, "BF16 / FP16");
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "GDN checkpoints per sequence",
+    )[1],
+    1,
+  );
+});
+
+test("Qwen3.8 fixed intervals retain the final partial GDN checkpoint", () => {
+  const tokens = 10241;
+  const sequences = 2;
+  const result = calculate(qwen38, {
+    ...bf16,
+    tokens,
+    sequences,
+    includeLinearAttentionState: true,
+    recurrentStatePrecision: "bf16_fp16",
+    qwenCheckpointPolicy: "fixed_interval",
+    qwenCheckpointInterval: 10240,
+  });
+  const fullBytesPerSequence = tokens * 23 * 2 * 4 * 256 * 2;
+  const checkpointBytes =
+    69 * 3 * (2 * 16 * 128 + 128 * 128) * 2 +
+    69 * 128 * 128 * 128 * 2;
+
+  assert.equal(
+    result.elementPlan.components.find(
+      ([label]) => label === "GDN checkpoints per sequence",
+    )[1],
+    2,
+  );
+  assert.equal(
+    result.totalBytes,
+    sequences * (fullBytesPerSequence + 2 * checkpointBytes),
+  );
+});
+
+test("Qwen3.8 recurrent precision changes recurrent state but not conv history", () => {
+  const input = {
+    ...bf16,
+    tokens: 1024,
+    includeLinearAttentionState: true,
+  };
+  const bf16Result = calculate(qwen38, {
+    ...input,
+    recurrentStatePrecision: "bf16_fp16",
+  });
+  const fp32Result = calculate(qwen38, {
+    ...input,
+    recurrentStatePrecision: "fp32",
+  });
+  const recurrentElements = 69 * 128 * 128 * 128;
+
+  assert.equal(fp32Result.totalBytes - bf16Result.totalBytes, recurrentElements * 2);
+  assert.equal(fp32Result.recurrentStatePrecisionLabel, "FP32");
 });
 
 test("Qwen3.6 35B-A3B counts only full-attention KV layers", () => {
@@ -659,9 +757,11 @@ test("Qwen3.5 0.8B linear-attention state can dominate short prompts", () => {
 
   const result = calculate(model, { ...bf16, tokens: 128, includeLinearAttentionState: true });
   const fullBytes = 128 * 6 * 2 * 2 * 256 * 2;
-  const convBytes = 18 * 4 * (2 * 16 * 128 + 16 * 128) * 2;
+  const convBytes = 18 * 3 * (2 * 16 * 128 + 16 * 128) * 2;
   const recurrentBytes = 18 * 16 * 128 * 128 * 4;
-  const linearState = result.cacheGroups.find((group) => group.label === "Linear-attention state");
+  const linearState = result.cacheGroups.find(
+    (group) => group.label === "Linear-attention checkpoint state",
+  );
 
   assert.equal(linearState.bytes, convBytes + recurrentBytes);
   assert.ok(linearState.bytes > fullBytes);
