@@ -24,7 +24,7 @@ More ultra-large MoE models are now being released in FP8. Whether fine-tuning c
 
 KTransformers v0.7.0 focuses on fine-tuning: it can load native FP8 Expert weights directly for LoRA training; adds an AVX512 CPU path so compatible AMD/x86 platforms with large host memory can participate in ultra-large MoE fine-tuning; and improves full fine-tuning, training-artifact management, and the accompanying Cookbook.
 
-![KTransformers v0.7.0 MoE fine-tuning overview](ktransformers-v0.7.0-finetuning-overview-gemini-replica.png)
+![KTransformers v0.7.0 MoE fine-tuning overview](ktransformers-v0.7.0-finetuning-overview-en.png)
 
 ## 1. Load Native FP8 Weights Directly and Halve Expert-Weight Memory
 
@@ -73,7 +73,7 @@ The accompanying KTransformers × LlamaFactory MoE Fine-Tuning Cookbook first he
 
 The Cookbook also covers hardware checks, environment installation, the division of responsibilities between the training YAML and Accelerate YAML, base recipes, launch commands, resource estimates, and troubleshooting. All user-facing KTransformers settings belong in the training YAML. The Accelerate YAML contains only distributed-execution and FSDP2 settings.
 
-详情参见 KTransformers 微调 Cookbook：https://github.com/kvcache-ai/ktransformers/blob/main/doc/en/SFT/KTransformers-Fine-Tuning_Cookbook.md
+For details, see the KTransformers Fine-Tuning Cookbook: https://github.com/kvcache-ai/ktransformers/blob/main/doc/en/SFT/KTransformers-Fine-Tuning_Cookbook.md
 
 ## 6. Installation and Resources
 
