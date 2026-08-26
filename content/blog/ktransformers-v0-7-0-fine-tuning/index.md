@@ -93,9 +93,3 @@ Learn more:
 - [KTransformers v0.7.0 Release](https://github.com/kvcache-ai/ktransformers/releases/tag/v0.7.0)
 - [KTransformers Fine-Tuning Cookbook](https://github.com/kvcache-ai/ktransformers/blob/main/doc/en/SFT/KTransformers-Fine-Tuning_Cookbook.md)
 - [KTransformers website](https://ktransformers.net/)
-
-## About Approaching.AI
-
-Approaching.AI is a leading global provider of high-efficiency AI Token production services. The company delivers high-efficiency AI Tokens and scenario-specific AI inference solutions for enterprises, supporting efficient AI deployment and intelligent transformation. Its core team originated from Tsinghua University's Institute of High Performance Computing. Chinese Academy of Engineering academician Weimin Zheng serves as Chief Scientific Advisor, and Tsinghua University Professor Yongwei Wu serves as Chief Scientist.
-
-The team focuses on original system-level innovation. Through full-system heterogeneous collaboration, trading memory for computation, and related technologies, Approaching.AI helps domestic computing hardware narrow the gap with international leaders and contributes Chinese-developed approaches to large-model computing challenges. The company has built an enterprise-grade, high-efficiency Token production platform spanning cloud, edge, and device scenarios, producing several times more Tokens from the same computing resources and helping make AI applications more broadly accessible.
