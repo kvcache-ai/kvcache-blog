@@ -7,6 +7,61 @@ const { calculate, calculateElementsPerSequence, formatBytes, modelFamily, model
 
 const bf16 = { precision: "bf16_fp16", indexerPrecision: "bf16_fp16", sequences: 1, tensorParallel: 1 };
 
+const dots3Note = {
+  id: "dots3-note-prev",
+  label: "dots3-note Preview",
+  formula: "dots3_note_hybrid",
+  fields: {
+    num_hidden_layers: 46,
+    full_attention_layers: 13,
+    sliding_attention_layers: 33,
+    kv_lora_rank: 512,
+    qk_rope_head_dim: 64,
+    swa_kv_lora_rank: 1024,
+    swa_qk_rope_head_dim: 64,
+    sliding_window: 512,
+    sliding_window_size: 513,
+    index_head_dim: 128,
+    index_n_heads: 64,
+    indexer_scale_bytes: 4,
+    indexer_fixed_precision_id: "fp8_int8",
+    default_precision_id: "bf16_fp16",
+  },
+};
+
+test("Dots3 Note hybrid formula includes full MLA, capped SWA MLA, and FP8 indexer scales", () => {
+  const result = calculate(dots3Note, { tokens: 1024, sequences: 1 });
+
+  assert.equal(result.precisionLabel, "BF16 / FP16");
+  assert.equal(result.indexerPrecisionLabel, "FP8 / INT8");
+  assert.equal(result.totalBytes, 53858304);
+  assert.equal(result.kvBytes, 52101120);
+  assert.equal(result.indexerBytes, 1757184);
+  assert.equal(result.bytesPerToken, 52596);
+  assert.equal(
+    result.elementPlan.components.find(([label]) => label === "Retained sliding-window tokens")[1],
+    512,
+  );
+  assert.equal(
+    result.cacheGroups.find((group) => group.label === "Indexer FP32 scale cache").bytes,
+    53248,
+  );
+  assert.match(result.elementPlan.formulaText, /indexer_scale_bytes/);
+  assert.match(result.elementPlan.note, /sliding_window_size=513 includes the current token/);
+});
+
+test("Dots3 Note grows linearly before the SWA window fills", () => {
+  const result = calculate(dots3Note, { tokens: 256, sequences: 2 });
+
+  assert.equal(result.totalBytes, 45312000);
+  assert.equal(result.bytesPerSequence, 22656000);
+  assert.equal(result.bytesPerToken, 88500);
+  assert.equal(
+    result.elementPlan.components.find(([label]) => label === "Retained sliding-window tokens")[1],
+    256,
+  );
+});
+
 test("standard GQA formula matches Qwen3-32B at 128k tokens", () => {
   const model = {
     id: "qwen3-32b",
