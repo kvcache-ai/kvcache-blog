@@ -32,5 +32,10 @@
     "assets:dist": "vite build"
   },
   "browserslist": "last 2 versions",
-  "version": "0.1.0"
+  "version": "0.1.0",
+  "pnpm": {
+    "overrides": {
+      "braces": "3.0.3"
+    }
+  }
 }
