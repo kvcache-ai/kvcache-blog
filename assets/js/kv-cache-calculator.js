@@ -34,6 +34,7 @@
     standard_gqa: "Standard MHA/GQA",
     mla: "MLA latent KV",
     dsa_mla: "DSA/MLA with indexer",
+    dots3_note_hybrid: "Dots3 Note DSA-MLA/SWA-MLA hybrid",
     kimi_kda_mla_hybrid: "Kimi KDA/MLA hybrid",
     inkling_hybrid: "Inkling global/SWA with SConv",
     qwen_linear_full_hybrid: "Qwen linear/full hybrid",
@@ -457,6 +458,99 @@
           ["Indexer elements per token", indexerElementsPerToken, "Indexer elements per token before applying indexer precision."],
           ["Per-token elements", elementsPerToken, "KV plus indexer scalar elements per token before multiplying by precision bytes."],
           ["Model fields", fieldList(model, ["num_hidden_layers", "kv_lora_rank", "qk_rope_head_dim", "index_head_dim", "indexer_full_layers", "indexer_shared_layers", "draft_indexer_layers"])],
+        ],
+      };
+    }
+
+    if (formula === "dots3_note_hybrid") {
+      const layers = getField(model, "num_hidden_layers");
+      const fullLayers = getField(model, "full_attention_layers");
+      const slidingLayers = getField(model, "sliding_attention_layers");
+      const fullKvRank = getField(model, "kv_lora_rank");
+      const fullRopeDim = getField(model, "qk_rope_head_dim");
+      const slidingKvRank = getField(model, "swa_kv_lora_rank");
+      const slidingRopeDim = getField(model, "swa_qk_rope_head_dim");
+      const slidingWindow = getField(model, "sliding_window");
+      const indexDim = getField(model, "index_head_dim");
+      const indexerScaleBytes = optionalField(model, "indexer_scale_bytes", 4);
+      const retainedSlidingTokens = Math.min(tokens, slidingWindow);
+
+      const fullElements = tokens * fullLayers * (fullKvRank + fullRopeDim);
+      const slidingElements =
+        retainedSlidingTokens * slidingLayers * (slidingKvRank + slidingRopeDim);
+      const indexerElements = tokens * fullLayers * indexDim;
+      const indexerScaleCount = tokens * fullLayers;
+      const indexerScaleBytesPerSequence = indexerScaleCount * indexerScaleBytes;
+
+      return {
+        elementsPerSequence:
+          fullElements + slidingElements + indexerElements + indexerScaleCount,
+        elementsPerToken:
+          (fullElements + slidingElements + indexerElements + indexerScaleCount) /
+          tokens,
+        formulaLabel: FORMULA_LABELS[formula],
+        formulaText:
+          "full_mla_bytes = tokens * sequences * full_layers * (kv_lora_rank + qk_rope_head_dim) * kv_precision_bytes\nswa_mla_bytes = min(tokens, sliding_window) * sequences * sliding_layers * (swa_kv_lora_rank + swa_qk_rope_head_dim) * kv_precision_bytes\nindexer_vector_bytes = tokens * sequences * full_layers * index_head_dim * indexer_precision_bytes\nindexer_scale_bytes = tokens * sequences * full_layers * fp32_scale_bytes\ntotal_bytes = full_mla_bytes + swa_mla_bytes + indexer_vector_bytes + indexer_scale_bytes",
+        formulaRows: [
+          {
+            name: "full_mla_bytes",
+            expression:
+              "tokens x sequences x full_layers x (kv_lora_rank + qk_rope_head_dim) x kv_precision_bytes",
+            description:
+              "Dots3 Note full-attention layers retain compressed MLA latent and RoPE cache for every token.",
+          },
+          {
+            name: "swa_mla_bytes",
+            expression:
+              "min(tokens, sliding_window) x sequences x sliding_layers x (swa_kv_lora_rank + swa_qk_rope_head_dim) x kv_precision_bytes",
+            description:
+              "Sliding-attention layers retain their wider SWA-MLA latent and RoPE cache only for the effective local window.",
+          },
+          {
+            name: "indexer_vector_bytes",
+            expression:
+              "tokens x sequences x full_layers x index_head_dim x indexer_precision_bytes",
+            description:
+              "Each DSA full-attention layer stores one index key vector per token; index_n_heads affects scoring rather than stored cache width.",
+          },
+          {
+            name: "indexer_scale_bytes",
+            expression:
+              "tokens x sequences x full_layers x fp32_scale_bytes",
+            description:
+              "The FP8 index vector has one FP32 quantization scale per token and DSA layer.",
+          },
+          {
+            name: "total_bytes",
+            expression:
+              "full_mla_bytes + swa_mla_bytes + indexer_vector_bytes + indexer_scale_bytes",
+            description:
+              "Combined full-attention MLA, sliding-window MLA, and DSA indexer payload.",
+          },
+        ],
+        note:
+          "Payload estimate for 13 DSA-MLA and 33 SWA-MLA layers. The SWA cache retains 512 prior tokens because the source configuration's sliding_window_size=513 includes the current token. Allocator blocks, page metadata, fragmentation, temporary workspaces, activations, model weights, and multimodal encoder state are excluded.",
+        byteGroups: [
+          { role: "kv", label: "Full-attention MLA cache", elements: fullElements },
+          { role: "kv", label: "Sliding-window MLA cache", elements: slidingElements },
+          { role: "indexer", label: "Indexer vector cache", elements: indexerElements },
+          {
+            role: "indexer",
+            label: "Indexer FP32 scale cache",
+            bytesPerSequence: indexerScaleBytesPerSequence,
+          },
+        ],
+        components: [
+          ["Main layers", layers],
+          ["Full-attention layers", fullLayers, "DSA-MLA layers whose cache grows with the full context."],
+          ["Sliding-attention layers", slidingLayers, "SWA-MLA layers whose persistent cache is capped by the local window."],
+          ["Retained sliding-window tokens", retainedSlidingTokens, "min(tokens, 512); the configured size 513 includes the current token."],
+          ["Full MLA elements", fullElements, "Full-attention latent plus RoPE scalar elements before applying KV precision."],
+          ["Sliding MLA elements", slidingElements, "SWA latent plus RoPE scalar elements before applying KV precision."],
+          ["Indexer vector elements", indexerElements, "One index_head_dim vector per token and full-attention layer."],
+          ["Indexer scale values", indexerScaleCount, "One FP32 scale per token and full-attention layer."],
+          ["Indexer scale bytes", indexerScaleBytes, "FP32 scale width; independent of the selected KV precision."],
+          ["Model fields", fieldList(model, ["num_hidden_layers", "full_attention_layers", "sliding_attention_layers", "kv_lora_rank", "qk_rope_head_dim", "swa_kv_lora_rank", "swa_qk_rope_head_dim", "sliding_window", "sliding_window_size", "index_head_dim", "index_n_heads", "indexer_scale_bytes"])],
         ],
       };
     }

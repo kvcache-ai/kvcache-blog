@@ -1,7 +1,9 @@
 metadata:
-  retrieved_at: "2026-08-21"
+  retrieved_at: "2026-09-03"
   note: "Curated from official Hugging Face model config/source files and serving-engine references. Values describe KV cache capacity planning, not model weights or activation memory."
   serving_references:
+    dots3_note_sglang_modeling: "https://github.com/sgl-project/sglang/blob/3f8ab512376bec9fe8f395552fee0e1f76543453/python/sglang/srt/models/dots3_common/modeling.py"
+    dots3_note_sglang_indexer_cache: "https://github.com/sgl-project/sglang/blob/3f8ab512376bec9fe8f395552fee0e1f76543453/python/sglang/srt/mem_cache/memory_pool.py"
     deepseek_v4_vllm_indexer_fp4: "https://vllm.ai/blog/deepseek-v4"
     kimi_k3_config: "https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json"
     inkling_architecture: "https://thinkingmachines.ai/news/introducing-inkling/"
@@ -37,6 +39,30 @@ recurrent_state_precision_options:
     label: "FP32"
     bytes_per_element: 4
 models:
+  - id: dots3-note-prev
+    label: "dots3-note Preview"
+    family: "Dots3"
+    formula: "dots3_note_hybrid"
+    default_tokens: 1024
+    max_position_embeddings: 524288
+    source_url: "https://huggingface.co/dots-studio/dots3-note-prev/raw/main/config.json"
+    source_retrieved_at: "2026-09-03"
+    hit_rate_supported: false
+    fields:
+      num_hidden_layers: 46
+      full_attention_layers: 13
+      sliding_attention_layers: 33
+      kv_lora_rank: 512
+      qk_rope_head_dim: 64
+      swa_kv_lora_rank: 1024
+      swa_qk_rope_head_dim: 64
+      sliding_window: 512
+      sliding_window_size: 513
+      index_head_dim: 128
+      index_n_heads: 64
+      indexer_scale_bytes: 4
+      indexer_fixed_precision_id: "fp8_int8"
+      default_precision_id: "bf16_fp16"
   - id: deepseek-v4-pro
     label: "DeepSeek V4 Pro"
     family: "DeepSeek"
