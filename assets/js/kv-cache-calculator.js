@@ -41,6 +41,7 @@
     mixed_full_sliding_gqa: "Mixed full/sliding GQA",
     minimax_msa: "MiniMax MSA sparse attention",
     deepseek_v4_hybrid: "DeepSeek V4 hybrid sparse attention",
+    kimi_kda_dsa_mla_hybrid: "Kimi KDA/DSA/MLA with indexer hybrid",
   };
 
   function toPositiveNumber(value, fallback) {
@@ -120,12 +121,17 @@
     return Boolean(
       model &&
         (model.formula === "qwen_linear_full_hybrid" ||
-          model.formula === "kimi_kda_mla_hybrid"),
+          model.formula === "kimi_kda_mla_hybrid" ||
+          model.formula === "kimi_kda_dsa_mla_hybrid"),
     );
   }
 
   function hasKdaCheckpointInterval(model) {
-    return Boolean(model && model.formula === "kimi_kda_mla_hybrid");
+    return Boolean(
+      model &&
+        (model.formula === "kimi_kda_mla_hybrid" ||
+          model.formula === "kimi_kda_dsa_mla_hybrid"),
+    );
   }
 
   function hasQwenCheckpointInterval(model) {
@@ -230,6 +236,8 @@
     const optionsById = indexerPrecisionOptions(options || {});
     const fixedPrecisionId = fixedIndexerPrecisionId(model);
     if (fixedPrecisionId && optionsById[fixedPrecisionId]) return fixedPrecisionId;
+    const modelDefault = model && model.fields && model.fields.default_indexer_precision_id;
+    if (modelDefault && optionsById[modelDefault]) return modelDefault;
     if (isDeepSeekV4(model) && optionsById.fp4_int4) return "fp4_int4";
     if (fallbackPrecisionId && optionsById[fallbackPrecisionId]) return fallbackPrecisionId;
     if (optionsById.bf16_fp16) return "bf16_fp16";
@@ -756,6 +764,297 @@
               "kda_num_heads",
               "kda_head_dim",
               "kda_conv_kernel_size",
+              "default_kda_checkpoint_interval",
+            ]),
+          ],
+        ],
+      };
+    }
+
+    if (formula === "kimi_kda_dsa_mla_hybrid") {
+      const layers = getField(model, "num_hidden_layers");
+      const fullLayers = getField(model, "full_attention_layers");
+      const draftLayers = includeDraftKvCache ? draftLayerCount(model) : 0;
+      const activeFullLayers = fullLayers + draftLayers;
+      const kvRank = getField(model, "kv_lora_rank");
+      const ropeDim = getField(model, "qk_rope_head_dim");
+
+      const mlaElementsPerToken = activeFullLayers * (kvRank + ropeDim);
+      const mlaElements = mlaElementsPerToken * tokens;
+
+      const indexerPlan = indexerLayerPlan(model, fullLayers, draftLayers);
+      const indexDim = getField(model, "index_head_dim");
+      const indexKpool = toPositiveInteger(optionalField(model, "index_kpool", 1), 1);
+      const indexerPools = Math.floor(tokens / indexKpool);
+      const indexerElements = indexerPools * indexerPlan.activeIndexerLayers * indexDim;
+      const indexerElementsPerToken = indexerElements / tokens;
+      const indexTailTokens = tokens % indexKpool;
+      const includeIndexTail = indexTailTokens > 0;
+      const indexTailBytesPerElement = optionalField(model, "index_tail_bytes_per_element", 2);
+      const indexTailElements = includeIndexTail
+        ? indexerPlan.activeIndexerLayers * indexKpool * 2 * indexDim
+        : 0;
+      const indexTailBytesPerSequence = indexTailElements * indexTailBytesPerElement;
+
+      const kdaLayers = getField(model, "kda_layers");
+      const kdaCheckpointInterval = parseStateCheckpointInterval(
+        settings && settings.kdaCheckpointInterval,
+        defaultKdaCheckpointInterval(model),
+      );
+      const kdaCheckpointCount = includeLinearAttentionState
+        ? Number.isFinite(kdaCheckpointInterval)
+          ? Math.ceil(tokens / kdaCheckpointInterval)
+          : 1
+        : 0;
+
+      const kdaHeads = getField(model, "kda_num_heads");
+      const kdaHeadDim = getField(model, "kda_head_dim");
+      const kdaKeyHeads = optionalField(model, "kda_num_key_heads", kdaHeads);
+      const kdaKeyDim = optionalField(model, "kda_key_head_dim", kdaHeadDim);
+      const kdaValueHeads = optionalField(model, "kda_num_value_heads", kdaHeads);
+      const kdaValueDim = optionalField(model, "kda_value_head_dim", kdaHeadDim);
+      const kdaConvKernel = getField(model, "kda_conv_kernel_size");
+      const convBytesPerElement = optionalField(
+        model,
+        "kda_conv_state_bytes_per_element",
+        KIMI_KDA_CONV_BYTES_PER_ELEMENT,
+      );
+      const recurrentBytesPerElement = optionalField(
+        model,
+        "kda_recurrent_state_bytes_per_element",
+        KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT,
+      );
+
+      const kdaConvElements =
+        kdaLayers *
+        (kdaConvKernel - 1) *
+        (kdaHeads * kdaHeadDim +
+          kdaKeyHeads * kdaKeyDim +
+          kdaValueHeads * kdaValueDim);
+      const kdaRecurrentElements =
+        kdaLayers * kdaValueHeads * kdaValueDim * kdaKeyDim;
+      const kdaStateBytes =
+        kdaConvElements * convBytesPerElement +
+        kdaRecurrentElements * recurrentBytesPerElement;
+      const kdaCheckpointBytesPerSequence =
+        kdaCheckpointCount * kdaStateBytes;
+      const byteGroups = [
+        { role: "kv", label: "MLA latent KV cache", elements: mlaElements },
+        { role: "indexer", label: "Indexer cache", elements: indexerElements },
+      ];
+      if (includeIndexTail) {
+        byteGroups.push({
+          role: "index_tail",
+          label: "Index tail cache",
+          elements: indexTailElements,
+          bytesPerSequence: indexTailBytesPerSequence,
+        });
+      }
+      const formulaRows = [
+        {
+          name: "active_full_attention_layers",
+          expression: "full_attention_layers + draft_layers_if_enabled",
+          description:
+            "Draft layers are counted only when Include draft KV cache is enabled for models that define a next-token prediction stack.",
+        },
+        {
+          name: "active_indexer_layers",
+          expression: "main_indexer_layers + draft_indexer_layers_if_enabled",
+          description:
+            "For DSA models with shared indexer layers, only full indexer layers allocate independent indexer key cache.",
+        },
+        {
+          name: "mla_kv_bytes",
+          expression:
+            "tokens x sequences x active_full_attention_layers x (kv_lora_rank + qk_rope_head_dim) x kv_precision_bytes",
+          description:
+            "Latent KV payload stored by the production MLA/DSA path.",
+        },
+        {
+          name: "indexer_pools",
+          expression: "floor(tokens / index_kpool)",
+          description:
+            "Each complete token pool shares one indexer state.",
+        },
+        {
+          name: "indexer_bytes",
+          expression:
+            "indexer_pools x sequences x active_indexer_layers x index_head_dim x indexer_precision_bytes",
+          description:
+            "Additional per-pool indexer state used by independent indexer layer.",
+        },
+        {
+          name: "index_tail_bytes",
+          expression: includeIndexTail
+            ? "sequences x active_indexer_layers x index_kpool x 2 x index_head_dim x index_tail_bytes_per_element"
+            : "0 (tokens % index_kpool = 0)",
+          description:
+            `Per-token indexer state while a pool is in progress. There are 2 head slots: one for 'K' and the other for gate score as the 'V'.`,
+        },
+      ];
+
+      if (includeLinearAttentionState) {
+        byteGroups.push({
+          role: "linear_state",
+          label: "KDA checkpoint state",
+          bytesPerSequence: kdaCheckpointBytesPerSequence,
+        });
+        formulaRows.push(
+          {
+            name: "kda_checkpoint_count",
+            expression:
+              "interval is infinity ? 1 : ceil(tokens / kda_checkpoint_interval)",
+            description:
+              "The infinity default stores one final checkpoint; finite intervals also count a final partial interval.",
+          },
+          {
+            name: "kda_conv_state_bytes",
+            expression:
+              "sequences x kda_checkpoint_count x kda_layers x (conv_kernel - 1) x (q_dim + k_dim + v_dim) x kda_conv_state_bytes_per_element",
+            description:
+              `KDA short-convolution history stored in every retained checkpoint at ${convBytesPerElement} bytes per element.`,
+          },
+          {
+            name: "kda_recurrent_state_bytes",
+            expression:
+              "sequences x kda_checkpoint_count x kda_layers x value_heads x value_head_dim x key_head_dim x kda_recurrent_state_bytes_per_element",
+            description:
+              `KDA recurrent matrices stored in every retained checkpoint at ${recurrentBytesPerElement} bytes per element.`,
+          },
+          {
+            name: "total_bytes",
+            expression:
+              "mla_kv_bytes + indexer_bytes + index_tail_bytes + kda_conv_state_bytes + kda_recurrent_state_bytes",
+            description:
+              "Combined DSA/MLA cache and retained KDA checkpoint states.",
+          },
+        );
+      } else {
+        formulaRows.push(
+          {
+            name: "kda_linear_attention_state",
+            expression:
+              "excluded unless Include linear-attention state is enabled",
+            description:
+              "KDA layers keep convolution and recurrent state rather than ordinary token-addressable KV blocks.",
+          },
+          {
+            name: "total_bytes",
+            expression: "mla_kv_bytes + indexer_bytes + index_tail_bytes",
+            description: "DSA/MLA cache, compressed indexer payload, and fixed index tail cache without KDA checkpoint state.",
+          },
+        );
+      }
+
+      return {
+        elementsPerSequence:
+          mlaElements + indexerElements + indexTailElements +
+          kdaCheckpointCount * (kdaConvElements + kdaRecurrentElements),
+        elementsPerToken: mlaElementsPerToken + indexerElementsPerToken,
+        hitRateElementsPerToken: mlaElementsPerToken,
+        formulaLabel: FORMULA_LABELS[formula],
+        formulaText: formulaRows.map((row) => `${row.name} = ${row.expression}`).join("\n"),
+        formulaRows,
+        note:
+          `Production estimate uses latent KV plus indexer state, with one index state per ${indexKpool} tokens in each complete pool. ` +
+          (includeIndexTail
+            ? `Includes an uncompressed index tail cache for the in-progress pool (${indexTailTokens} tokens), at ${indexTailBytesPerElement} bytes per element. `
+            : "") +
+          (includeLinearAttentionState
+            ? `Includes retained checkpoints for ${kdaLayers} KDA layers, with ${convBytesPerElement}-byte convolution and ${recurrentBytesPerElement}-byte recurrent elements. `
+            : `The ${kdaLayers} KDA layers' sequence-level state is excluded. `),
+        byteGroups,
+        components: [
+          ["Main layers", layers, "Main transformer layers, including DSA/MLA full-attention and KDA linear-attention layers."],
+          [
+            "DSA/MLA full-attention layers",
+            fullLayers,
+            "Layers that allocate token-addressable compressed DSA/MLA latent KV plus RoPE key cache.",
+          ],
+          ["Draft layers included", draftLayers, "Extra MTP/draft layers after the main transformer layers."],
+          ["Active full-attention layers", activeFullLayers, "Main DSA/MLA full-attention layers plus the draft layers included in KV capacity."],
+          ["Main indexer layers", indexerPlan.mainIndexerLayers, "Full indexer layers that allocate independent indexer key cache."],
+          ["Shared indexer layers", indexerPlan.sharedIndexerLayers, "DSA layers that reuse the previous full indexer layer's top-k selection."],
+          ["Draft indexer layers included", indexerPlan.draftIndexerLayers, "Draft/MTP indexer layers counted when Include draft KV cache is enabled."],
+          [
+            "KDA linear-attention layers",
+            kdaLayers,
+            "Layers whose convolution and recurrent state is stored in each KDA checkpoint.",
+          ],
+          [
+            "KDA state included",
+            includeLinearAttentionState ? "Yes" : "No",
+            "When enabled, adds retained KDA convolution and recurrent checkpoints.",
+          ],
+          [
+            "KDA checkpoint interval",
+            formatStateCheckpointInterval(kdaCheckpointInterval),
+            "The infinity default stores one final checkpoint; otherwise this is the number of tokens represented by each retained checkpoint.",
+          ],
+          [
+            "KDA checkpoints per sequence",
+            kdaCheckpointCount,
+            "One when the interval is infinity; otherwise ceil(tokens / kda_checkpoint_interval).",
+          ],
+          [
+            "DSA/MLA elements per token",
+            mlaElementsPerToken,
+            "active_full_attention_layers x (kv_lora_rank + qk_rope_head_dim). Latent KV scalar elements per token before applying KV precision.",
+          ],
+          ["Indexer elements per token", indexerElementsPerToken, "Indexer elements per token before applying indexer precision."],
+          ["Index pool size", indexKpool, "Number of tokens sharing one compressed index key. Defaults to one when index_kpool is not configured."],
+          ["Indexer pools", indexerPools, "floor(tokens / index_kpool); partial pools do not allocate an additional compressed index key."],
+          ["Index tail tokens", indexTailTokens, "tokens % index_kpool; zero means there is no in-progress pool and no index tail cache."],
+          ["Index tail cache included", includeIndexTail ? "Yes" : "No", "Requires an in-progress pool (tokens % index_kpool > 0), independently of the KDA state checkbox."],
+          ["Index tail elements per sequence", indexTailElements, "active_indexer_layers x index_kpool x 2 x index_head_dim while tail cache is present; zero when all pools are complete."],
+          ["Index tail bytes per sequence", indexTailBytesPerSequence, "Tail-cache elements multiplied by the configured tail element width."],
+          ["Index tail precision bytes", indexTailBytesPerElement, "Bytes per tail-cache element, set by index_tail_bytes_per_element."],
+          [
+            "KDA conv elements per checkpoint",
+            kdaConvElements,
+            "All KDA Q/K/V short-convolution history stored in one checkpoint.",
+          ],
+          [
+            "KDA recurrent elements per checkpoint",
+            kdaRecurrentElements,
+            "All KDA recurrent matrices stored in one checkpoint.",
+          ],
+          [
+            "KDA bytes per checkpoint",
+            kdaStateBytes,
+            `One ${convBytesPerElement}-byte convolution/${recurrentBytesPerElement}-byte recurrent elements KDA checkpoint.`,
+          ],
+          [
+            "KDA checkpoint bytes per sequence",
+            kdaCheckpointBytesPerSequence,
+            "Retained checkpoint count multiplied by bytes per checkpoint.",
+          ],
+          ["KDA conv-state bytes", convBytesPerElement],
+          ["KDA recurrent-state bytes", recurrentBytesPerElement],
+          [
+            "Model fields",
+            fieldList(model, [
+              "num_hidden_layers",
+              "full_attention_layers",
+              "kda_layers",
+              "kv_lora_rank",
+              "qk_rope_head_dim",
+              "index_head_dim",
+              "index_kpool",
+              "index_tail_bytes_per_element",
+              "indexer_full_layers",
+              "indexer_shared_layers",
+              "num_nextn_predict_layers",
+              "draft_indexer_layers",
+              "kda_num_heads",
+              "kda_head_dim",
+              "kda_num_key_heads",
+              "kda_key_head_dim",
+              "kda_num_value_heads",
+              "kda_value_head_dim",
+              "kda_conv_kernel_size",
+              "kda_conv_state_bytes_per_element",
+              "kda_recurrent_state_bytes_per_element",
               "default_kda_checkpoint_interval",
             ]),
           ],
@@ -1612,6 +1911,17 @@
         "Indexer cache size",
         formatBytes(result.indexerBytes),
       ]);
+      result.cacheGroups
+        .filter((group) =>
+          (group.role === "linear_state" || group.role === "sconv_state") ||
+          group.role === "index_tail"
+        )
+        .forEach((group) => {
+          metrics.push([
+            `${group.label} size`,
+            formatBytes(group.bytes),
+          ]);
+        });
     } else if (result.cacheGroups.length > 1) {
       result.cacheGroups.forEach((group) => {
         metrics.push([
@@ -1621,7 +1931,9 @@
       });
     }
     const includesFixedState = result.cacheGroups.some(
-      (group) => group.role === "linear_state" || group.role === "sconv_state",
+      (group) =>
+        (group.role === "linear_state" || group.role === "sconv_state") || 
+        group.role === "index_tail",
     );
     metrics.push([
       includesFixedState ? "Amortized size per token" : "Per token size",

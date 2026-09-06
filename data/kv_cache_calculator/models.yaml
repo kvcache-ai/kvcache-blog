@@ -213,6 +213,48 @@ models:
       indexer_shared_layers: 57
       num_nextn_predict_layers: 1
       draft_indexer_layers: 1
+  - id: glm-5.3-flash
+    label: "GLM-5.3-Flash"
+    family: "GLM"
+    formula: "kimi_kda_dsa_mla_hybrid"
+    default_tokens: 1024
+    max_position_embeddings: 1048576
+    source_url: "https://huggingface.co/zai-org/GLM-5.3-Flash/raw/main/config.json"
+    source_retrieved_at: "2026-09-06"
+    fields:
+      num_hidden_layers: 45
+      full_attention_layers: 11
+      kda_layers: 34
+      default_precision_id: "bf16_fp16"
+      kv_lora_rank: 512
+      qk_rope_head_dim: 0
+      qk_nope_head_dim: 256
+      qk_head_dim: 256
+      v_head_dim: 256
+      num_key_value_heads: 64
+      index_head_dim: 128
+      index_n_heads: 32
+      index_topk: 2048
+      index_topk_freq: 1
+      index_kpool: 4
+      default_indexer_precision_id: "fp8_int8"
+      index_tail_bytes_per_element: 2
+      index_share_for_mtp_iteration: true
+      indexer_full_layers: 11
+      indexer_shared_layers: 0
+      num_nextn_predict_layers: 1
+      draft_indexer_layers: 1
+      kda_num_heads: 64
+      kda_head_dim: 128
+      kda_num_key_heads: 64
+      kda_key_head_dim: 128
+      kda_num_value_heads: 64
+      kda_value_head_dim: 128
+      kda_conv_kernel_size: 4
+      kda_conv_state_bytes_per_element: 4
+      kda_recurrent_state_bytes_per_element: 2
+      default_include_linear_attention_state: true
+      default_kda_checkpoint_interval: "infinity"
   - id: kimi-k3
     label: "Kimi K3"
     family: "Kimi"
