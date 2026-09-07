@@ -374,6 +374,80 @@ const glm53Pooled = {
   },
 };
 
+const glm53Quantized = {
+  ...glm53Pooled,
+  fields: {
+    ...glm53Pooled.fields,
+    default_indexer_precision_id: "fp8_int8",
+    indexer_fp8_quant_block_size: 128,
+    indexer_fp8_scale_bytes_per_element: 4,
+    indexer_mxfp4_quant_block_size: 32,
+    indexer_mxfp4_scale_bytes_per_element: 1,
+  },
+};
+
+test("GLM indexer scales use fixed widths for FP8 and FP4, with no BF16 scales", () => {
+  for (const [indexerPrecision, width, scales, scaleWidth] of [
+    [undefined, 1, 1, 4],
+    ["fp8_int8", 1, 1, 4],
+    ["fp4_int4", 0.5, 4, 1],
+    ["bf16_fp16", 2, 0, 0],
+  ]) {
+    for (const precision of ["bf16_fp16", "fp8_int8", "fp4_int4"]) {
+      for (const tokens of [1, 3, 4, 5, 8, 9]) {
+        for (const includeDraftKvCache of [false, true]) {
+          const sequences = 3;
+          const layers = includeDraftKvCache ? 12 : 11;
+          const vectors = Math.floor(tokens / 4) * layers * sequences;
+          const result = calculate(glm53Quantized, {
+            tokens, sequences, precision, indexerPrecision, includeDraftKvCache,
+          });
+          const scale = result.cacheGroups.find((group) => group.label === "Indexer quantization scale cache");
+          const scaleBytes = vectors * scales * scaleWidth;
+          assert.equal(scale?.bytes ?? 0, scaleBytes);
+          assert.equal(scale?.elements ?? 0, vectors * scales);
+          assert.equal(result.indexerBytes, vectors * 128 * width + scaleBytes);
+          const tailBytes = tokens % 4 ? layers * 4 * 2 * 128 * 2 * sequences : 0;
+          assert.equal(result.totalBytes, result.kvBytes + result.indexerBytes + tailBytes);
+          assert.match(result.elementPlan.formulaText, /indexer_scale_bytes/);
+          assert.match(result.elementPlan.formulaRows.find((row) => row.name === "total_bytes").expression, /indexer_scale_bytes/);
+        }
+      }
+    }
+  }
+});
+
+test("GLM scale block counts floor per vector and honor configured scale widths", () => {
+  const model = {
+    ...glm53Quantized,
+    fields: {
+      ...glm53Quantized.fields,
+      index_head_dim: 150,
+      indexer_fp8_quant_block_size: 64,
+      indexer_fp8_scale_bytes_per_element: 8,
+      indexer_mxfp4_scale_bytes_per_element: 1,
+    },
+  };
+  for (const [indexerPrecision, scaleBytes] of [["fp8_int8", 16], ["fp4_int4", 4]]) {
+    const result = calculate(model, { tokens: 8, indexerPrecision });
+    assert.equal(result.cacheGroups.find((group) => group.label === "Indexer quantization scale cache").bytes, 2 * 11 * scaleBytes);
+  }
+});
+
+test("GLM scales follow resolved indexer precision for invalid and fixed selections", () => {
+  const input = { tokens: 8, indexerPrecision: "invalid" };
+  const result = calculate(glm53Quantized, input);
+  assert.equal(result.indexerBytes, 2 * 11 * (128 + 4));
+  const model = {
+    ...glm53Quantized,
+    fields: { ...glm53Quantized.fields, indexer_fixed_precision_id: "fp4_int4" },
+  };
+  const fixed = calculate(model, { tokens: 8, indexerPrecision: "fp8_int8" });
+  assert.equal(fixed.indexerBytes, 2 * 11 * (64 + 4));
+  const plan = calculateElementsPerSequence(glm53Quantized, 8);
+  assert.equal(plan.byteGroups.find((group) => group.label === "Indexer quantization scale cache").bytesPerSequence, 2 * 11 * 4);
+});
+
 const glm53CheckpointBytes =
   34 * (4 - 1) * (3 * 64 * 128) * 4 +
   34 * 64 * 128 * 128 * 2;

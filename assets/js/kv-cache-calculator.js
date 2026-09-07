@@ -256,12 +256,14 @@
   function getIndexerPrecisionProfile(precisionId, options, model, fallbackPrecisionId) {
     const optionsById = indexerPrecisionOptions(options || {});
     const fixedPrecisionId = fixedIndexerPrecisionId(model);
-    const selected =
-      (fixedPrecisionId && optionsById[fixedPrecisionId]) ||
-      optionsById[precisionId] ||
-      optionsById[defaultIndexerPrecisionId(model, options, fallbackPrecisionId)] ||
-      DEFAULT_PRECISIONS.fp4_int4;
+    const selectedId = [
+      fixedPrecisionId,
+      precisionId,
+      defaultIndexerPrecisionId(model, options, fallbackPrecisionId),
+    ].find((id) => optionsById[id]) || "fp4_int4";
+    const selected = optionsById[selectedId] || DEFAULT_PRECISIONS.fp4_int4;
     return {
+      id: selectedId,
       label: selected.label,
       bytesPerElement: selected.bytesPerElement,
     };
@@ -788,6 +790,24 @@
       const indexerPools = Math.floor(tokens / indexKpool);
       const indexerElements = indexerPools * indexerPlan.activeIndexerLayers * indexDim;
       const indexerElementsPerToken = indexerElements / tokens;
+      const indexerPrecisionId = (settings && settings.indexerPrecisionId) ||
+        defaultIndexerPrecisionId(model);
+      const indexerScalePrefix = indexerPrecisionId === "fp8_int8"
+        ? "indexer_fp8"
+        : indexerPrecisionId === "fp4_int4" ? "indexer_mxfp4" : null;
+      const indexerQuantBlockSize = indexerScalePrefix
+        ? optionalField(model, `${indexerScalePrefix}_quant_block_size`, 0)
+        : 0;
+      const indexerScaleBytesPerElement = indexerScalePrefix
+        ? optionalField(model, `${indexerScalePrefix}_scale_bytes_per_element`, 0)
+        : 0;
+      const indexerScalesPerBlock = indexerQuantBlockSize > 0
+        ? Math.floor(indexDim / indexerQuantBlockSize)
+        : 0;
+      const indexerScaleElements =
+        indexerPools * indexerPlan.activeIndexerLayers * indexerScalesPerBlock;
+      const indexerScaleBytesPerSequence =
+        indexerScaleElements * indexerScaleBytesPerElement;
       const indexTailTokens = tokens % indexKpool;
       const includeIndexTail = indexTailTokens > 0;
       const indexTailBytesPerElement = optionalField(model, "index_tail_bytes_per_element", 2);
@@ -842,6 +862,14 @@
         { role: "kv", label: "MLA latent KV cache", elements: mlaElements },
         { role: "indexer", label: "Indexer cache", elements: indexerElements },
       ];
+      if (indexerScaleBytesPerSequence > 0) {
+        byteGroups.push({
+          role: "indexer",
+          label: "Indexer quantization scale cache",
+          elements: indexerScaleElements,
+          bytesPerSequence: indexerScaleBytesPerSequence,
+        });
+      }
       if (includeIndexTail) {
         byteGroups.push({
           role: "index_tail",
@@ -884,6 +912,14 @@
             "Additional per-pool indexer state used by independent indexer layer.",
         },
         {
+          name: "indexer_scale_bytes",
+          expression: indexerQuantBlockSize > 0 && indexerScaleBytesPerElement > 0
+            ? `indexer_pools x sequences x active_indexer_layers x floor(index_head_dim / ${indexerScalePrefix}_quant_block_size) x ${indexerScalePrefix}_scale_bytes_per_element`
+            : "0",
+          description:
+            "Scales apply to quantized indexer.",
+        },
+        {
           name: "index_tail_bytes",
           expression: includeIndexTail
             ? "sequences x active_indexer_layers x index_kpool x 2 x index_head_dim x index_tail_bytes_per_element"
@@ -924,7 +960,7 @@
           {
             name: "total_bytes",
             expression:
-              "mla_kv_bytes + indexer_bytes + index_tail_bytes + kda_conv_state_bytes + kda_recurrent_state_bytes",
+              "mla_kv_bytes + indexer_bytes + indexer_scale_bytes + index_tail_bytes + kda_conv_state_bytes + kda_recurrent_state_bytes",
             description:
               "Combined DSA/MLA cache and retained KDA checkpoint states.",
           },
@@ -940,7 +976,7 @@
           },
           {
             name: "total_bytes",
-            expression: "mla_kv_bytes + indexer_bytes + index_tail_bytes",
+            expression: "mla_kv_bytes + indexer_bytes + indexer_scale_bytes + index_tail_bytes",
             description: "DSA/MLA cache, compressed indexer payload, and fixed index tail cache without KDA checkpoint state.",
           },
         );
@@ -948,15 +984,18 @@
 
       return {
         elementsPerSequence:
-          mlaElements + indexerElements + indexTailElements +
+          mlaElements + indexerElements + indexerScaleElements + indexTailElements +
           kdaCheckpointCount * (kdaConvElements + kdaRecurrentElements),
-        elementsPerToken: mlaElementsPerToken + indexerElementsPerToken,
+        elementsPerToken: mlaElementsPerToken + indexerElementsPerToken + indexerScaleElements / tokens,
         hitRateElementsPerToken: mlaElementsPerToken,
         formulaLabel: FORMULA_LABELS[formula],
         formulaText: formulaRows.map((row) => `${row.name} = ${row.expression}`).join("\n"),
         formulaRows,
         note:
           `Production estimate uses latent KV plus indexer state, with one index state per ${indexKpool} tokens in each complete pool. ` +
+          (indexerScaleElements > 0
+            ? `Includes ${indexerScaleBytesPerElement}-byte quantization scales for the indexer. `
+            : "") +
           (includeIndexTail
             ? `Includes an uncompressed index tail cache for the in-progress pool (${indexTailTokens} tokens), at ${indexTailBytesPerElement} bytes per element. `
             : "") +
@@ -1002,6 +1041,9 @@
             "active_full_attention_layers x (kv_lora_rank + qk_rope_head_dim). Latent KV scalar elements per token before applying KV precision.",
           ],
           ["Indexer elements per token", indexerElementsPerToken, "Indexer elements per token before applying indexer precision."],
+          ["Indexer scales per block", indexerScalesPerBlock, "Scales per quantized indexer block"],
+          ["Indexer scale bytes per element", indexerScaleBytesPerElement, "Fixed scale width based on indexer quantization configuration."],
+          ["Indexer scale bytes per sequence", indexerScaleBytesPerSequence, "pools x active indexer layers x scales per block x scale bytes per element."],
           ["Index pool size", indexKpool, "Number of tokens sharing one compressed index key. Defaults to one when index_kpool is not configured."],
           ["Indexer pools", indexerPools, "floor(tokens / index_kpool); partial pools do not allocate an additional compressed index key."],
           ["Index tail tokens", indexTailTokens, "tokens % index_kpool; zero means there is no in-progress pool and no index tail cache."],
@@ -1042,6 +1084,10 @@
               "index_head_dim",
               "index_kpool",
               "index_tail_bytes_per_element",
+              "indexer_fp8_quant_block_size",
+              "indexer_fp8_scale_bytes_per_element",
+              "indexer_mxfp4_quant_block_size",
+              "indexer_mxfp4_scale_bytes_per_element",
               "indexer_full_layers",
               "indexer_shared_layers",
               "num_nextn_predict_layers",
@@ -1722,6 +1768,7 @@
         }
       : precision;
     const elementPlan = calculateElementsPerSequence(model, tokens, {
+      indexerPrecisionId: indexerPrecision ? indexerPrecision.id : undefined,
       includeDraftKvCache: hasDraftKvCache(model) && toBoolean(input.includeDraftKvCache),
       includeLinearAttentionState: hasLinearAttentionState(model) && toBoolean(input.includeLinearAttentionState),
       includeSconvState:

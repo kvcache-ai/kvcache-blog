@@ -242,6 +242,10 @@ models:
       index_share_for_mtp_iteration: true
       indexer_full_layers: 11
       indexer_shared_layers: 0
+      indexer_fp8_quant_block_size: 128
+      indexer_fp8_scale_bytes_per_element: 4
+      indexer_mxfp4_quant_block_size: 32
+      indexer_mxfp4_scale_bytes_per_element: 1
       num_nextn_predict_layers: 1
       draft_indexer_layers: 1
       kda_num_heads: 64
