@@ -251,8 +251,8 @@ models:
       kda_num_value_heads: 64
       kda_value_head_dim: 128
       kda_conv_kernel_size: 4
-      kda_conv_state_bytes_per_element: 4
-      kda_recurrent_state_bytes_per_element: 2
+      kda_conv_state_bytes_per_element: 2
+      kda_recurrent_state_bytes_per_element: 4
       default_include_linear_attention_state: true
       default_kda_checkpoint_interval: "infinity"
   - id: kimi-k3
