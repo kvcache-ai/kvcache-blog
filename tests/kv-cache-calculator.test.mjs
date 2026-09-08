@@ -335,6 +335,473 @@ test("Kimi K3 MLA cache scales from the exact logical token count", () => {
   assert.equal(bf16Result.hitRateBytesPerToken, 27648);
 });
 
+const glm53Flash = {
+  id: "glm-5.3-flash",
+  label: "GLM-5.3-Flash",
+  formula: "kimi_kda_dsa_mla_hybrid",
+  fields: {
+    num_hidden_layers: 45,
+    full_attention_layers: 11,
+    kda_layers: 34,
+    indexer_full_layers: 45,
+    indexer_shared_layers: 0,
+    default_precision_id: "bf16_fp16",
+    kv_lora_rank: 512,
+    qk_rope_head_dim: 0,
+    index_head_dim: 128,
+    num_nextn_predict_layers: 1,
+    draft_indexer_layers: 1,
+    kda_num_heads: 64,
+    kda_head_dim: 128,
+    kda_num_key_heads: 64,
+    kda_key_head_dim: 128,
+    kda_num_value_heads: 64,
+    kda_value_head_dim: 128,
+    kda_conv_kernel_size: 4,
+    kda_conv_state_bytes_per_element: 4,
+    kda_recurrent_state_bytes_per_element: 2,
+    default_kda_checkpoint_interval: "infinity",
+  },
+};
+
+// Keep the unpooled 45-layer fixture above as generic backward compatibility coverage.
+const glm53Pooled = {
+  ...glm53Flash,
+  fields: {
+    ...glm53Flash.fields,
+    indexer_full_layers: 11,
+    index_kpool: 4,
+  },
+};
+
+const glm53Quantized = {
+  ...glm53Pooled,
+  fields: {
+    ...glm53Pooled.fields,
+    default_indexer_precision_id: "fp8_int8",
+    indexer_fp8_quant_block_size: 128,
+    indexer_fp8_scale_bytes_per_element: 4,
+    indexer_mxfp4_quant_block_size: 32,
+    indexer_mxfp4_scale_bytes_per_element: 1,
+  },
+};
+
+test("GLM indexer scales use fixed widths for FP8 and FP4, with no BF16 scales", () => {
+  for (const [indexerPrecision, width, scales, scaleWidth] of [
+    [undefined, 1, 1, 4],
+    ["fp8_int8", 1, 1, 4],
+    ["fp4_int4", 0.5, 4, 1],
+    ["bf16_fp16", 2, 0, 0],
+  ]) {
+    for (const precision of ["bf16_fp16", "fp8_int8", "fp4_int4"]) {
+      for (const tokens of [1, 3, 4, 5, 8, 9]) {
+        for (const includeDraftKvCache of [false, true]) {
+          const sequences = 3;
+          const layers = includeDraftKvCache ? 12 : 11;
+          const vectors = Math.floor(tokens / 4) * layers * sequences;
+          const result = calculate(glm53Quantized, {
+            tokens, sequences, precision, indexerPrecision, includeDraftKvCache,
+          });
+          const scale = result.cacheGroups.find((group) => group.label === "Indexer quantization scale cache");
+          const scaleBytes = vectors * scales * scaleWidth;
+          assert.equal(scale?.bytes ?? 0, scaleBytes);
+          assert.equal(scale?.elements ?? 0, vectors * scales);
+          assert.equal(result.indexerBytes, vectors * 128 * width + scaleBytes);
+          const tailBytes = tokens % 4 ? layers * 4 * 2 * 128 * 2 * sequences : 0;
+          assert.equal(result.totalBytes, result.kvBytes + result.indexerBytes + tailBytes);
+          assert.match(result.elementPlan.formulaText, /indexer_scale_bytes/);
+          assert.match(result.elementPlan.formulaRows.find((row) => row.name === "total_bytes").expression, /indexer_scale_bytes/);
+        }
+      }
+    }
+  }
+});
+
+test("GLM scale block counts floor per vector and honor configured scale widths", () => {
+  const model = {
+    ...glm53Quantized,
+    fields: {
+      ...glm53Quantized.fields,
+      index_head_dim: 150,
+      indexer_fp8_quant_block_size: 64,
+      indexer_fp8_scale_bytes_per_element: 8,
+      indexer_mxfp4_scale_bytes_per_element: 1,
+    },
+  };
+  for (const [indexerPrecision, scaleBytes] of [["fp8_int8", 16], ["fp4_int4", 4]]) {
+    const result = calculate(model, { tokens: 8, indexerPrecision });
+    assert.equal(result.cacheGroups.find((group) => group.label === "Indexer quantization scale cache").bytes, 2 * 11 * scaleBytes);
+  }
+});
+
+test("GLM scales follow resolved indexer precision for invalid and fixed selections", () => {
+  const input = { tokens: 8, indexerPrecision: "invalid" };
+  const result = calculate(glm53Quantized, input);
+  assert.equal(result.indexerBytes, 2 * 11 * (128 + 4));
+  const model = {
+    ...glm53Quantized,
+    fields: { ...glm53Quantized.fields, indexer_fixed_precision_id: "fp4_int4" },
+  };
+  const fixed = calculate(model, { tokens: 8, indexerPrecision: "fp8_int8" });
+  assert.equal(fixed.indexerBytes, 2 * 11 * (64 + 4));
+  const plan = calculateElementsPerSequence(glm53Quantized, 8);
+  assert.equal(plan.byteGroups.find((group) => group.label === "Indexer quantization scale cache").bytesPerSequence, 2 * 11 * 4);
+});
+
+const glm53CheckpointBytes =
+  34 * (4 - 1) * (3 * 64 * 128) * 4 +
+  34 * 64 * 128 * 128 * 2;
+
+test("GLM-5.3-Flash counts 11 MLA layers and 45 independent indexer layers without state", () => {
+  const tokens = 1024;
+  const result = calculate(glm53Flash, { ...bf16, tokens });
+
+  assert.equal(result.kvBytes, tokens * 11 * 512 * 2);
+  assert.equal(result.indexerBytes, tokens * 45 * 128 * 2);
+  assert.equal(result.totalBytes, tokens * (11 * 512 + 45 * 128) * 2);
+  assert.equal(result.bytesPerToken, (11 * 512 + 45 * 128) * 2);
+  assert.equal(result.hitRateBytesPerToken, 11 * 512 * 2);
+  assert.equal(result.elementPlan.byteGroups.find((group) => group.role === "kv").elements, tokens * 11 * 512);
+  assert.equal(result.elementPlan.byteGroups.find((group) => group.role === "indexer").elements, tokens * 45 * 128);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "KDA state included")[1], "No");
+  assert.equal(result.cacheGroups.some((group) => group.label.startsWith("KDA checkpoint state")), false);
+});
+
+test("GLM-5.3-Flash includes one configured KDA checkpoint only when explicitly enabled", () => {
+  const input = { ...bf16, tokens: 4096 };
+  const withoutState = calculate(glm53Flash, input);
+  const result = calculate(glm53Flash, { ...input, includeLinearAttentionState: true });
+
+  assert.equal(glm53CheckpointBytes, 81330176);
+  assert.equal(result.cacheGroups.find((group) => group.label.startsWith("KDA checkpoint state")).bytes, glm53CheckpointBytes);
+  assert.equal(result.totalBytes - withoutState.totalBytes, glm53CheckpointBytes);
+  assert.equal(result.kvBytes, withoutState.kvBytes);
+  assert.equal(result.indexerBytes, withoutState.indexerBytes);
+  assert.equal(result.hitRateBytesPerToken, 11 * 512 * 2);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "KDA checkpoints per sequence")[1], 1);
+});
+
+test("GLM-5.3-Flash scales KV and indexer precision independently without scaling fixed state", () => {
+  for (const [precision, kvBytesPerElement] of [["bf16_fp16", 2], ["fp8_int8", 1]]) {
+    for (const [indexerPrecision, indexerBytesPerElement] of [["bf16_fp16", 2], ["fp4_int4", 0.5]]) {
+      const tokens = 1025;
+      const result = calculate(glm53Flash, {
+        ...bf16, tokens, precision, indexerPrecision,
+        includeLinearAttentionState: true,
+        kdaCheckpointPolicy: "fixed_interval",
+        kdaCheckpointInterval: 1024,
+      });
+      const kvBytes = tokens * 11 * 512 * kvBytesPerElement;
+      const indexerBytes = tokens * 45 * 128 * indexerBytesPerElement;
+
+      assert.equal(result.kvBytes, kvBytes);
+      assert.equal(result.indexerBytes, indexerBytes);
+      assert.equal(result.cacheGroups.find((group) => group.label.startsWith("KDA checkpoint state")).bytes, 2 * glm53CheckpointBytes);
+      assert.equal(result.totalBytes, kvBytes + indexerBytes + 2 * glm53CheckpointBytes);
+      assert.equal(result.hitRateBytesPerToken, 11 * 512 * kvBytesPerElement);
+    }
+  }
+});
+
+test("GLM-5.3-Flash draft adds one MLA and one indexer layer but no KDA state", () => {
+  const input = { ...bf16, tokens: 1024, includeLinearAttentionState: true };
+  const withoutDraft = calculate(glm53Flash, { ...input, includeDraftKvCache: false });
+  const result = calculate(glm53Flash, { ...input, includeDraftKvCache: true });
+
+  assert.equal(result.kvBytes, 1024 * 12 * 512 * 2);
+  assert.equal(result.indexerBytes, 1024 * 46 * 128 * 2);
+  assert.equal(result.totalBytes - withoutDraft.totalBytes, 1024 * (512 + 128) * 2);
+  assert.equal(result.hitRateBytesPerToken, 12 * 512 * 2);
+  assert.equal(result.cacheGroups.find((group) => group.label.startsWith("KDA checkpoint state")).bytes, glm53CheckpointBytes);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Draft layers included")[1], 1);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Draft indexer layers included")[1], 1);
+});
+
+test("GLM-5.3-Flash disable_draft_kv_cache suppresses both draft cache groups", () => {
+  const model = { ...glm53Flash, fields: { ...glm53Flash.fields, disable_draft_kv_cache: true } };
+  const input = { ...bf16, tokens: 1024, includeLinearAttentionState: true };
+  const baseline = calculate(model, { ...input, includeDraftKvCache: false });
+  const result = calculate(model, { ...input, includeDraftKvCache: true });
+
+  assert.equal(result.kvBytes, baseline.kvBytes);
+  assert.equal(result.indexerBytes, baseline.indexerBytes);
+  assert.equal(result.totalBytes, baseline.totalBytes);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Draft layers included")[1], 0);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Draft indexer layers included")[1], 0);
+});
+
+test("GLM-5.3-Flash prompt-end and unspecified policies ignore a finite checkpoint interval", () => {
+  for (const policy of [undefined, "prompt_end"]) {
+    const result = calculate(glm53Flash, {
+      ...bf16, tokens: 4096, includeLinearAttentionState: true,
+      kdaCheckpointPolicy: policy, kdaCheckpointInterval: 1,
+    });
+
+    assert.equal(result.elementPlan.components.find(([label]) => label === "KDA checkpoints per sequence")[1], 1);
+    assert.equal(result.elementPlan.components.find(([label]) => label === "KDA checkpoint interval")[1], "∞");
+    assert.equal(result.cacheGroups.find((group) => group.label.startsWith("KDA checkpoint state")).bytes, glm53CheckpointBytes);
+  }
+});
+
+test("GLM-5.3-Flash fixed checkpoints handle exact and partial interval boundaries", () => {
+  for (const [tokens, checkpoints] of [[1, 1], [1023, 1], [1024, 1], [1025, 2], [2048, 2], [2049, 3]]) {
+    const result = calculate(glm53Flash, {
+      ...bf16, tokens, includeLinearAttentionState: true,
+      kdaCheckpointPolicy: "fixed_interval", kdaCheckpointInterval: 1024,
+    });
+
+    assert.equal(result.elementPlan.components.find(([label]) => label === "KDA checkpoints per sequence")[1], checkpoints, `tokens=${tokens}`);
+    assert.equal(result.cacheGroups.find((group) => group.label.startsWith("KDA checkpoint state")).bytes, checkpoints * glm53CheckpointBytes);
+    assert.equal(result.totalBytes, tokens * (11 * 512 + 45 * 128) * 2 + checkpoints * glm53CheckpointBytes);
+  }
+});
+
+test("GLM-5.3-Flash excluded state ignores fixed checkpoint policy", () => {
+  const result = calculate(glm53Flash, {
+    ...bf16, tokens: 4096, includeLinearAttentionState: false,
+    kdaCheckpointPolicy: "fixed_interval", kdaCheckpointInterval: 1,
+  });
+
+  assert.equal(result.totalBytes, 4096 * (11 * 512 + 45 * 128) * 2);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "KDA checkpoints per sequence")[1], 0);
+  assert.equal(result.cacheGroups.some((group) => group.label.startsWith("KDA checkpoint state")), false);
+});
+
+test("GLM-5.3-Flash sequence doubling scales all cache groups but not per-token hit-rate bytes", () => {
+  for (const includeLinearAttentionState of [false, true]) {
+    const input = {
+      ...bf16, tokens: 1025, includeLinearAttentionState,
+      kdaCheckpointPolicy: "fixed_interval", kdaCheckpointInterval: 1024,
+    };
+    const single = calculate(glm53Flash, input);
+    const doubled = calculate(glm53Flash, { ...input, sequences: 2 });
+
+    assert.equal(doubled.totalBytes, 2 * single.totalBytes);
+    assert.equal(doubled.kvBytes, 2 * single.kvBytes);
+    assert.equal(doubled.indexerBytes, 2 * single.indexerBytes);
+    assert.equal(doubled.bytesPerSequence, single.bytesPerSequence);
+    assert.equal(doubled.hitRateBytesPerToken, single.hitRateBytesPerToken);
+    for (const group of single.cacheGroups) {
+      assert.equal(doubled.cacheGroups.find((candidate) => candidate.label === group.label).bytes, 2 * group.bytes);
+    }
+  }
+});
+
+test("GLM-5.3-Flash token doubling leaves prompt-end state fixed", () => {
+  const input = { ...bf16, tokens: 1024, includeLinearAttentionState: true };
+  const single = calculate(glm53Flash, input);
+  const doubled = calculate(glm53Flash, { ...input, tokens: 2048 });
+
+  assert.equal(doubled.kvBytes, 2 * single.kvBytes);
+  assert.equal(doubled.indexerBytes, 2 * single.indexerBytes);
+  assert.equal(doubled.totalBytes, 2 * single.totalBytes - glm53CheckpointBytes);
+});
+
+test("GLM-5.3-Flash shared indexer layers do not allocate duplicate indexer cache", () => {
+  const model = {
+    ...glm53Flash,
+    fields: { ...glm53Flash.fields, indexer_full_layers: 9, indexer_shared_layers: 36 },
+  };
+  const result = calculate(model, { ...bf16, tokens: 1024 });
+
+  assert.equal(result.kvBytes, 1024 * 11 * 512 * 2);
+  assert.equal(result.indexerBytes, 1024 * 9 * 128 * 2);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Main indexer layers")[1], 9);
+  assert.equal(result.elementPlan.components.find(([label]) => label === "Shared indexer layers")[1], 36);
+});
+
+test("GLM-5.3-Flash respects draft_indexer_layers independently of MLA draft layers", () => {
+  for (const draftIndexerLayers of [0, 2]) {
+    const model = {
+      ...glm53Flash,
+      fields: {
+        ...glm53Flash.fields, indexer_full_layers: 9, indexer_shared_layers: 36,
+        draft_indexer_layers: draftIndexerLayers,
+      },
+    };
+    const result = calculate(model, { ...bf16, tokens: 1024, includeDraftKvCache: true });
+
+    assert.equal(result.kvBytes, 1024 * 12 * 512 * 2);
+    assert.equal(result.indexerBytes, 1024 * (9 + draftIndexerLayers) * 128 * 2);
+    assert.equal(result.elementPlan.components.find(([label]) => label === "Draft indexer layers included")[1], draftIndexerLayers);
+  }
+});
+
+test("GLM-5.3-Flash defaults missing indexer_full_layers to full_attention_layers, not total layers", () => {
+  const fields = { ...glm53Flash.fields };
+  delete fields.indexer_full_layers;
+  const model = { ...glm53Flash, fields };
+
+  for (const includeDraftKvCache of [false, true]) {
+    const result = calculate(model, { ...bf16, tokens: 1024, includeDraftKvCache });
+    const activeLayers = includeDraftKvCache ? 12 : 11;
+
+    assert.equal(result.kvBytes, 1024 * activeLayers * 512 * 2);
+    assert.equal(result.indexerBytes, 1024 * activeLayers * 128 * 2);
+    assert.equal(result.elementPlan.components.find(([label]) => label === "Main indexer layers")[1], 11);
+  }
+});
+
+test("GLM-5.3-Flash formula rows expose indexer precision and configurable checkpoint state", () => {
+  const result = calculate(glm53Flash, {
+    ...bf16, tokens: 1025, includeLinearAttentionState: true,
+    kdaCheckpointPolicy: "fixed_interval", kdaCheckpointInterval: 1024,
+  });
+  const rows = result.elementPlan.formulaRows;
+
+  assert.match(rows.find((row) => row.name === "indexer_bytes").expression, /indexer_precision_bytes/);
+  assert.match(rows.find((row) => row.name === "total_bytes").expression, /indexer_bytes/);
+  assert.match(rows.find((row) => row.name === "total_bytes").expression, /kda_recurrent_state_bytes/);
+  assert.match(rows.find((row) => row.name === "kda_checkpoint_count").expression, /ceil/);
+  assert.match(rows.find((row) => row.name === "kda_conv_state_bytes").expression, /kda_conv_state_bytes_per_element/);
+  assert.match(rows.find((row) => row.name === "kda_recurrent_state_bytes").expression, /kda_recurrent_state_bytes_per_element/);
+});
+
+test("GLM-5.3-Flash descriptions do not inherit Kimi layer counts or reversed state precisions", () => {
+  for (const includeLinearAttentionState of [false, true]) {
+    const result = calculate(glm53Flash, { ...bf16, tokens: 1024, includeLinearAttentionState });
+    const description = [
+      result.elementPlan.note,
+      result.elementPlan.formulaText,
+      ...result.elementPlan.formulaRows.map((row) => `${row.name} ${row.expression}`),
+      ...result.cacheGroups.map((group) => group.label),
+    ].join("\n");
+
+    assert.doesNotMatch(description, /\bKimi\b|\b(?:24|69)\b/i);
+    assert.doesNotMatch(description, /BF16[^.\n;]*conv|conv[^.\n;]*BF16|FP32[^.\n;]*recurrent|recurrent[^.\n;]*FP32/i);
+  }
+});
+
+test("GLM pooled indexer counts in-progress tail without a selection flag", () => {
+  for (const [tokens, groups] of [[1, 0], [2, 0], [3, 0], [4, 1], [5, 1], [7, 1], [8, 2], [9, 2]]) {
+    const result = calculate(glm53Pooled, { ...bf16, tokens });
+    const hasTail = tokens % 4 !== 0;
+    const tailElements = hasTail ? 11 * 4 * 2 * 128 : 0;
+    const tail = result.elementPlan.byteGroups.find((group) => group.role === "index_tail");
+
+    assert.equal(result.elementPlan.byteGroups.find((group) => group.role === "indexer").elements, groups * 11 * 128, `tokens=${tokens}`);
+    if (hasTail) {
+      assert.equal(tail.label, "Index tail cache");
+      assert.equal(tail.elements, tailElements, `in-progress pool at tokens=${tokens}`);
+      assert.equal(result.cacheGroups.find((group) => group.role === "index_tail").bytes, tailElements * 2);
+    } else {
+      assert.equal(tail, undefined);
+      assert.match(result.elementPlan.formulaRows.find((row) => row.name === "index_tail_bytes").expression, /^0/);
+    }
+    assert.equal(result.cacheGroups.filter((group) => group.role === "index_tail").length, hasTail ? 1 : 0);
+    assert.equal(result.kvBytes, tokens * 11 * 512 * 2);
+    assert.equal(result.indexerBytes, groups * 11 * 128 * 2);
+    assert.equal(result.totalBytes, result.kvBytes + result.indexerBytes + tailElements * 2);
+    assert.equal(result.hitRateBytesPerToken, 11 * 512 * 2);
+  }
+});
+
+test("GLM missing pool defaults to one and complete pools allocate no tail", () => {
+  for (const pool of [undefined, 1, 4]) {
+    const fields = { ...glm53Flash.fields };
+    if (pool !== undefined) fields.index_kpool = pool;
+    const result = calculate({ ...glm53Flash, fields }, { ...bf16, tokens: 8 });
+
+    assert.equal(result.indexerBytes, Math.floor(8 / (pool ?? 1)) * 45 * 128 * 2);
+    assert.equal(result.totalBytes, result.kvBytes + result.indexerBytes);
+    assert.equal(result.cacheGroups.some((group) => group.role === "index_tail"), false);
+  }
+  const fields = { ...glm53Pooled.fields };
+  delete fields.index_kpool;
+  const result = calculate({ ...glm53Pooled, fields }, { ...bf16, tokens: 3 });
+  assert.equal(result.indexerBytes, 3 * 11 * 128 * 2);
+  assert.equal(result.cacheGroups.some((group) => group.role === "index_tail"), false);
+  assert.equal(result.totalBytes, result.kvBytes + result.indexerBytes);
+});
+
+test("GLM tail width defaults to BF16 independently of KV and indexer precision and is configurable", () => {
+  for (const tailWidth of [undefined, 1, 4]) {
+    const fields = { ...glm53Pooled.fields };
+    if (tailWidth !== undefined) fields.index_tail_bytes_per_element = tailWidth;
+    for (const [precision, kvWidth] of [["bf16_fp16", 2], ["fp8_int8", 1]]) {
+      for (const [indexerPrecision, indexerWidth] of [["bf16_fp16", 2], ["fp4_int4", 0.5]]) {
+        const result = calculate({ ...glm53Pooled, fields }, {
+          ...bf16, tokens: 9, precision, indexerPrecision, includeLinearAttentionState: true,
+        });
+        const tailBytes = 11 * 4 * 2 * 128 * (tailWidth ?? 2);
+
+        assert.equal(result.kvBytes, 9 * 11 * 512 * kvWidth);
+        assert.equal(result.indexerBytes, 2 * 11 * 128 * indexerWidth);
+        assert.equal(result.cacheGroups.find((group) => group.role === "index_tail").bytes, tailBytes);
+        assert.equal(result.cacheGroups.find((group) => group.label.startsWith("KDA checkpoint state")).bytes, glm53CheckpointBytes);
+        assert.equal(result.totalBytes, result.kvBytes + result.indexerBytes + tailBytes + glm53CheckpointBytes);
+        assert.equal(result.hitRateBytesPerToken, 11 * 512 * kvWidth);
+      }
+    }
+  }
+});
+
+test("GLM pooled indexer and tail share active draft layers and sequence scaling, not shared layers", () => {
+  for (const draftIndexerLayers of [0, 1, 2]) {
+    for (const disableDraft of [false, true]) {
+      const model = {
+        ...glm53Pooled,
+        fields: {
+          ...glm53Pooled.fields, indexer_full_layers: 9, indexer_shared_layers: 36,
+          draft_indexer_layers: draftIndexerLayers, disable_draft_kv_cache: disableDraft,
+        },
+      };
+      for (const includeDraftKvCache of [false, true]) {
+        const activeIndexerLayers = 9 + (includeDraftKvCache && !disableDraft ? draftIndexerLayers : 0);
+        const activeMlaLayers = 11 + (includeDraftKvCache && !disableDraft ? 1 : 0);
+        const input = { ...bf16, tokens: 9, includeDraftKvCache, includeLinearAttentionState: true };
+        const single = calculate(model, input);
+        const doubled = calculate(model, { ...input, sequences: 2 });
+
+        assert.equal(single.indexerBytes, 2 * activeIndexerLayers * 128 * 2);
+        assert.equal(single.cacheGroups.find((group) => group.role === "index_tail").bytes, activeIndexerLayers * 4 * 2 * 128 * 2);
+        assert.equal(single.kvBytes, 9 * activeMlaLayers * 512 * 2);
+        assert.equal(single.totalBytes, single.kvBytes + single.indexerBytes + activeIndexerLayers * 4 * 2 * 128 * 2 + glm53CheckpointBytes);
+        assert.equal(doubled.totalBytes, 2 * single.totalBytes);
+        assert.equal(doubled.bytesPerSequence, single.bytesPerSequence);
+        assert.equal(single.hitRateBytesPerToken, activeMlaLayers * 512 * 2);
+        assert.equal(doubled.hitRateBytesPerToken, single.hitRateBytesPerToken);
+        for (const group of single.cacheGroups) {
+          assert.equal(doubled.cacheGroups.find((candidate) => candidate.label === group.label).bytes, 2 * group.bytes);
+        }
+      }
+    }
+  }
+});
+
+test("GLM pooled formula rows expose floor groups, independent tail width, and tail in the total", () => {
+  const result = calculate(glm53Pooled, { ...bf16, tokens: 9, includeLinearAttentionState: true });
+  const rows = result.elementPlan.formulaRows;
+  const expression = (name) => rows.find((row) => row.name === name).expression;
+
+  assert.match(expression("indexer_pools"), /floor/);
+  assert.match(expression("indexer_pools"), /tokens\s*\/\s*index_kpool/);
+  assert.match(expression("indexer_bytes"), /indexer_pools/);
+  assert.match(expression("indexer_bytes"), /indexer_precision_bytes/);
+  assert.match(expression("index_tail_bytes"), /index_tail_bytes_per_element/);
+  assert.doesNotMatch(expression("index_tail_bytes"), /indexer_precision_bytes|kv_precision_bytes|tokens\s*%/);
+  assert.match(expression("total_bytes"), /index_tail_bytes/);
+  assert.match(expression("total_bytes"), /indexer_bytes/);
+  assert.match(expression("total_bytes"), /kda_recurrent_state_bytes/);
+});
+
+test("pool and tail fields do not change other MLA or KDA formulas", () => {
+  for (const model of [kimiK3, { ...glm53Flash, formula: "dsa_mla" }]) {
+    const configured = {
+      ...model,
+      fields: { ...model.fields, index_kpool: 4, index_tail_bytes_per_element: 4 },
+    };
+    const input = { ...bf16, tokens: 9, includeLinearAttentionState: true };
+    const baseline = calculate(model, input);
+    const result = calculate(configured, input);
+
+    assert.equal(result.totalBytes, baseline.totalBytes);
+    assert.equal(result.indexerBytes, baseline.indexerBytes);
+    assert.deepEqual(result.cacheGroups, baseline.cacheGroups);
+    assert.equal(result.elementPlan.byteGroups.some((group) => group.role === "index_tail"), false);
+  }
+});
+
 const inkling = {
   id: "inkling",
   label: "Inkling",
