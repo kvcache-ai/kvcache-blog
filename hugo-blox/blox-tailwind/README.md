@@ -11,7 +11,7 @@ hugo mod npm pack
 pnpm install
 ```
 
-This module pins dependency versions via `pnpm.overrides` in `package.json` (see `pnpm-lock.yaml`), so use `pnpm` rather than `npm`/`yarn` to install dependencies here.
+This module pins dependency versions via `overrides` in `pnpm-workspace.yaml` (see `pnpm-lock.yaml`), so use `pnpm` rather than `npm`/`yarn` to install dependencies here.
 
 You need to add this to your `config.yaml` to enable Hugo's Tailwind integration:
 
