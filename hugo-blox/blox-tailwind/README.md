@@ -8,8 +8,10 @@ See the Blog Starter Template for an example using this module.
 
 ```bash
 hugo mod npm pack
-npm install
+pnpm install
 ```
+
+This module pins dependency versions via `overrides` in `pnpm-workspace.yaml` (see `pnpm-lock.yaml`), so use `pnpm` rather than `npm`/`yarn` to install dependencies here.
 
 You need to add this to your `config.yaml` to enable Hugo's Tailwind integration:
 
