@@ -18,6 +18,7 @@
   const STATE_CHECKPOINT_INFINITY = "∞";
   const STATE_CUSTOM_INTERVAL_DEFAULT = 10240;
   const STATE_CHECKPOINT_POLICY_FIXED_INTERVAL = "fixed_interval";
+  const DEFAULT_MODEL_ID = "kimi-k3";
 
   const DEFAULT_PRECISIONS = {
     bf16_fp16: { label: "BF16 / FP16", bytesPerElement: 2 },
@@ -2435,7 +2436,7 @@
       }
     }
 
-    const defaultModelId = inputs.model.value || models[0].id;
+    const defaultModelId = inputs.model.value || DEFAULT_MODEL_ID;
     const defaultModel = modelById(models, defaultModelId);
     populateModelFamilies(inputs.modelFamily, models, modelFamily(defaultModel));
     populateModelsForFamily(inputs.model, models, selectedFamily(), defaultModelId);
