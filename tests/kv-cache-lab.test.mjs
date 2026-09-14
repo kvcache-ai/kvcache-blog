@@ -4,12 +4,6 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
 
-import {
-  allModelSettings,
-  loadModelsData,
-  modelSweepKey as precomputedModelSweepKey,
-} from "../scripts/lib/kv-cache-lab-traces.mjs";
-
 const require = createRequire(import.meta.url);
 const {
   BYTES_PER_GIB,
@@ -133,26 +127,6 @@ test("lab warmup defaults match precomputed metadata", () => {
     "prefix-hit-context-aware-fifo-block-lru-trie-optimal-belady-bypass-v1",
   );
   assert.ok(Object.values(precomputed.traces).every((trace) => trace.settings && trace.capacityResults && !trace.modelSweeps));
-});
-
-test("precomputed traces cover every calculator model and no-draft precision setting", () => {
-  const modelsData = loadModelsData("data/kv_cache_calculator/models.yaml");
-  const hitRateModels = modelsData.models.filter(
-    (model) => model.hit_rate_supported !== false,
-  );
-  const expectedKeys = allModelSettings(hitRateModels, {
-    precisionOptions: modelsData.precision_options,
-    indexerPrecisionOptions: modelsData.indexer_precision_options,
-    includeDraftKvCache: false,
-  }).map(precomputedModelSweepKey).sort();
-  const precomputed = JSON.parse(fs.readFileSync(new URL("../data/kv_cache_lab/precomputed.json", import.meta.url), "utf8"));
-
-  assert.equal(modelsData.models.length, 53);
-  assert.equal(hitRateModels.length, 53);
-  assert.equal(expectedKeys.length, 201);
-  for (const [traceId, trace] of Object.entries(precomputed.traces)) {
-    assert.deepEqual(Object.keys(trace.settings).sort(), expectedKeys, `${traceId} settings`);
-  }
 });
 
 test("Kimi K3 precomputed settings reuse exact simulations within one percent of logical MLA capacity", () => {

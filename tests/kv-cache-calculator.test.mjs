@@ -1,11 +1,133 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { loadModelsData } from "../scripts/lib/kv-cache-lab-traces.mjs";
 
 const require = createRequire(import.meta.url);
 const { calculate, calculateElementsPerSequence, formatBytes, modelFamily, modelsForFamily } = require("../assets/js/kv-cache-calculator.js");
 
 const bf16 = { precision: "bf16_fp16", indexerPrecision: "bf16_fp16", sequences: 1, tensorParallel: 1 };
+
+const curatedModels = loadModelsData(
+  fileURLToPath(new URL("../data/kv_cache_calculator/models.yaml", import.meta.url)),
+).models;
+
+function curatedModel(id) {
+  const model = curatedModels.find((entry) => entry.id === id);
+  assert.ok(model, `Missing curated model: ${id}`);
+  return model;
+}
+
+test("curated V4 releases preserve main cache and include three DSpark draft layers", () => {
+  for (const [id, release, layers, ratioFour, ratio128, ratioZero] of [
+    ["deepseek-v4-flash", "DeepSeek-V4-Flash-0731", 43, 21, 20, 2],
+    ["deepseek-v4-pro", "DeepSeek-V4-Pro-0813", 61, 30, 31, 0],
+  ]) {
+    const model = curatedModel(id);
+    assert.equal(model.source_url, `https://huggingface.co/deepseek-ai/${release}/raw/main/config.json`);
+    assert.equal(model.fields.num_hidden_layers, layers);
+    assert.deepEqual(model.fields.compress_ratios.slice(layers), [0, 0, 0]);
+    for (const tokens of [1024, 1025, 1048576]) {
+      for (const sequences of [1, 3]) {
+        for (const [precision, width] of [["bf16_fp16", 2], ["fp8_int8", 1]]) {
+          const input = { tokens, sequences, precision, indexerPrecision: "fp4_int4" };
+          const main = calculate(model, input);
+          const draft = calculate(model, { ...input, includeDraftKvCache: true });
+          const expectedKv = (
+            layers * 128 + ratioFour * Math.floor(tokens / 4) + ratio128 * Math.floor(tokens / 128)
+          ) * 512 * width * sequences;
+          const expectedIndexer = ratioFour * Math.floor(tokens / 4) * 128 * 0.5 * sequences;
+          assert.equal(main.kvBytes, expectedKv);
+          assert.equal(main.indexerBytes, expectedIndexer);
+          assert.equal(main.totalBytes, expectedKv + expectedIndexer);
+          assert.equal(draft.totalBytes - main.totalBytes, 3 * 128 * 512 * width * sequences);
+          assert.equal(draft.indexerBytes, main.indexerBytes);
+          assert.equal(draft.elementPlan.components.find(([label]) => label === "Draft layers included")[1], 3);
+          assert.equal(draft.elementPlan.components.find(([label]) => label === "Ratio=0 layers")[1], ratioZero + 3);
+        }
+      }
+    }
+  }
+});
+
+test("curated GLM-5.3 reuses GLM-5.2 MLA and shared-indexer accounting", () => {
+  const model = curatedModel("glm-5.3");
+  assert.equal(model.formula, "dsa_mla");
+  assert.equal(model.fields.indexer_full_layers, 21);
+  assert.equal(model.fields.indexer_shared_layers, 57);
+  for (const tokens of [1024, 1048576]) {
+    for (const includeDraftKvCache of [false, true]) {
+      const input = { ...bf16, tokens, sequences: 2, includeDraftKvCache };
+      const result = calculate(model, input);
+      const previous = calculate(curatedModel("glm-5.2"), input);
+      const extraLayer = includeDraftKvCache ? 1 : 0;
+      assert.equal(result.kvBytes, tokens * 2 * (78 + extraLayer) * 576 * 2);
+      assert.equal(result.indexerBytes, tokens * 2 * (21 + extraLayer) * 128 * 2);
+      assert.equal(result.totalBytes, previous.totalBytes);
+    }
+  }
+});
+
+test("curated Qwen3.8-27B uses 16 full KV layers and 48 GDN states", () => {
+  const model = curatedModel("qwen3.8-27b");
+  const input = { tokens: 262144, sequences: 1, includeLinearAttentionState: true };
+  const result = calculate(model, input);
+  const withoutState = calculate(model, { ...input, includeLinearAttentionState: false });
+  assert.equal(model.fields.num_hidden_layers, 64);
+  assert.equal(model.fields.full_attention_layers, 16);
+  assert.equal(model.fields.linear_attention_layers, 48);
+  assert.equal(model.max_position_embeddings, 262144);
+  assert.equal(model.fields.default_include_linear_attention_state, true);
+  assert.equal(result.kvBytes, 16 * 1024 ** 3);
+  assert.equal(withoutState.totalBytes, result.kvBytes);
+  assert.equal(result.cacheGroups.find((group) => group.role === "linear_state").bytes, 74.8125 * 1024 ** 2);
+  assert.equal(calculate(model, { ...input, includeDraftKvCache: true }).totalBytes, result.totalBytes);
+  assert.equal(
+    calculate(curatedModel("qwen3.6-27b"), { ...input, recurrentStatePrecision: "bf16_fp16" }).totalBytes,
+    result.totalBytes,
+  );
+});
+
+test("curated Qwen3.8-27B scales checkpoints and keeps conv precision fixed", () => {
+  const model = curatedModel("qwen3.8-27b");
+  for (const [recurrentStatePrecision, checkpointMiB] of [["bf16_fp16", 74.8125], ["fp32", 146.8125]]) {
+    const result = calculate(model, {
+      tokens: 10241,
+      sequences: 3,
+      precision: "fp8_int8",
+      includeLinearAttentionState: true,
+      recurrentStatePrecision,
+      qwenCheckpointPolicy: "fixed_interval",
+      qwenCheckpointInterval: 10240,
+    });
+    assert.equal(result.kvBytes, 10241 * 3 * 32768);
+    assert.equal(result.cacheGroups.find((group) => group.role === "linear_state").bytes, checkpointMiB * 1024 ** 2 * 2 * 3);
+  }
+});
+
+test("curated Kimi K2.7 Code reuses MLA without an indexer or draft cache", () => {
+  const model = curatedModel("kimi-k2.7-code");
+  const input = { ...bf16, tokens: 262144, sequences: 2 };
+  const result = calculate(model, input);
+  assert.equal(model.formula, "mla");
+  assert.equal(model.max_position_embeddings, 262144);
+  assert.equal(model.fields.num_nextn_predict_layers, 0);
+  assert.equal(result.totalBytes, 262144 * 2 * 61 * 576 * 2);
+  assert.equal(result.indexerBytes, 0);
+  assert.equal(calculate(curatedModel("kimi-k2.6"), input).totalBytes, result.totalBytes);
+  assert.equal(calculate(model, { ...input, includeDraftKvCache: true }).totalBytes, result.totalBytes);
+});
+
+test("new capacity models stay in their families without exposing uncomputed hit-rate presets", () => {
+  for (const [id, family] of [["glm-5.3", "GLM"], ["qwen3.8-27b", "Qwen"], ["kimi-k2.7-code", "Kimi"]]) {
+    const model = curatedModel(id);
+    assert.equal(model.default_tokens, 1024);
+    assert.equal(model.hit_rate_supported, false);
+    assert.ok(modelsForFamily(curatedModels, family).includes(model));
+  }
+});
 
 const dots3Note = {
   id: "dots3-note-prev",
