@@ -42,6 +42,7 @@
     mixed_full_sliding_gqa: "Mixed full/sliding GQA",
     minimax_msa: "MiniMax MSA sparse attention",
     deepseek_v4_hybrid: "DeepSeek V4 hybrid sparse attention",
+    deepseek_v41_shared: "DeepSeek V4.1 CED/CSA2 shared cache",
     kimi_kda_dsa_mla_hybrid: "Kimi KDA/DSA/MLA with indexer hybrid",
   };
 
@@ -80,6 +81,10 @@
 
   function isDeepSeekV4(model) {
     return model && model.formula === "deepseek_v4_hybrid";
+  }
+
+  function isDeepSeekV41(model) {
+    return Boolean(model && model.formula === "deepseek_v41_shared");
   }
 
   function isInkling(model) {
@@ -199,6 +204,8 @@
 
   function defaultPrecisionId(model, options) {
     const optionsById = precisionOptions(options || {});
+    const fixedPrecisionId = fixedKvPrecisionId(model);
+    if (fixedPrecisionId && optionsById[fixedPrecisionId]) return fixedPrecisionId;
     const modelDefault =
       model && model.fields && typeof model.fields.default_precision_id === "string"
         ? model.fields.default_precision_id
@@ -233,6 +240,12 @@
       : undefined;
   }
 
+  function fixedKvPrecisionId(model) {
+    return model && model.fields && typeof model.fields.kv_fixed_precision_id === "string"
+      ? model.fields.kv_fixed_precision_id
+      : undefined;
+  }
+
   function defaultIndexerPrecisionId(model, options, fallbackPrecisionId) {
     const optionsById = indexerPrecisionOptions(options || {});
     const fixedPrecisionId = fixedIndexerPrecisionId(model);
@@ -245,11 +258,11 @@
     return optionsById.fp4_int4 ? "fp4_int4" : Object.keys(optionsById)[0];
   }
 
-  function getPrecisionProfile(precisionId, options, fallbackId) {
+  function getPrecisionProfile(precisionId, options, fallbackId, model) {
     const optionsById = precisionOptions(options || {});
     const selected = optionsById[precisionId] || optionsById[fallbackId] || DEFAULT_PRECISIONS.bf16_fp16;
     return {
-      label: selected.label,
+      label: (fixedKvPrecisionId(model) && model.fields.kv_precision_label) || selected.label,
       bytesPerElement: selected.bytesPerElement,
     };
   }
@@ -265,7 +278,7 @@
     const selected = optionsById[selectedId] || DEFAULT_PRECISIONS.fp4_int4;
     return {
       id: selectedId,
-      label: selected.label,
+      label: (fixedPrecisionId && model.fields.indexer_precision_label) || selected.label,
       bytesPerElement: selected.bytesPerElement,
     };
   }
@@ -1605,6 +1618,111 @@
       };
     }
 
+    if (formula === "deepseek_v41_shared") {
+      const layers = getField(model, "num_hidden_layers");
+      const headDim = getField(model, "head_dim");
+      const indexDim = getField(model, "index_head_dim");
+      const slidingWindow = getField(model, "sliding_window");
+      const sourceLayers = model.fields.kv_source_layer_ids;
+      const ratios = model.fields.compress_ratios;
+      if (
+        !Array.isArray(sourceLayers) || !sourceLayers.length ||
+        new Set(sourceLayers).size !== sourceLayers.length ||
+        !Array.isArray(ratios) ||
+        sourceLayers.some((id) =>
+          !Number.isInteger(id) || id < 0 || id >= layers ||
+          !Number.isInteger(ratios[id]) || ratios[id] < 1)
+      ) {
+        throw new Error(`Model ${model.id} has invalid KV source layers or compression ratios`);
+      }
+
+      // Reindex layers share the source's K store; they do not allocate another cache.
+      const sourceRatios = sourceLayers.map((id) => ratios[id]);
+      const entries = sourceRatios.reduce((sum, ratio) => sum + Math.floor(tokens / ratio), 0);
+      const entryExpression = [...new Set(sourceRatios)].map((ratio) => {
+        const count = countByValue(sourceRatios, ratio);
+        const term = ratio === 1 ? "tokens" : `floor(tokens / ${ratio})`;
+        return `${count > 1 ? `${count} x ` : ""}${term}`;
+      }).join(" + ");
+      const kvScaleBytes = Math.ceil(headDim / getField(model, "kv_quant_group_size")) * getField(model, "kv_scale_bytes");
+      const indexerScaleBytes = Math.ceil(indexDim / getField(model, "indexer_quant_group_size")) * getField(model, "indexer_scale_bytes");
+      const swaScaleBytes = Math.ceil(headDim / getField(model, "swa_quant_group_size")) * getField(model, "swa_scale_bytes");
+      const kvEntryBytes = headDim * 0.5 + kvScaleBytes;
+      const indexerEntryBytes = indexDim * 0.5 + indexerScaleBytes;
+      const swaEntryBytes = headDim * getField(model, "swa_bytes_per_element") + swaScaleBytes;
+      const includeSwaCache = toBoolean(settings && settings.includeSwaCache);
+      const draftLayers = includeSwaCache && includeDraftKvCache ? draftLayerCount(model) : 0;
+      const swaLayers = includeSwaCache ? layers + draftLayers : 0;
+      const retainedSwaTokens = Math.min(tokens, slidingWindow);
+      const globalElements = entries * headDim;
+      const indexerElements = entries * indexDim;
+      const swaElements = swaLayers * retainedSwaTokens * headDim;
+      const byteGroups = [
+        { role: "kv", label: "Global KV cache", elements: globalElements, bytesPerSequence: entries * kvEntryBytes },
+        { role: "indexer", label: "Indexer cache", elements: indexerElements, bytesPerSequence: entries * indexerEntryBytes },
+      ];
+      if (includeSwaCache) {
+        byteGroups.push({
+          role: "kv", label: "SWA cache", elements: swaElements,
+          bytesPerSequence: swaLayers * retainedSwaTokens * swaEntryBytes,
+        });
+      }
+      const formulaRows = [
+        {
+          name: "cache_entries",
+          expression: entryExpression,
+          description: "Per-sequence entries summed only over KV-source layers. Each source owns one global KV cache and one indexer K cache, shared by its consumers.",
+        },
+        {
+          name: "global_kv_bytes",
+          expression: "sequences x cache_entries x kv_entry_bytes",
+          description: "Each 512-dimensional latent uses 256 FP4 data bytes and 32 E4M3 scale bytes. This shared latent is not a separate K/V pair.",
+        },
+        {
+          name: "indexer_bytes",
+          expression: "sequences x cache_entries x indexer_entry_bytes",
+          description: "Each 128-dimensional indexer key uses 64 FP4 data bytes and 4 E8M0 scale bytes. Reindex layers only compute new queries and selections.",
+        },
+        {
+          name: "swa_bytes",
+          expression: "sequences x swa_layers x min(tokens, sliding_window) x swa_entry_bytes",
+          description: "One end-of-sequence snapshot per included layer. SWA layers are zero when excluded, 40 for the main model, or 43 with the three DSpark draft layers. Each record is 512 FP8 bytes plus 16 scale bytes.",
+        },
+        {
+          name: "total_bytes",
+          expression: "global_kv_bytes + indexer_bytes + swa_bytes",
+          description: "Reusable logical cache payload including quantization scales, without runtime allocations or cache-page padding.",
+        },
+      ];
+      return {
+        elementsPerSequence: globalElements + indexerElements + swaElements,
+        elementsPerToken: (globalElements + indexerElements + swaElements) / tokens,
+        formulaLabel: FORMULA_LABELS[formula],
+        formulaText: formulaRows.map((row) => `${row.name} = ${row.expression}`).join("\n"),
+        formulaRows,
+        note: "Official FP4 global KV / MXFP4 indexer payload, including scales. " +
+          (includeSwaCache
+            ? "Includes one FP8 SWA snapshot per sequence. "
+            : "SWA is excluded, assuming approximate bounded replay on cache reuse. ") +
+          "Excludes incomplete compressor state, Engram history, runtime buffers, page padding and vision encoder activations.",
+        byteGroups,
+        showCacheGroups: true,
+        includesFixedState: includeSwaCache,
+        components: [
+          ["Main layers", layers],
+          ["KV source layers", sourceLayers.join(", "), "Zero-based Full-mode layer IDs. Only these layers own global KV and indexer K stores."],
+          ["Indexer K stores", sourceLayers.length, "Reindex and Reuse layers share these stores; the number of index-producing layers is not the number of K caches."],
+          ["Cache entries per sequence", entries, "Only completed compression groups are stored as global entries; incomplete compressor state is excluded."],
+          ["KV entry bytes", kvEntryBytes, `${headDim} x 0.5 FP4 data bytes + ${kvScaleBytes} E4M3 scale bytes.`],
+          ["Indexer entry bytes", indexerEntryBytes, `${indexDim} x 0.5 FP4 data bytes + ${indexerScaleBytes} E8M0 scale bytes.`],
+          ["SWA layers included", swaLayers, "SWA is optional storage payload, not optional model attention. Bounded replay reconstructs approximate local states when they are not retained."],
+          ["Draft layers included", draftLayers, "The three DSpark layers add only SWA snapshots, and only when both cache options are enabled."],
+          ["Sliding window", slidingWindow, "Maximum local KV entries per layer in one end-of-sequence snapshot."],
+          ["SWA entry bytes", swaEntryBytes, `${headDim} FP8 data bytes + ${swaScaleBytes} E8M0 scale bytes; independent of global KV precision.`],
+        ],
+      };
+    }
+
     if (formula === "deepseek_v4_hybrid") {
       const headDim = getField(model, "head_dim");
       const indexDim = getField(model, "index_head_dim");
@@ -1738,11 +1856,12 @@
     const tokens = toPositiveInteger(input.tokens, model.default_tokens || 4096);
     const sequences = toPositiveInteger(input.sequences, 1);
     const tensorParallel = toPositiveInteger(input.tensorParallel, 1);
-    const precisionId = input.precision || defaultPrecisionId(model, options);
+    const precisionId = fixedKvPrecisionId(model) || input.precision || defaultPrecisionId(model, options);
     const precision = getPrecisionProfile(
       precisionId,
       options,
       defaultPrecisionId(model, options),
+      model,
     );
     const indexerPrecision = hasIndexerCache(model)
       ? getIndexerPrecisionProfile(
@@ -1771,6 +1890,11 @@
     const elementPlan = calculateElementsPerSequence(model, tokens, {
       indexerPrecisionId: indexerPrecision ? indexerPrecision.id : undefined,
       includeDraftKvCache: hasDraftKvCache(model) && toBoolean(input.includeDraftKvCache),
+      includeSwaCache: isDeepSeekV41(model) && (
+        typeof input.includeSwaCache === "undefined"
+          ? toBoolean(model.fields.default_include_swa_cache)
+          : toBoolean(input.includeSwaCache)
+      ),
       includeLinearAttentionState: hasLinearAttentionState(model) && toBoolean(input.includeLinearAttentionState),
       includeSconvState:
         hasSconvState(model) &&
@@ -1950,7 +2074,11 @@
     list.innerHTML = "";
 
     const metrics = [];
-    if (result.indexerPrecisionLabel) {
+    if (result.elementPlan.showCacheGroups) {
+      result.cacheGroups.forEach((group) => {
+        metrics.push([`${group.label} size`, formatBytes(group.bytes)]);
+      });
+    } else if (result.indexerPrecisionLabel) {
       metrics.push([
         "KV cache size",
         formatBytes(result.kvBytes),
@@ -1978,7 +2106,7 @@
         ]);
       });
     }
-    const includesFixedState = result.cacheGroups.some(
+    const includesFixedState = result.elementPlan.includesFixedState || result.cacheGroups.some(
       (group) =>
         (group.role === "linear_state" || group.role === "sconv_state") || 
         group.role === "index_tail",
@@ -2112,10 +2240,17 @@
 
   function populatePrecisionOptions(root, data, model) {
     const select = root.querySelector("[data-kv-input='precision']");
+    const fixedPrecisionId = fixedKvPrecisionId(model);
     const preferredValue = defaultPrecisionId(model, {
       precisionOptions: data.precision_options,
     });
-    populateSelect(select, rawPrecisionOptions(data), preferredValue);
+    const options = fixedPrecisionId
+      ? rawPrecisionOptions(data)
+        .filter((option) => option.id === fixedPrecisionId)
+        .map((option) => ({ ...option, label: model.fields.kv_precision_label || option.label }))
+      : rawPrecisionOptions(data);
+    populateSelect(select, options, preferredValue);
+    if (select) select.disabled = Boolean(fixedPrecisionId);
   }
 
   function populateIndexerPrecisionOptions(root, data, model) {
@@ -2128,7 +2263,9 @@
     if (showIndexerPrecision) {
       const fixedPrecisionId = fixedIndexerPrecisionId(model);
       const options = fixedPrecisionId
-        ? rawIndexerPrecisionOptions(data).filter((option) => option.id === fixedPrecisionId)
+        ? rawIndexerPrecisionOptions(data)
+          .filter((option) => option.id === fixedPrecisionId)
+          .map((option) => ({ ...option, label: model.fields.indexer_precision_label || option.label }))
         : rawIndexerPrecisionOptions(data);
       const preferredValue = defaultIndexerPrecisionId(
         model,
@@ -2161,6 +2298,30 @@
     if (control) control.hidden = !showDraftControl;
     if (checkbox && !showDraftControl) checkbox.checked = false;
     if (checkbox && showDraftControl) checkbox.checked = false;
+  }
+
+  function syncSwaControl(root, model, reset) {
+    const control = root.querySelector("[data-kv-swa-control]");
+    const checkbox = root.querySelector("[data-kv-input='includeSwaCache']");
+    const draft = root.querySelector("[data-kv-input='includeDraftKvCache']");
+    const draftHelp = root.querySelector("[data-kv-draft-help]");
+    const supported = isDeepSeekV41(model);
+    if (control) control.hidden = !supported;
+    if (checkbox) {
+      checkbox.disabled = !supported;
+      if (reset || !supported) {
+        checkbox.checked = supported && toBoolean(model.fields.default_include_swa_cache);
+      }
+    }
+    if (draft) {
+      draft.disabled = supported && !checkboxValue(checkbox);
+      if (draft.disabled) draft.checked = false;
+    }
+    if (draftHelp) {
+      updateInlineHelp(draftHelp, supported
+        ? "Adds the three DSpark SWA snapshots when Include SWA cache is enabled. Global KV and indexer sizes do not change; speculative runtime buffers are excluded."
+        : draftHelp.getAttribute("data-kv-inline-help"));
+    }
   }
 
   function syncLinearStateControl(root, model) {
@@ -2342,6 +2503,7 @@
         "[data-kv-input='recurrentStatePrecision']",
       ),
       includeDraftKvCache: root.querySelector("[data-kv-input='includeDraftKvCache']"),
+      includeSwaCache: root.querySelector("[data-kv-input='includeSwaCache']"),
       includeLinearAttentionState: root.querySelector("[data-kv-input='includeLinearAttentionState']"),
       includeSconvState: root.querySelector("[data-kv-input='includeSconvState']"),
       stateCheckpointPolicyPromptEnd: root.querySelector(
@@ -2368,6 +2530,7 @@
       populateIndexerPrecisionOptions(root, data, model);
       populateRecurrentStatePrecisionOptions(root, data, model);
       syncDraftControl(root, model);
+      syncSwaControl(root, model, true);
       syncLinearStateControl(root, model);
       syncRecurrentStatePrecisionControl(root, model);
       syncSconvStateControl(root, model);
@@ -2377,6 +2540,7 @@
     function update() {
       try {
         const model = selectedModel();
+        syncSwaControl(root, model, false);
         syncRecurrentStatePrecisionControl(root, model);
         syncStateCheckpointControl(root, model);
         const stateCheckpointPolicy = checkboxValue(
@@ -2401,6 +2565,7 @@
               undefined,
             ),
             includeDraftKvCache: checkboxValue(inputs.includeDraftKvCache),
+            includeSwaCache: checkboxValue(inputs.includeSwaCache),
             includeLinearAttentionState: checkboxValue(inputs.includeLinearAttentionState),
             includeSconvState: checkboxValue(inputs.includeSconvState),
             qwenCheckpointPolicy: stateCheckpointPolicy,

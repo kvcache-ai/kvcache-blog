@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { loadModelsData } from "../scripts/lib/kv-cache-lab-traces.mjs";
+import { loadModelsData, selectModels } from "../scripts/lib/kv-cache-lab-traces.mjs";
 
 const require = createRequire(import.meta.url);
 const { calculate, calculateElementsPerSequence, formatBytes, modelFamily, modelsForFamily } = require("../assets/js/kv-cache-calculator.js");
@@ -19,6 +19,121 @@ function curatedModel(id) {
   assert.ok(model, `Missing curated model: ${id}`);
   return model;
 }
+
+test("V4.1 official packed layout includes scales and defaults to global cache only", () => {
+  const model = curatedModel("deepseek-v4.1-flash");
+  const result = calculate(model, { tokens: 1048576, sequences: 1 });
+  assert.equal(model.fields.num_hidden_layers, 40);
+  assert.equal(model.fields.default_include_swa_cache, false);
+  assert.deepEqual(model.fields.kv_source_layer_ids, [2, 8, 14, 20]);
+  assert.deepEqual(model.fields.index_source_layer_ids, [2, 8, 14, 20, 24, 28, 32, 36]);
+  assert.deepEqual(model.fields.compress_ratios.slice(40), [0, 0, 0]);
+  assert.equal(result.precisionLabel, "FP4 (E2M1)");
+  assert.equal(result.indexerPrecisionLabel, "MXFP4");
+  assert.equal(result.kvBytes, 754974720);
+  assert.equal(result.indexerBytes, 178257920);
+  assert.equal(result.totalBytes, 933232640);
+  assert.equal(result.bytesPerToken, 890);
+  assert.equal(result.totalGiB.toFixed(5), "0.86914");
+  assert.deepEqual(result.cacheGroups.map((group) => group.label), ["Global KV cache", "Indexer cache"]);
+  for (const [name, expected] of [["KV entry bytes", 288], ["Indexer entry bytes", 68], ["SWA entry bytes", 528], ["Indexer K stores", 4]]) {
+    assert.equal(result.components.find(([label]) => label === name)[1], expected);
+  }
+  assert.match(result.elementPlan.note, /including scales/);
+  assert.match(result.elementPlan.note, /SWA is excluded/);
+  assert.match(result.elementPlan.note, /incomplete compressor state/);
+});
+
+test("V4.1 floors only completed source groups and scales both caches with sequences", () => {
+  const model = curatedModel("deepseek-v4.1-flash");
+  for (const tokens of [1, 2, 127, 128, 129, 1024, 1025, 1048576]) {
+    for (const sequences of [1, 3]) {
+      const entries = 3 * Math.floor(tokens / 2) + tokens;
+      const result = calculate(model, { tokens, sequences });
+      assert.equal(result.kvBytes, sequences * entries * (256 + 32));
+      assert.equal(result.indexerBytes, sequences * entries * (64 + 4));
+      assert.equal(result.totalBytes, sequences * entries * 356);
+      assert.equal(result.elementPlan.elementsPerSequence, entries * (512 + 128));
+    }
+  }
+});
+
+test("V4.1 SWA keeps one capped FP8 snapshot per layer including scale bytes", () => {
+  const model = curatedModel("deepseek-v4.1-flash");
+  for (const tokens of [1, 127, 128, 129, 1024, 1048576]) {
+    for (const sequences of [1, 2]) {
+      const input = { tokens, sequences };
+      const withoutSwa = calculate(model, input);
+      const result = calculate(model, { ...input, includeSwaCache: true });
+      const swaBytes = Math.min(tokens, 128) * sequences * 40 * (512 + 16);
+      assert.equal(result.totalBytes - withoutSwa.totalBytes, swaBytes);
+      assert.equal(result.kvBytes - withoutSwa.kvBytes, swaBytes);
+      assert.equal(result.indexerBytes, withoutSwa.indexerBytes);
+      assert.equal(result.cacheGroups.find((group) => group.label === "SWA cache").bytes, swaBytes);
+      assert.equal(result.elementPlan.includesFixedState, true);
+      assert.equal(result.elementPlan.showCacheGroups, true);
+    }
+  }
+  assert.equal(calculate(model, { tokens: 1048576, includeSwaCache: true }).totalGiB.toFixed(5), "0.87166");
+});
+
+test("V4.1 draft adds three SWA layers only when SWA storage is included", () => {
+  const model = curatedModel("deepseek-v4.1-flash");
+  for (const tokens of [1, 127, 128, 1024]) {
+    for (const sequences of [1, 3]) {
+      const input = { tokens, sequences };
+      const globalOnly = calculate(model, input);
+      const ignoredDraft = calculate(model, { ...input, includeDraftKvCache: true });
+      assert.deepEqual(ignoredDraft, globalOnly);
+      const main = calculate(model, { ...input, includeSwaCache: true });
+      const draft = calculate(model, { ...input, includeSwaCache: true, includeDraftKvCache: true });
+      assert.equal(draft.totalBytes - main.totalBytes, sequences * 3 * Math.min(tokens, 128) * 528);
+      assert.equal(draft.indexerBytes, main.indexerBytes);
+      assert.equal(draft.cacheGroups[0].bytes, main.cacheGroups[0].bytes);
+      assert.equal(draft.components.find(([name]) => name === "Draft layers included")[1], 3);
+      assert.equal(draft.components.find(([name]) => name === "SWA layers included")[1], 43);
+    }
+  }
+});
+
+test("V4.1 uses the official FP4 preset rather than stale precision values from another model", () => {
+  const model = curatedModel("deepseek-v4.1-flash");
+  const input = { tokens: 1024, sequences: 2, includeSwaCache: true };
+  const expected = calculate(model, input);
+  for (const precision of ["bf16_fp16", "fp8_int8", "fp4_int4"]) {
+    assert.deepEqual(calculate(model, { ...input, precision, indexerPrecision: precision }), expected);
+  }
+});
+
+test("V4.1 follows cache owners rather than the number of index-producing layers", () => {
+  const model = structuredClone(curatedModel("deepseek-v4.1-flash"));
+  model.fields.kv_source_layer_ids = [20];
+  const result = calculate(model, { tokens: 1025 });
+  assert.equal(result.totalBytes, 1025 * 356);
+  assert.equal(result.indexerBytes, 1025 * 68);
+  assert.equal(result.elementPlan.formulaRows[0].expression, "tokens");
+});
+
+test("V4.1 rejects invalid cache owners instead of silently counting impossible layers", () => {
+  for (const ids of [[], [2, 2], [-1], [40], [0]]) {
+    const model = structuredClone(curatedModel("deepseek-v4.1-flash"));
+    model.fields.kv_source_layer_ids = ids;
+    assert.throws(() => calculate(model, { tokens: 1024 }), /invalid KV source/);
+  }
+});
+
+test("V4.1 is calculator-only and the SWA input does not affect other models", () => {
+  const model = curatedModel("deepseek-v4.1-flash");
+  assert.equal(model.default_tokens, 1024);
+  assert.equal(model.max_position_embeddings, 1048576);
+  assert.equal(model.hit_rate_supported, false);
+  assert.deepEqual(selectModels([model]), []);
+  assert.ok(modelsForFamily(curatedModels, "DeepSeek").includes(model));
+  for (const other of curatedModels.filter((entry) => entry.id !== model.id)) {
+    const input = { tokens: 1024, sequences: 2 };
+    assert.deepEqual(calculate(other, { ...input, includeSwaCache: true }), calculate(other, input));
+  }
+});
 
 test("curated V4 releases preserve main cache and include three DSpark draft layers", () => {
   for (const [id, release, layers, ratioFour, ratio128, ratioZero] of [

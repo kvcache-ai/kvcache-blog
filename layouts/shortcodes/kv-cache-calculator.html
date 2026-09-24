@@ -35,9 +35,14 @@
         <select data-kv-input="indexerPrecision"></select>
       </label>
 
+      <label class="kv-checkbox-row" data-kv-swa-control hidden>
+        <input data-kv-input="includeSwaCache" type="checkbox">
+        <span data-kv-inline-help="Adds one end-of-sequence SWA snapshot per layer, stored in FP8 with scales. Leave off when the storage path omits SWA and uses approximate bounded replay to restore it.">Include SWA cache</span>
+      </label>
+
       <label class="kv-checkbox-row" data-kv-draft-control hidden>
         <input data-kv-input="includeDraftKvCache" type="checkbox">
-        <span data-kv-inline-help="Adds model-specific MTP/draft KV layers when enabled by the serving stack. DeepSeek V4 draft layers use ratio=0 sliding-window cache.">Include draft KV cache</span>
+        <span data-kv-draft-help data-kv-inline-help="Adds model-specific MTP/draft KV layers when enabled by the serving stack. DeepSeek V4 draft layers use ratio=0 sliding-window cache.">Include draft KV cache</span>
       </label>
 
       <label class="kv-checkbox-row" data-kv-linear-state-control hidden>

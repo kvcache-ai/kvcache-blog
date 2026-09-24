@@ -7,6 +7,10 @@ metadata:
     deepseek_v4_vllm_indexer_fp4: "https://vllm.ai/blog/deepseek-v4"
     deepseek_v4_flash_ga_draft: "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/raw/main/inference/config.json"
     deepseek_v4_pro_ga_draft: "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro-0813/raw/main/inference/config.json"
+    deepseek_v41_model: "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/dba1be0a40aa45a94ad051997016db3960a90277/inference/model.py"
+    deepseek_v41_quantization: "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/dba1be0a40aa45a94ad051997016db3960a90277/inference/kernel.py"
+    deepseek_v41_report: "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/dba1be0a40aa45a94ad051997016db3960a90277/DeepSeek_V41_Tech_Report.pdf"
+    deepseek_v41_vllm_cache: "https://github.com/vllm-project/vllm/blob/67ddac3ea8d5b36978187f92908f555ff71190e4/vllm/models/deepseek_v41/attention.py"
     kimi_k3_config: "https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json"
     inkling_architecture: "https://thinkingmachines.ai/news/introducing-inkling/"
     inkling_vllm_sconv: "https://github.com/vllm-project/vllm/blob/adbf08d977fb3fa26c4f19826745a02abd6dd7ca/vllm/models/inkling/nvidia/sconv_swa_attn.py"
@@ -65,6 +69,42 @@ models:
       indexer_scale_bytes: 4
       indexer_fixed_precision_id: "fp8_int8"
       default_precision_id: "bf16_fp16"
+  - id: deepseek-v4.1-flash
+    label: "DeepSeek V4.1 Flash"
+    family: "DeepSeek"
+    formula: "deepseek_v41_shared"
+    default_tokens: 1024
+    max_position_embeddings: 1048576
+    source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/raw/dba1be0a40aa45a94ad051997016db3960a90277/config.json"
+    source_retrieved_at: "2026-09-24"
+    hit_rate_supported: false
+    fields:
+      num_hidden_layers: 40
+      num_nextn_predict_layers: 3
+      head_dim: 512
+      qk_rope_head_dim: 64
+      num_key_value_heads: 1
+      sliding_window: 128
+      index_head_dim: 128
+      index_n_heads: 32
+      index_topk: 512
+      kv_source_layer_ids: [2, 8, 14, 20]
+      index_source_layer_ids: [2, 8, 14, 20, 24, 28, 32, 36]
+      compress_ratios: [0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0]
+      default_precision_id: "fp4_int4"
+      kv_fixed_precision_id: "fp4_int4"
+      kv_precision_label: "FP4 (E2M1)"
+      default_indexer_precision_id: "fp4_int4"
+      indexer_fixed_precision_id: "fp4_int4"
+      indexer_precision_label: "MXFP4"
+      kv_quant_group_size: 16
+      kv_scale_bytes: 1
+      indexer_quant_group_size: 32
+      indexer_scale_bytes: 1
+      swa_bytes_per_element: 1
+      swa_quant_group_size: 32
+      swa_scale_bytes: 1
+      default_include_swa_cache: false
   - id: deepseek-v4-pro
     label: "DeepSeek V4 Pro (0813)"
     family: "DeepSeek"
