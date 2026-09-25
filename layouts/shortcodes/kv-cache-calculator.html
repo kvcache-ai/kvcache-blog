@@ -51,7 +51,7 @@
       </label>
 
       <label data-kv-recurrent-state-precision-control hidden>
-        <span data-kv-inline-help="Sets the precision of Qwen Gated DeltaNet recurrent state. Its short-convolution history remains BF16 / FP16.">Recurrent state precision</span>
+        <span data-kv-inline-help="Sets the precision of the recurrent state of linear-attention layers (Qwen Gated DeltaNet, Kimi KDA). Engines set it with SGLang --mamba-ssm-dtype (bf16 is required for FlashInfer GDN decode on SM100+) or vLLM --mamba-ssm-cache-dtype. The short-convolution history stays BF16 / FP16.">Recurrent state precision</span>
         <select data-kv-input="recurrentStatePrecision"></select>
       </label>
 

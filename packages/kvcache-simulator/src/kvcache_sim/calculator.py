@@ -15,6 +15,11 @@ QWEN_LINEAR_CONV_BYTES_PER_ELEMENT = 2
 QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT = 4
 KIMI_KDA_CONV_BYTES_PER_ELEMENT = 2
 KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT = 4
+DEFAULT_RECURRENT_STATE_PRECISIONS = {
+    "bf16_fp16": {"label": "BF16 / FP16", "bytes_per_element": 2.0},
+    "fp32": {"label": "FP32", "bytes_per_element": 4.0},
+}
+LINEAR_STATE_FORMULAS = ("qwen_linear_full_hybrid", "kimi_kda_mla_hybrid", "kimi_kda_dsa_mla_hybrid")
 
 DEFAULT_PRECISIONS = {
     "bf16_fp16": {"label": "BF16 / FP16", "bytes_per_element": 2.0},
@@ -38,6 +43,8 @@ class CacheSizeResult:
     total_bytes: float
     total_gib: float
     hit_rate_bytes_per_token: float | None
+    recurrent_state_precision: str | None = None
+    recurrent_state_precision_label: str | None = None
 
 
 def default_models_path() -> Path:
@@ -172,6 +179,31 @@ def indexer_precision_options(data: dict[str, Any]) -> dict[str, dict[str, Any]]
     } or precision_options(data)
 
 
+def recurrent_state_precision_options(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        item["id"]: {
+            "label": item.get("label", item["id"]),
+            "bytes_per_element": float(item.get("bytes_per_element", item.get("bytesPerElement", 0))),
+        }
+        for item in data.get("recurrent_state_precision_options", [])
+    } or dict(DEFAULT_RECURRENT_STATE_PRECISIONS)
+
+
+def has_linear_attention_state(model: dict[str, Any]) -> bool:
+    return model.get("formula") in LINEAR_STATE_FORMULAS
+
+
+def default_recurrent_state_precision_id(model: dict[str, Any], options: dict[str, dict[str, Any]]) -> str:
+    """Mirrors the web calculator: the model's default_recurrent_state_precision_id, else bf16 when the KDA field says 2 bytes, else fp32."""
+    fields = model.get("fields") or {}
+    explicit = fields.get("default_recurrent_state_precision_id")
+    field_bytes = _safe_number(fields.get("kda_recurrent_state_bytes_per_element"), 0)
+    model_default = explicit if isinstance(explicit, str) else ("bf16_fp16" if field_bytes == 2 else "fp32")
+    if model_default in options:
+        return model_default
+    return "fp32" if "fp32" in options else next(iter(options))
+
+
 def models_by_id(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {model["id"]: model for model in data.get("models", [])}
 
@@ -275,6 +307,7 @@ def _calculate_byte_groups(
     tokens: int,
     include_draft_kv_cache: bool,
     include_linear_attention_state: bool,
+    recurrent_state_bytes_per_element: float | None = None,
 ) -> tuple[float, list[dict[str, Any]]]:
     formula = model.get("formula")
     fields = model.get("fields") or {}
@@ -314,12 +347,12 @@ def _calculate_byte_groups(
             key_dim = _field(model, "linear_key_head_dim")
             value_heads = _field(model, "linear_num_value_heads")
             value_dim = _field(model, "linear_value_head_dim")
-            conv_elements = linear_layers * conv_kernel * (2 * key_heads * key_dim + value_heads * value_dim)
+            conv_elements = linear_layers * (conv_kernel - 1) * (2 * key_heads * key_dim + value_heads * value_dim)   # kernel - 1 past inputs, as the web calculator counts
             recurrent_elements = linear_layers * value_heads * key_dim * value_dim
             groups.append({
                 "role": "linear_state",
                 "label": "Linear-attention state",
-                "bytes_per_sequence": conv_elements * QWEN_LINEAR_CONV_BYTES_PER_ELEMENT + recurrent_elements * QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT,
+                "bytes_per_sequence": conv_elements * QWEN_LINEAR_CONV_BYTES_PER_ELEMENT + recurrent_elements * (recurrent_state_bytes_per_element or QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT),
             })
         return elements_per_token, groups
 
@@ -340,7 +373,7 @@ def _calculate_byte_groups(
             "kda_conv_state_bytes_per_element",
             KIMI_KDA_CONV_BYTES_PER_ELEMENT,
         )
-        recurrent_bytes_per_element = _optional_field(
+        recurrent_bytes_per_element = recurrent_state_bytes_per_element or _optional_field(
             model,
             "kda_recurrent_state_bytes_per_element",
             KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT,
@@ -457,6 +490,7 @@ def calculate_cache_size(
     block_size: int | None = None,
     include_draft_kv_cache: bool = False,
     include_linear_attention_state: bool = False,
+    recurrent_state_precision: str | None = None,
     models_data: dict[str, Any] | None = None,
 ) -> CacheSizeResult:
     data = models_data or load_models_data()
@@ -480,6 +514,17 @@ def calculate_cache_size(
         indexer_precision_label = str(indexer_profile["label"])
         indexer_precision_bytes = float(indexer_profile["bytes_per_element"])
 
+    recurrent_precision_id: str | None = None
+    recurrent_precision_label: str | None = None
+    recurrent_bytes: float | None = None
+    if has_linear_attention_state(model):
+        recurrent_options = recurrent_state_precision_options(data)
+        recurrent_precision_id = recurrent_state_precision or default_recurrent_state_precision_id(model, recurrent_options)
+        if recurrent_precision_id not in recurrent_options:
+            raise ValueError(f"Unknown recurrent state precision: {recurrent_precision_id}")
+        recurrent_precision_label = str(recurrent_options[recurrent_precision_id]["label"])
+        recurrent_bytes = float(recurrent_options[recurrent_precision_id]["bytes_per_element"])
+
     active_draft = include_draft_kv_cache and has_draft_kv_cache(model)
     tokens = _positive_int(tokens, int(model.get("default_tokens") or 4096))
     _, groups = _calculate_byte_groups(
@@ -487,6 +532,7 @@ def calculate_cache_size(
         tokens,
         active_draft,
         include_linear_attention_state,
+        recurrent_bytes,
     )
     kv_bytes = 0.0
     indexer_bytes = 0.0
@@ -521,4 +567,6 @@ def calculate_cache_size(
         total_bytes=total_bytes,
         total_gib=total_bytes / BYTES_PER_GIB,
         hit_rate_bytes_per_token=hit_rate_bytes_per_token,
+        recurrent_state_precision=recurrent_precision_id,
+        recurrent_state_precision_label=recurrent_precision_label,
     )
