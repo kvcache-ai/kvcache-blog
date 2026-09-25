@@ -3,6 +3,8 @@
 
 # Hugo
 resources/
+# Hugo's cache rule above must not hide the simulator package's bundled files
+!packages/kvcache-simulator/src/kvcache_sim/resources/
 public/
 jsconfig.json
 hugo_stats.json
