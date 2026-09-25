@@ -2309,3 +2309,27 @@ test("display byte formatter keeps five decimal places", () => {
   assert.equal(formatBytes(1024), "1.00000 KiB");
   assert.equal(formatBytes(1024 ** 3), "1.00000 GiB");
 });
+
+test("Kimi K3 KDA recurrent state follows the recurrent-state precision selector", () => {
+  const input = { tokens: 1048576, sequences: 1, precision: "fp8_int8", includeLinearAttentionState: true };
+  const fp32 = calculate(kimiK3, input);
+  const bf16 = calculate(kimiK3, { ...input, recurrentStatePrecision: "bf16_fp16" });
+  const state = (result) => result.cacheGroups.find((group) => group.role === "linear_state").bytes;
+  assert.equal(fp32.recurrentStatePrecisionLabel, "FP32");
+  assert.equal(bf16.recurrentStatePrecisionLabel, "BF16 / FP16");
+  assert.equal(state(fp32), 449372160);
+  assert.equal(state(bf16), 232316928);
+  assert.equal(fp32.totalBytes - bf16.totalBytes, 69 * 96 * 128 * 128 * 2);
+  assert.equal(fp32.elementPlan.components.find(([label]) => label === "KDA recurrent-state precision")[1], "FP32");
+  assert.equal(bf16.elementPlan.components.find(([label]) => label === "KDA recurrent-state precision")[1], "BF16 / FP16");
+});
+
+test("GLM-5.3-Flash KDA recurrent state follows the same selector and leaves the KV and indexer caches alone", () => {
+  const model = curatedModel("glm-5.3-flash");
+  const input = { tokens: 131072, sequences: 1, includeLinearAttentionState: true };
+  const fp32 = calculate(model, input);
+  const bf16 = calculate(model, { ...input, recurrentStatePrecision: "bf16_fp16" });
+  const state = (result) => result.cacheGroups.find((group) => group.role === "linear_state").bytes;
+  assert.ok(state(fp32) > state(bf16));
+  assert.equal(fp32.totalBytes - state(fp32), bf16.totalBytes - state(bf16));
+});

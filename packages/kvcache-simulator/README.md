@@ -101,3 +101,12 @@ The default C++ backend runs all cache-budget points in one batch after loading 
 ## Limits
 
 The browser version caps uploads to protect the UI. This local package does not use that browser cap, but the C++ backend currently stores trace events and prefix node indexes in 32-bit arrays, so it supports at most `2^32 - 1` block events. In practice, memory and runtime are usually the real limits before that.
+
+## Development
+
+The package bundles two files under `src/kvcache_sim/resources/`: `models.yaml`, a copy of `data/kv_cache_calculator/models.yaml`, and `kv-cache-lab-native-sim.cc`, the batch C++ core the `cpp` backend compiles on first use (it takes `--policy batch --capacities ... --policies ...`; the single-budget `scripts/kv-cache-lab-native-sim.cc` serves the site's precompute pipeline). After changing the catalog run `scripts/sync-simulator-resources.sh`; the test suite checks that the bundled copy matches.
+
+```bash
+pip install -e ./packages/kvcache-simulator
+pytest packages/kvcache-simulator
+```
