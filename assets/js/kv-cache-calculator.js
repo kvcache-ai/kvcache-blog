@@ -217,12 +217,14 @@
 
   function defaultRecurrentStatePrecisionId(model, options) {
     const optionsById = recurrentStatePrecisionOptions(options || {});
+    const fields = (model && model.fields) || {};
+    const fieldBytes = Number(fields.kda_recurrent_state_bytes_per_element);
     const modelDefault =
-      model &&
-      model.fields &&
-      typeof model.fields.default_recurrent_state_precision_id === "string"
-        ? model.fields.default_recurrent_state_precision_id
-        : "fp32";
+      typeof fields.default_recurrent_state_precision_id === "string"
+        ? fields.default_recurrent_state_precision_id
+        : fieldBytes === 2
+          ? "bf16_fp16"
+          : "fp32";
     if (optionsById[modelDefault]) return modelDefault;
     return optionsById.fp32 ? "fp32" : Object.keys(optionsById)[0];
   }
@@ -606,11 +608,22 @@
         "kda_conv_state_bytes_per_element",
         KIMI_KDA_CONV_BYTES_PER_ELEMENT,
       );
-      const recurrentBytesPerElement = optionalField(
-        model,
-        "kda_recurrent_state_bytes_per_element",
-        KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT,
+      const recurrentBytesPerElement = toPositiveNumber(
+        settings && settings.recurrentStateBytesPerElement,
+        toPositiveNumber(
+          settings && settings.qwenRecurrentStateBytesPerElement,
+          optionalField(
+            model,
+            "kda_recurrent_state_bytes_per_element",
+            KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT,
+          ),
+        ),
       );
+      const recurrentPrecisionLabel =
+        (settings &&
+          (settings.recurrentStatePrecisionLabel ||
+            settings.qwenRecurrentStatePrecisionLabel)) ||
+        (recurrentBytesPerElement === 2 ? "BF16 / FP16" : "FP32");
 
       const mlaElementsPerToken = fullLayers * (kvRank + ropeDim);
       const mlaElements = mlaElementsPerToken * tokens;
@@ -670,7 +683,7 @@
             expression:
               "sequences x kda_checkpoint_count x kda_layers x value_heads x value_head_dim x key_head_dim x recurrent_state_bytes",
             description:
-              "FP32 KDA recurrent matrices stored in every retained checkpoint.",
+              `${recurrentPrecisionLabel} KDA recurrent matrices stored in every retained checkpoint.`,
           },
           {
             name: "total_bytes",
@@ -712,7 +725,7 @@
           "mla_kv_bytes = tokens * sequences * full_attention_layers * (kv_lora_rank + qk_rope_head_dim) * precision_bytes\nkda_checkpoint_count = interval_is_infinity ? 1 : ceil(tokens / kda_checkpoint_interval)\ntotal_bytes = mla_kv_bytes + optional_kda_checkpoint_bytes",
         formulaRows,
         note: includeLinearAttentionState
-          ? "Includes the 24-layer token-addressable MLA latent cache and retained BF16-convolution/FP32-recurrent KDA checkpoints. Active, ping-pong, and speculative runtime buffers are excluded."
+          ? `Includes the 24-layer token-addressable MLA latent cache and retained BF16-convolution/${recurrentPrecisionLabel}-recurrent KDA checkpoints. Active, ping-pong, and speculative runtime buffers are excluded.`
           : "Includes the 24-layer token-addressable MLA latent cache. The 69 KDA layers' sequence-level state is excluded.",
         byteGroups,
         components: [
@@ -731,6 +744,11 @@
             "KDA state included",
             includeLinearAttentionState ? "Yes" : "No",
             "When enabled, adds retained KDA convolution and recurrent checkpoints.",
+          ],
+          [
+            "KDA recurrent-state precision",
+            recurrentPrecisionLabel,
+            "Serving stacks keep the recurrent matrices in FP32 or BF16 / FP16: SGLang --mamba-ssm-dtype, vLLM --mamba-ssm-cache-dtype.",
           ],
           [
             "KDA checkpoint interval",
@@ -760,7 +778,7 @@
           [
             "KDA bytes per checkpoint",
             kdaStateBytes,
-            "One BF16-convolution/FP32-recurrent KDA checkpoint.",
+            `One BF16-convolution/${recurrentPrecisionLabel}-recurrent KDA checkpoint.`,
           ],
           [
             "KDA checkpoint bytes per sequence",
@@ -853,11 +871,22 @@
         "kda_conv_state_bytes_per_element",
         KIMI_KDA_CONV_BYTES_PER_ELEMENT,
       );
-      const recurrentBytesPerElement = optionalField(
-        model,
-        "kda_recurrent_state_bytes_per_element",
-        KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT,
+      const recurrentBytesPerElement = toPositiveNumber(
+        settings && settings.recurrentStateBytesPerElement,
+        toPositiveNumber(
+          settings && settings.qwenRecurrentStateBytesPerElement,
+          optionalField(
+            model,
+            "kda_recurrent_state_bytes_per_element",
+            KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT,
+          ),
+        ),
       );
+      const recurrentPrecisionLabel =
+        (settings &&
+          (settings.recurrentStatePrecisionLabel ||
+            settings.qwenRecurrentStatePrecisionLabel)) ||
+        (recurrentBytesPerElement === 2 ? "BF16 / FP16" : "FP32");
 
       const kdaConvElements =
         kdaLayers *
@@ -1038,6 +1067,11 @@
             "KDA state included",
             includeLinearAttentionState ? "Yes" : "No",
             "When enabled, adds retained KDA convolution and recurrent checkpoints.",
+          ],
+          [
+            "KDA recurrent-state precision",
+            recurrentPrecisionLabel,
+            "Serving stacks keep the recurrent matrices in FP32 or BF16 / FP16: SGLang --mamba-ssm-dtype, vLLM --mamba-ssm-cache-dtype.",
           ],
           [
             "KDA checkpoint interval",
@@ -1871,7 +1905,7 @@
           precisionId,
         )
       : null;
-    const recurrentStatePrecision = hasQwenCheckpointInterval(model)
+    const recurrentStatePrecision = hasLinearAttentionState(model)
       ? getRecurrentStatePrecisionProfile(
           input.recurrentStatePrecision ||
             defaultRecurrentStatePrecisionId(model, options),
@@ -1901,6 +1935,12 @@
         (typeof input.includeSconvState === "undefined"
           ? Boolean(model.fields.default_include_sconv_state)
           : toBoolean(input.includeSconvState)),
+      recurrentStateBytesPerElement: recurrentStatePrecision
+        ? recurrentStatePrecision.bytesPerElement
+        : undefined,
+      recurrentStatePrecisionLabel: recurrentStatePrecision
+        ? recurrentStatePrecision.label
+        : undefined,
       qwenRecurrentStateBytesPerElement: recurrentStatePrecision
         ? recurrentStatePrecision.bytesPerElement
         : undefined,
@@ -2347,7 +2387,7 @@
       root.querySelector("[data-kv-input='includeLinearAttentionState']"),
     );
     if (control) {
-      control.hidden = !(hasQwenCheckpointInterval(model) && includeState);
+      control.hidden = !(hasLinearAttentionState(model) && includeState);
     }
   }
 

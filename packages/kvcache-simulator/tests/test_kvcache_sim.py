@@ -89,6 +89,31 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(result.hit_rate_bytes_per_token, 13824)
         self.assertAlmostEqual(result.total_gib, 13.918510437011719)
 
+    def test_kimi_k3_recurrent_state_precision_follows_the_selector(self) -> None:
+        kwargs = {"tokens": 1048576, "precision": "fp8_int8", "include_linear_attention_state": True, "models_data": self.models_data}
+        fp32 = calculate_cache_size(self.models["kimi-k3"], **kwargs)
+        bf16 = calculate_cache_size(self.models["kimi-k3"], recurrent_state_precision="bf16_fp16", **kwargs)
+        mla = 1048576 * 13824
+
+        self.assertEqual(fp32.recurrent_state_precision, "fp32")
+        self.assertEqual(bf16.recurrent_state_precision_label, "BF16 / FP16")
+        self.assertEqual(fp32.total_bytes - mla, 449372160)
+        self.assertEqual(bf16.total_bytes - mla, 232316928)
+        with self.assertRaises(ValueError):
+            calculate_cache_size(self.models["kimi-k3"], recurrent_state_precision="fp4", **kwargs)
+
+    def test_qwen_recurrent_state_precision_matches_the_web_calculator(self) -> None:
+        kwargs = {"tokens": 10241, "precision": "fp8_int8", "include_linear_attention_state": True, "models_data": self.models_data}
+        kv = 10241 * 16 * 2 * 4 * 256   # 16 full-attention layers, 4 KV heads of 256
+        for precision, checkpoint_mib in (("bf16_fp16", 74.8125), ("fp32", 146.8125)):
+            result = calculate_cache_size(self.models["qwen3.8-27b"], recurrent_state_precision=precision, **kwargs)
+            self.assertEqual(result.recurrent_state_precision, precision)
+            self.assertAlmostEqual(result.total_bytes - kv, checkpoint_mib * 1024 ** 2)
+
+    def test_models_without_linear_state_report_no_recurrent_precision(self) -> None:
+        result = calculate_cache_size(self.models["kimi-k2.6"], tokens=4096, models_data=self.models_data)
+        self.assertIsNone(result.recurrent_state_precision)
+
     def test_kimi_k3_mla_cache_uses_exact_logical_token_count(self) -> None:
         result = calculate_cache_size(
             self.models["kimi-k3"],

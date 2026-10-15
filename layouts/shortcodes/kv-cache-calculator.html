@@ -50,9 +50,9 @@
         <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. The checkpoint policy controls how many retained states are counted.">Include linear-attention state</span>
       </label>
 
-      <label data-kv-recurrent-state-precision-control hidden>
-        <span data-kv-inline-help="Sets the precision of Qwen Gated DeltaNet recurrent state. Its short-convolution history remains BF16 / FP16.">Recurrent state precision</span>
-        <select data-kv-input="recurrentStatePrecision"></select>
+      <label for="kv-recurrent-state-precision" data-kv-recurrent-state-precision-control hidden>
+        <span data-kv-inline-help="Controls recurrent-state storage precision. Convolution state remains BF16 / FP16.">Recurrent state precision</span>
+        <select id="kv-recurrent-state-precision" data-kv-input="recurrentStatePrecision"></select>
       </label>
 
       <label class="kv-checkbox-row" data-kv-sconv-state-control hidden>
