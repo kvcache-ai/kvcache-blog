@@ -28,7 +28,7 @@ image:
 
 编程 Agent 很少提新问题，而是把同一段长对话反复发回来，只在末尾添上几句。随着 Agent 编程成为日常工作，推理服务面对的是一场场很长的会话：Agent 停下来调用工具，回来时希望服务端还留着它的对话历史。SemiAnalysis 现在用 [InferenceX AgentX](https://github.com/SemiAnalysisAI/agentx-harness) 衡量的正是这类负载。
 
-我们把 Prefill 和 Decode 放在不同的 GPU 上，让长 Prefill 不再拖慢正在生成的 Agent。这样做有一个容易被忽略的副作用：主机内存也随之被切成两半，Decode 那一半几乎闲置。**Mooncake Store 把两半内存重新汇成一个 KV 池。** 有了它，ATOM 在一台 8 卡 AMD Instinct MI355X 服务器上同时承载约一百个 Agent 会话，单卡吞吐约 44K tokens/s，95% 以上的 prompt token 来自复用。
+我们把 Prefill 和 Decode 放在不同的 GPU 上，让长 Prefill 不再拖慢正在生成的 Agent。这样做有一个容易被忽略的副作用：主机内存也随之被切成两半，Decode 那一半几乎闲置。**Mooncake Store 把两半内存重新汇成一个 KV 池。** 有了它，ATOM 在一台 8 卡 AMD Instinct MI355X 服务器上同时承载约一百个 Agent 会话，单卡吞吐约 44K tokens/s，95% 以上的 prompt token 来自复用。在 NeuroSpark AI 的四台 MI350X 服务器上，一个共享池的吞吐最高约为每台服务器各自分池的两倍。
 
 ## 近看一个 Agent 会话
 
@@ -40,7 +40,7 @@ AgentX 把录制好的 Claude Code 会话回放到真实的服务上。图 1 跟
 
 图里有三件事，决定了服务端要怎样对待 KV。
 
-**历史几乎全部可复用。** 每个请求都把同一段对话重发一遍，只在末尾添一点。全语料中，请求输入的中位数是 142K token，若前缀缓存完美，只有 **1.7K** 需要 Prefill。一轮调用是算 1.7K 还是算 142K，只取决于一件事：服务端是否还以 KV 的形式留着这段历史。有些轮次任何缓存都救不了：图 1 中长暂停之后，下一个 prompt 大部分是新的（斜线部分）。
+**历史几乎全部可复用。** 每个请求都把同一段对话重发一遍，只在末尾添一点。全语料中，请求输入的中位数是 142K token，若前缀缓存完美，只有 **1.7K** 需要 Prefill。一轮调用是算 1.7K 还是算 142K，只取决于一件事：服务端是否还以 KV 的形式留着这段历史。有些轮次任何缓存都救不了：图 1 中长暂停之后，下一个 prompt 只有开头 32,704 个 token 与之前发过的一致，其余部分要重新 Prefill（斜线部分）。
 
 **历史很重。** GLM-5.3 用 FP8 存 KV 时每个 token 占 48,672 字节，十万 token 的对话约 5 GB。
 
@@ -78,7 +78,7 @@ AgentX 把录制好的 Claude Code 会话回放到真实的服务上。图 1 跟
 
 Mooncake Store 把提供内存的服务和使用内存的客户端分开，正适合 P/D 分离部署。我们在两个 NUMA 节点上各运行一个 Store 服务，每个提供 768 GiB 内存；一个 Mooncake Master 记录每个对象存放在哪里，并在池子用到 90% 时淘汰最久未使用的对象。只有 Prefill GPU 读写这个池，Decode 一侧的 NUMA 节点却提供了一半的内存。这样得到一个 1.5 TiB 的 KV 池，接近 Prefill GPU 上 KV 空间的四倍，用的还是原本闲置的内存。多机部署也可以用同样的方式扩展：每台新增服务器上的 Store 服务都接入同一个池，KV 池随服务器一起扩大，Prefill GPU 仍像这里一样通过 RDMA 直接读写。
 
-KV 池还离不开大页。池中的内存都要注册给 RDMA 网卡，只要某段内存中有一部分退化成 4 KiB 小页，注册就会失败。在繁忙的主机上，透明大页保证不了这一点，所以我们在 Store 服务启动前预留大页。下一节 NeuroSpark 的服务器上，在 Store 启动前清缓存并整理内存，用透明大页就够了。
+KV 池还离不开大页。池中的内存都要注册给 RDMA 网卡，只要某段内存中有一部分退化成 4 KiB 小页，注册就会失败。在繁忙的主机上，透明大页保证不了这一点，所以我们在 Store 服务启动前预留大页。后文 NeuroSpark 的四台服务器上，在 Store 启动前清缓存并整理内存，用透明大页就够了。
 
 ## 从池中命中到第一个 token
 
@@ -126,13 +126,13 @@ ATOM 的做法是先在 Prefill GPU 上把发往每张 Decode GPU 的 KV 聚合�
 
 **到哪里为止。** 96 个会话以内，首 token 时延的中位数不超过 2.5 秒。到 112 个会话，单卡吞吐仍保持在约 44K，但服务器已没有余量：Decode 的 KV 显存占用中位数达到 **91%**，请求开始在 Prefill 前排队，首 token 时延的中位数升到约 7 秒。
 
-## 扩展到四台服务器：GLM-5.3 在 MI350X 上的 6P2D 部署（NeuroSpark）
+## 扩展到四台服务器：MI350X 上的 GLM-5.3（NeuroSpark）
 
-NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器上服务 GLM-5.3（MXFP4 权重、FP8 KV cache）。我们在这套部署上加入了 Mooncake Store，做了两组实验，都比较分池和混池：一组用回放的生产流量，另一组用和上文相同的 AgentX 测试，Prefill 和 Decode 的并行方式也与上文相同。
+NeuroSpark 用 ATOM 和 Mooncake Transfer Engine 在四台 8 卡 AMD Instinct MI350X 服务器上服务 GLM-5.3（MXFP4 权重、FP8 KV cache）。我们在这套部署上加入了 Mooncake Store，做了两组实验，都比较分池和混池（即共享池）：一组用回放的生产流量，另一组用和上文相同的 AgentX 测试，Prefill 和 Decode 的并行方式也与上文相同。
 
-**部署形态。** 32 张卡运行 6 个 Prefill 实例和 2 个 Decode 实例（6P2D），分成两组，每组 3 个 Prefill 加 1 个 Decode，前面是 KV 准入网关。每个 Decode 实例用 TP4 加 Decode 上下文并行（DCP4），通过上文介绍的聚合、大块写入、落地分发路径接收 KV。AgentX 测试中，每个 Prefill 实例与单机部署一样用 PP4，Store 里每个 token 只存一份。生产流量的对比运行在 NeuroSpark 已上线的 recipe 上，其 Prefill 实例用 TP4：在生产负载下 TP4 Prefill 不是瓶颈，且分池、混池两组都用 TP4，对比只反映池化本身的差别。
+**部署形态。** 32 张卡运行 6 个 Prefill 实例和 2 个 Decode 实例（6P2D），分成两组，每组 3 个 Prefill 加 1 个 Decode，前面是 KV 准入网关。每个 Decode 实例用 TP4 加 Decode 上下文并行（DCP4），通过上文介绍的聚合、大块写入、分发路径接收 KV。AgentX 测试中，每个 Prefill 实例与单机部署一样用 PP4，Store 里每个 token 只存一份。生产流量的对比运行在 NeuroSpark 已上线的 recipe 上，其 Prefill 实例用 TP4：在生产负载下 TP4 Prefill 不是瓶颈，且分池、混池两组都用 TP4，对比只反映池化本身的差别。
 
-**KV 池。** 每块网卡也承担引擎的流量，所以 Store 与引擎共用网卡。我们按 RoCE rail 分池（4 个 Mooncake Master），每个 Prefill 实例的同号 rank 读写同一个池。包括 Decode 所在的服务器在内，每台服务器提供 8 个 96 GiB 的 Store 服务：每台 768 GiB，合计约 3 TiB。只有 Prefill 实例读写这个池。
+**KV 池。** Store 没有自己的网卡，与引擎共用每块网卡。池按 RoCE rail 分成四份，每份有自己的 Mooncake Master，每个 Prefill 实例的 rank *i* 读写第 *i* 份。PP4 Prefill 下，各 stage 的对象因此落在不同的份里，由不同的 Master 分别淘汰；一个前缀仍然只有四个 stage 都存有的部分才算命中。包括 Decode 所在的服务器在内，每台服务器提供 8 个 96 GiB 的 Store 服务：每台 768 GiB，合计约 3 TiB。只有 Prefill 实例读写这个池。
 
 ### 生产负载下的分池与混池
 
@@ -142,7 +142,7 @@ NeuroSpark 用 ATOM 和 Mooncake 在四台 8 卡 AMD Instinct MI350X 服务器�
 
 NeuroSpark 生产环境的 GLM-5.3 流量平均约每秒 0.8 个请求，所以我们以每秒 0.6、0.8 和 1.0 个请求回放由生产流量重建的编程 Agent 会话，每组 20 分钟，请求按生产方式设置（输出最多 32K token，开启推理）。两组使用同一套部署，每台服务器同样提供 768 GiB 的 Store 内存，唯一的区别是是否共享：**分池**时，每台服务器的内存只服务本机的 Prefill 实例；**混池**时，四台服务器的内存组成一个池，所有 Prefill 实例共同读写。每条回放 lane 从会话中途开始，所以第一轮在两组里都是冷 Prefill；统计只覆盖之后的轮次。
 
-**共享才是 KV 池真正起作用的原因。** 混池时，各负载下 Mooncake Store 都提供 **58%** 的 prompt token，KV cache 复用率 **95%–96%**：Prefill 只需实际计算 4%–5% 的 prompt token，首 token 时延的中位数约 1.0 秒，p90 为 1.7–1.8 秒。分池时，Store 只提供约 11%，复用率降到 51%–55%：网关和路由把同一个会话的各轮请求分散到四台服务器上的 6 个 Prefill 实例，下一轮请求通常落在一台没有这段会话历史的服务器上。于是 Prefill 要实际计算约一半的 prompt，首 token 时延的 p90 升到 7–10 秒。
+**跨服务器时，KV 池要共享才划算。** 混池时，各负载下 Mooncake Store 都提供 **58%** 的 prompt token，KV cache 复用率 **95%–96%**：Prefill 只需实际计算 4%–5% 的 prompt token，首 token 时延的中位数约 1.0 秒，p90 为 1.7–1.8 秒。分池时，Store 只提供约 11%，复用率降到 51%–55%：网关和路由把同一个会话的各轮请求分散到四台服务器上的 6 个 Prefill 实例，下一轮请求通常落在一台没有这段会话历史的服务器上。于是 Prefill 要实际计算约一半的 prompt，首 token 时延的 p90 升到 7–10 秒。这正是前文 NUMA 问题的多机版本：只有一侧够得着的内存，起不了多大作用。
 
 ### 32 卡上的 AgentX
 
@@ -160,11 +160,11 @@ NeuroSpark 生产环境的 GLM-5.3 流量平均约每秒 0.8 个请求，所以�
 
 借助 Mooncake，ATOM 已经能在一台服务器上、也能在四台服务器之间留住 Agent 的历史，但仍有继续推进的空间。
 
-**在更多服务器间共享一个 KV 池**。在四台服务器上，共享一个池已经让高并发时的吞吐比分池高出约一倍。继续扩大规模，复用范围更大，代价是更多跨服务器流量和更大的故障域；下一步是在四台以上的部署中实测这一取舍。
+**在更多服务器间共享一个 KV 池**。在四台服务器上，共享一个池已经让高并发时的吞吐比分池高出约一倍。更大的池能让更多会话保持这么高的复用率，代价是更多跨服务器流量和更大的故障域；下一步是在四台以上的部署中实测这一取舍。
 
 **增加 SSD 层**。有些 Agent 会话一停就是好几分钟甚至更久。[Mooncake 的 SSD offloading](https://kvcache.ai/blog/scaling-kv-cache-beyond-memory/) 能以远低于内存的成本保留它们的历史。
 
-**给 Decode 腾出空间**。Decode 把每个运行中请求的 KV 都放在显存里，最高负载时已接近占满。下一步是给每个 Prefill 实例配更多 Decode GPU，并让每张 Decode GPU 放下更多 KV。
+**给 Decode 腾出空间**。Decode 把每个运行中请求的 KV 都放在显存里，单机 112 个会话时已接近占满。下一步是给每个 Prefill 实例配更多 Decode GPU，并让每张 Decode GPU 放下更多 KV。
 
 **多节点 RoCE 拥塞控制**。多对一和一对多的 RDMA 流量（跨服务器的 Prefill 到 Decode KV 传输，以及从 Store 恢复 KV）需要生效的拥塞控制（ECN/DCQCN 或 PFC），带宽才能在各张卡之间均匀分配。NeuroSpark 正在其四台服务器的网络上修复这一点，修复后会重新测量 AgentX。
 
@@ -227,7 +227,7 @@ ATOM 的 Mooncake Store 连接器（[ROCm/ATOM#2464](https://github.com/ROCm/ATO
 | Decode（两组相同） | TP4 + DCP4，完整 CUDA graph；开启 ATOM 的聚合 / 落地传输 |
 | 通用引擎设置 | FP8 KV cache，block 16，最大长度 1,048,576，最多 256 个序列，显存利用率 0.85，开启前缀缓存，不开 MTP |
 | KV 传输 | Mooncake Transfer Engine，RDMA，每个端点一个 QP，每个 rank 绑定最近的网卡 |
-| Mooncake Store | 按 rail 分池（4 个 Master；占用 90% 时按 LRU 淘汰，每次 5%）；每台服务器 8 个 96 GiB 的 Store 服务，清缓存和内存整理后用透明大页；每个 Store 服务放在下一条 rail 的网卡上。混池：所有 Prefill 实例使用同样 4 个 Master。分池（图 7 和图 8）：每台服务器运行自己的 4 个 Master，只供本机 Prefill 使用 |
+| Mooncake Store | 池按 rail 分成四份（4 个 Master；占用 90% 时按 LRU 淘汰，每次 5%）；每台服务器 8 个 96 GiB 的 Store 服务，清缓存和内存整理后用透明大页；每个 Store 服务放在下一条 rail 的网卡上。混池：所有 Prefill 实例使用同样 4 个 Master。分池（图 7 和图 8）：每台服务器运行自己的 4 个 Master，只供本机 Prefill 使用 |
 | 路由、网关 | 每组一个路由（感知 Decode，Prefill 之间用 `power_of_two`）；一个 KV 准入网关：每个 Decode 实例 1,000 万 token × 0.9，输入最多 917,504、输出最多 131,072 token，准入等待 30 秒（回放）或 900 秒（AgentX，其 warm-up 会同时启动所有会话） |
 | AgentX 设置 | `agentx profile`，并发 56 / 72 / 96 / 112，每个负载 900 秒，每条 lane 3 个 warm-up 请求，`ignore_eos` 加 trace 记录的输出长度，关闭推理，`--max-context-length 917504` |
 | 回放设置 | 160 条 lane，泊松到达 0.6 / 0.8 / 1.0 RPS，每组 20 分钟，`max_tokens` 32,000，开启推理，seed 7 |
