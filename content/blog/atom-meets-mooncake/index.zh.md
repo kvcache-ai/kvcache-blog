@@ -210,7 +210,7 @@ ATOM 的 Mooncake Store 连接器（[ROCm/ATOM#2464](https://github.com/ROCm/ATO
 | ATOM | commit `573e9c7de8e3462f24cdc6242970263493e3612b`（0.1.9.dev16） |
 | Mooncake Store / Transfer Engine | 0.3.13（git `78566d45`），Master、Store 服务二进制和 Python wheel 来自同一构建 |
 | AITER | 0.1.27.dev117（`amd-aiter 0.1.27.dev117+g1e2d557d7`），commit `1e2d557d7877f880e7daf3ac8d5cc45f918f6d9e` |
-| ROCm、HIP | ROCm 10.0.0（镜像内），HIP 7.15.26333 |
+| ROCm | 10.0.0（镜像内） |
 | PyTorch、Triton | PyTorch 2.11.0+rocm10.0.0（git `c9ab2693`），Triton 3.8.0（git `4cff872c`） |
 | Python、Transformers | Python 3.12.3，Transformers 5.16.1 |
 | 路由 | atomesh 0.2.0 |
