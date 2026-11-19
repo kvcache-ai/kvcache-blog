@@ -159,24 +159,66 @@ def load_models_data(path: str | Path | None = None) -> dict[str, Any]:
 
 
 def precision_options(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {
-        item["id"]: {
-            "label": item.get("label", item["id"]),
-            "bytes_per_element": float(item.get("bytes_per_element", item.get("bytesPerElement", 0))),
-        }
-        for item in data.get("precision_options", [])
-    } or DEFAULT_PRECISIONS
+    return _precision_options(data.get("precision_options", [])) or DEFAULT_PRECISIONS
 
 
 def indexer_precision_options(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     items = data.get("indexer_precision_options") or data.get("precision_options") or []
-    return {
-        item["id"]: {
+    return _precision_options(items) or precision_options(data)
+
+
+def _precision_options(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    options = {}
+    for item in items:
+        option = {
             "label": item.get("label", item["id"]),
             "bytes_per_element": float(item.get("bytes_per_element", item.get("bytesPerElement", 0))),
+            "bytes_per_entry": float(item.get("bytes_per_entry", 0)),
+            "model_only": item.get("model_only", False),
+            "formulas": item.get("formulas", []),
         }
-        for item in items
-    } or precision_options(data)
+        if "group_size" in item:
+            option["group_size"] = float(item["group_size"])
+        if "scale_bytes_per_group" in item:
+            option["scale_bytes_per_group"] = float(item["scale_bytes_per_group"])
+        options[item["id"]] = option
+    return options
+
+
+def _model_precision_options(
+    options: dict[str, dict[str, Any]],
+    model: dict[str, Any],
+    allowed_field: str,
+    fixed_id: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    fields = model.get("fields") or {}
+    allowed = fields.get(allowed_field)
+    if isinstance(allowed, list):
+        options = {key: value for key, value in options.items() if key in allowed}
+    else:
+        formula = model.get("formula")
+        fields = model.get("fields") or {}
+        options = {
+            key: value
+            for key, value in options.items()
+            if not (
+                formula == "deepseek_v4_hybrid"
+                and allowed_field == "indexer_precision_ids"
+                and key in {"fp4_int4", "fp8_int8"}
+            )
+            and (
+                not value.get("model_only")
+                or formula in value.get("formulas", [])
+            )
+            and (
+                key != "fp8_sglang_packed"
+                or formula != "deepseek_v4_hybrid"
+                or _safe_number(fields.get("head_dim"), 0) == 512
+            )
+        }
+    if fixed_id:
+        options = {key: value for key, value in options.items() if key == fixed_id}
+    return options
 
 
 def recurrent_state_precision_options(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -286,8 +328,13 @@ def default_indexer_precision_id(model: dict[str, Any], options: dict[str, dict[
     fixed = _fixed_indexer_precision_id(model)
     if fixed and fixed in options:
         return fixed
-    if _is_deepseek_v4(model) and "fp4_int4" in options:
-        return "fp4_int4"
+    model_default = (model.get("fields") or {}).get("default_indexer_precision_id")
+    if isinstance(model_default, str) and model_default in options:
+        return model_default
+    if _is_deepseek_v4(model):
+        for precision_id in ("fp4_int4_g32_s1", "fp4_int4"):
+            if precision_id in options:
+                return precision_id
     if fallback_precision and fallback_precision in options:
         return fallback_precision
     if "bf16_fp16" in options:
@@ -316,12 +363,15 @@ def _calculate_byte_groups(
     if formula == "standard_gqa":
         layers = int(_field(model, "num_hidden_layers")) + draft_layers
         elements_per_token = layers * 2 * _field(model, "num_key_value_heads") * _field(model, "head_dim")
-        return elements_per_token, [{"role": "kv", "label": "KV cache", "elements": elements_per_token * tokens}]
+        vector_dim = _field(model, "head_dim")
+        vectors = layers * 2 * _field(model, "num_key_value_heads") * tokens
+        return elements_per_token, [{"role": "kv", "label": "KV cache", "elements": elements_per_token * tokens, "vector_dim": vector_dim, "vector_count": vectors}]
 
     if formula == "mla":
         layers = int(_field(model, "num_hidden_layers")) + draft_layers
         elements_per_token = layers * (_field(model, "kv_lora_rank") + _field(model, "qk_rope_head_dim"))
-        return elements_per_token, [{"role": "kv", "label": "KV cache", "elements": elements_per_token * tokens}]
+        vector_dim = _field(model, "kv_lora_rank") + _field(model, "qk_rope_head_dim")
+        return elements_per_token, [{"role": "kv", "label": "KV cache", "elements": elements_per_token * tokens, "vector_dim": vector_dim, "vector_count": layers * tokens}]
 
     if formula == "dsa_mla":
         layers = int(_field(model, "num_hidden_layers"))
@@ -329,9 +379,11 @@ def _calculate_byte_groups(
         _, _, _, active_indexer_layers = _indexer_layer_plan(model, layers, draft_layers)
         kv_elements_per_token = active_layers * (_field(model, "kv_lora_rank") + _field(model, "qk_rope_head_dim"))
         indexer_elements_per_token = active_indexer_layers * _field(model, "index_head_dim")
+        kv_dim = _field(model, "kv_lora_rank") + _field(model, "qk_rope_head_dim")
+        indexer_dim = _field(model, "index_head_dim")
         return kv_elements_per_token + indexer_elements_per_token, [
-            {"role": "kv", "label": "KV cache", "elements": kv_elements_per_token * tokens},
-            {"role": "indexer", "label": "Indexer cache", "elements": indexer_elements_per_token * tokens},
+            {"role": "kv", "label": "KV cache", "elements": kv_elements_per_token * tokens, "vector_dim": kv_dim, "vector_count": active_layers * tokens},
+            {"role": "indexer", "label": "Indexer cache", "elements": indexer_elements_per_token * tokens, "vector_dim": indexer_dim, "vector_count": active_indexer_layers * tokens},
         ]
 
     if formula == "qwen_linear_full_hybrid":
@@ -356,8 +408,9 @@ def _calculate_byte_groups(
             })
         return elements_per_token, groups
 
-    if formula == "kimi_kda_mla_hybrid":
+    if formula in {"kimi_kda_mla_hybrid", "kimi_kda_dsa_mla_hybrid"}:
         full_layers = _field(model, "full_attention_layers")
+        active_full_layers = full_layers + draft_layers
         kda_layers = _field(model, "kda_layers")
         kv_rank = _field(model, "kv_lora_rank")
         rope_dim = _field(model, "qk_rope_head_dim")
@@ -378,14 +431,39 @@ def _calculate_byte_groups(
             "kda_recurrent_state_bytes_per_element",
             KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT,
         )
-        elements_per_token = full_layers * (kv_rank + rope_dim)
+        elements_per_token = active_full_layers * (kv_rank + rope_dim)
+        kv_dim = kv_rank + rope_dim
         groups = [
             {
                 "role": "kv",
                 "label": "MLA latent KV cache",
                 "elements": elements_per_token * tokens,
+                "vector_dim": kv_dim,
+                "vector_count": active_full_layers * tokens,
             }
         ]
+        if formula == "kimi_kda_dsa_mla_hybrid":
+            layers = int(_field(model, "num_hidden_layers"))
+            _, _, _, active_indexer_layers = _indexer_layer_plan(model, layers, draft_layers)
+            index_dim = _field(model, "index_head_dim")
+            index_kpool = _positive_int(fields.get("index_kpool", 1), 1)
+            indexer_vectors = (tokens // index_kpool) * active_indexer_layers
+            groups.append({
+                "role": "indexer",
+                "label": "Indexer cache",
+                "elements": indexer_vectors * index_dim,
+                "vector_dim": index_dim,
+                "vector_count": indexer_vectors,
+            })
+            if tokens % index_kpool:
+                index_tail_bytes_per_element = _optional_field(model, "index_tail_bytes_per_element", 2)
+                index_tail_elements = active_indexer_layers * index_kpool * 2 * index_dim
+                groups.append({
+                    "role": "index_tail",
+                    "label": "Index tail cache",
+                    "elements": index_tail_elements,
+                    "bytes_per_sequence": index_tail_elements * index_tail_bytes_per_element,
+                })
         if include_linear_attention_state:
             conv_elements = (
                 kda_layers
@@ -412,7 +490,11 @@ def _calculate_byte_groups(
                     ),
                 }
             )
-        return elements_per_token, groups
+        return elements_per_token + sum(
+            group["elements"] / tokens
+            for group in groups
+            if group["role"] == "indexer"
+        ), groups
 
     if formula == "mixed_full_sliding_gqa":
         full_layers = _field(model, "full_attention_layers")
@@ -436,11 +518,14 @@ def _calculate_byte_groups(
     if formula == "minimax_msa":
         layers = _field(model, "num_hidden_layers")
         sparse_layers = _field(model, "sparse_attention_layers")
-        kv_elements_per_token = layers * 2 * _field(model, "num_key_value_heads") * _field(model, "head_dim")
-        indexer_elements_per_token = sparse_layers * _field(model, "index_head_dim")
+        kv_heads = _field(model, "num_key_value_heads")
+        kv_dim = _field(model, "head_dim")
+        indexer_dim = _field(model, "index_head_dim")
+        kv_elements_per_token = layers * 2 * kv_heads * kv_dim
+        indexer_elements_per_token = sparse_layers * indexer_dim
         return kv_elements_per_token + indexer_elements_per_token, [
-            {"role": "kv", "label": "KV cache", "elements": kv_elements_per_token * tokens},
-            {"role": "indexer", "label": "Indexer cache", "elements": indexer_elements_per_token * tokens},
+            {"role": "kv", "label": "KV cache", "elements": kv_elements_per_token * tokens, "vector_dim": int(kv_dim), "vector_count": int(layers * 2 * kv_heads * tokens)},
+            {"role": "indexer", "label": "Indexer cache", "elements": indexer_elements_per_token * tokens, "vector_dim": int(indexer_dim), "vector_count": int(sparse_layers * tokens)},
         ]
 
     if formula == "deepseek_v4_hybrid":
@@ -455,30 +540,98 @@ def _calculate_byte_groups(
         window_elements = 0.0
         compressed_elements = 0.0
         indexer_elements = 0.0
+        window_entries = 0
+        compressed_entries = 0
+        indexer_entries = 0
         for ratio in active_ratios:
             window_elements += sliding_window * head_dim
+            window_entries += int(sliding_window)
             if ratio > 0:
-                compressed_elements += math.floor(tokens / ratio) * head_dim
+                entries = math.floor(tokens / ratio)
+                compressed_entries += entries
+                compressed_elements += entries * head_dim
             if ratio == 4:
-                indexer_elements += math.floor(tokens / 4) * index_dim
+                entries = math.floor(tokens / 4)
+                indexer_entries += entries
+                indexer_elements += entries * index_dim
         attention_elements = window_elements + compressed_elements
         return (attention_elements + indexer_elements) / tokens, [
-            {"role": "kv", "label": "KV cache", "elements": attention_elements},
-            {"role": "indexer", "label": "Indexer cache", "elements": indexer_elements},
+            {"role": "kv", "label": "KV cache", "elements": attention_elements, "vector_dim": int(head_dim), "vector_count": window_entries + compressed_entries},
+            {"role": "indexer", "label": "Indexer cache", "elements": indexer_elements, "vector_dim": int(index_dim), "vector_count": indexer_entries},
         ]
 
     raise ValueError(f"Unsupported formula: {formula}")
 
 
-def _bytes_for_group(group: dict[str, Any], kv_precision_bytes: float, indexer_precision_bytes: float | None) -> float:
+def _bytes_for_group(
+    group: dict[str, Any],
+    model: dict[str, Any],
+    kv_precision_id: str,
+    kv_precision: dict[str, Any],
+    indexer_precision_id: str | None,
+    indexer_precision: dict[str, Any] | None,
+) -> float:
     if "bytes_per_sequence" in group:
         return float(group["bytes_per_sequence"])
     role = group["role"]
-    if role == "indexer" and indexer_precision_bytes is not None:
-        bytes_per_element = indexer_precision_bytes
+    if role == "indexer" and indexer_precision is not None:
+        profile = indexer_precision
+        precision_id = indexer_precision_id
     else:
-        bytes_per_element = kv_precision_bytes
-    return float(group["elements"]) * bytes_per_element
+        profile = kv_precision
+        precision_id = kv_precision_id
+
+    if "vector_dim" in group:
+        vector_dim = float(group["vector_dim"])
+        vector_count = float(group["vector_count"])
+        if role == "kv" and precision_id == "fp8_sglang_packed":
+            return vector_count * _packed_entry_bytes(model, precision_id, profile)
+
+        bytes_per_element = float(profile["bytes_per_element"])
+        group_size = float(profile.get("group_size", 0))
+        scale_bytes_per_group = float(profile.get("scale_bytes_per_group", 0))
+        round_scale_groups_up = group_size > 0
+        if (
+            role == "indexer"
+            and model.get("formula") == "kimi_kda_dsa_mla_hybrid"
+            and precision_id in {"fp8_int8", "fp4_int4"}
+        ):
+            scale_prefix = "indexer_fp8" if precision_id == "fp8_int8" else "indexer_mxfp4"
+            if group_size <= 0:
+                group_size = _optional_field(model, f"{scale_prefix}_quant_block_size", 0)
+                round_scale_groups_up = False
+            if scale_bytes_per_group <= 0:
+                scale_bytes_per_group = _optional_field(
+                    model,
+                    f"{scale_prefix}_scale_bytes_per_element",
+                    0,
+                )
+        if group_size > 0 and scale_bytes_per_group > 0:
+            scale_groups = (
+                math.ceil(vector_dim / group_size)
+                if round_scale_groups_up
+                else math.floor(vector_dim / group_size)
+            )
+            return vector_count * (
+                vector_dim * bytes_per_element
+                + scale_groups * scale_bytes_per_group
+            )
+    return float(group["elements"]) * float(profile["bytes_per_element"])
+
+
+def _packed_entry_bytes(model: dict[str, Any], precision_id: str, profile: dict[str, Any]) -> float:
+    fields = model.get("fields") or {}
+    entry_bytes = fields.get(f"kv_entry_bytes_{precision_id}")
+    if entry_bytes is not None:
+        return float(entry_bytes)
+    if model.get("formula") == "kimi_kda_dsa_mla_hybrid":
+        return 656.0
+    profile_entry_bytes = float(profile.get("bytes_per_entry", 0))
+    if profile_entry_bytes > 0:
+        return profile_entry_bytes
+    if _is_deepseek_v4(model) and _safe_number(fields.get("head_dim"), 0) == 512:
+        return 584.0
+    raise ValueError(f"Model {model.get('id', '')} is missing packed KV entry size")
 
 
 def calculate_cache_size(
@@ -494,25 +647,49 @@ def calculate_cache_size(
     models_data: dict[str, Any] | None = None,
 ) -> CacheSizeResult:
     data = models_data or load_models_data()
-    precision_by_id = precision_options(data)
-    indexer_precision_by_id = indexer_precision_options(data)
-    precision_id = precision or default_precision_id(model, precision_by_id)
+    all_precision_by_id = precision_options(data)
+    all_indexer_precision_by_id = indexer_precision_options(data)
+    fixed_kv_precision = (model.get("fields") or {}).get("kv_fixed_precision_id")
+    precision_by_id = _model_precision_options(all_precision_by_id, model, "kv_precision_ids", fixed_kv_precision)
+    indexer_precision_by_id = _model_precision_options(all_indexer_precision_by_id, model, "indexer_precision_ids", _fixed_indexer_precision_id(model))
+    precision_id = fixed_kv_precision or precision or default_precision_id(model, precision_by_id)
     if precision_id not in precision_by_id:
+        if precision_id in all_precision_by_id:
+            raise ValueError(f"KV precision {precision_id} is not supported for model {model.get('id', '')}")
         raise ValueError(f"Unknown KV precision: {precision_id}")
     precision_profile = precision_by_id[precision_id]
     kv_precision_bytes = float(precision_profile["bytes_per_element"])
 
     indexer_precision_id: str | None = None
     indexer_precision_label: str | None = None
-    indexer_precision_bytes: float | None = None
     if _has_indexer_cache(model):
         fixed_indexer_precision = _fixed_indexer_precision_id(model)
         indexer_precision_id = fixed_indexer_precision or indexer_precision or default_indexer_precision_id(model, indexer_precision_by_id, precision_id)
+        if fixed_indexer_precision is None and indexer_precision is not None and _is_deepseek_v4(model):
+            indexer_precision_id = {
+                "fp8_int8": "fp8_int8_g128_s4",
+                "fp4_int4": "fp4_int4_g32_s1",
+            }.get(indexer_precision_id, indexer_precision_id)
+        elif (
+            fixed_indexer_precision is None
+            and indexer_precision is not None
+            and model.get("formula") == "kimi_kda_dsa_mla_hybrid"
+        ):
+            allowed_indexer_precisions = (model.get("fields") or {}).get("indexer_precision_ids")
+            if isinstance(allowed_indexer_precisions, list):
+                kimi_aliases = {
+                    "fp8_int8": "fp8_int8_g128_s4",
+                    "fp4_int4": "fp4_int4_g32_s1",
+                }
+                mapped_precision = kimi_aliases.get(indexer_precision_id)
+                if mapped_precision in allowed_indexer_precisions:
+                    indexer_precision_id = mapped_precision
         if indexer_precision_id not in indexer_precision_by_id:
+            if indexer_precision_id in all_indexer_precision_by_id:
+                raise ValueError(f"Indexer precision {indexer_precision_id} is not supported for model {model.get('id', '')}")
             raise ValueError(f"Unknown indexer precision: {indexer_precision_id}")
         indexer_profile = indexer_precision_by_id[indexer_precision_id]
         indexer_precision_label = str(indexer_profile["label"])
-        indexer_precision_bytes = float(indexer_profile["bytes_per_element"])
 
     recurrent_precision_id: str | None = None
     recurrent_precision_label: str | None = None
@@ -538,7 +715,14 @@ def calculate_cache_size(
     indexer_bytes = 0.0
     total_bytes = 0.0
     for group in groups:
-        group_bytes = _bytes_for_group(group, kv_precision_bytes, indexer_precision_bytes)
+        group_bytes = _bytes_for_group(
+            group,
+            model,
+            precision_id,
+            precision_profile,
+            indexer_precision_id,
+            indexer_precision_by_id.get(indexer_precision_id) if indexer_precision_id else None,
+        )
         total_bytes += group_bytes
         if group["role"] == "indexer":
             indexer_bytes += group_bytes
@@ -547,12 +731,20 @@ def calculate_cache_size(
 
     bytes_per_token = total_bytes / tokens
     hit_rate_bytes_per_token = None
-    if model.get("formula") == "kimi_kda_mla_hybrid":
-        hit_rate_bytes_per_token = (
-            _field(model, "full_attention_layers")
-            * (_field(model, "kv_lora_rank") + _field(model, "qk_rope_head_dim"))
-            * kv_precision_bytes
+    if model.get("formula") in {"kimi_kda_mla_hybrid", "kimi_kda_dsa_mla_hybrid"}:
+        mla_layers = _field(model, "full_attention_layers") + (
+            _draft_layer_count(model) if include_draft_kv_cache and has_draft_kv_cache(model) else 0
         )
+        mla_dim = _field(model, "kv_lora_rank") + _field(model, "qk_rope_head_dim")
+        if precision_id == "fp8_sglang_packed":
+            hit_rate_bytes_per_token = mla_layers * _packed_entry_bytes(model, precision_id, precision_profile)
+        else:
+            group_size = float(precision_profile.get("group_size", 0))
+            scale_bytes_per_group = float(precision_profile.get("scale_bytes_per_group", 0))
+            hit_rate_bytes_per_token = mla_dim * kv_precision_bytes
+            if group_size > 0 and scale_bytes_per_group > 0:
+                hit_rate_bytes_per_token += math.ceil(mla_dim / group_size) * scale_bytes_per_group
+            hit_rate_bytes_per_token *= mla_layers
     return CacheSizeResult(
         model_id=str(model["id"]),
         model_label=str(model.get("label") or model["id"]),

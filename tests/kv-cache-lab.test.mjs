@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
+import { loadModelsData } from "../scripts/lib/kv-cache-lab-traces.mjs";
 
 const require = createRequire(import.meta.url);
 const {
@@ -18,6 +19,8 @@ const {
   parseUploadedTrace,
   parseUploadedTraceStreaming,
   precomputedResultFor,
+  defaultPrecomputedSetting,
+  precisionOptionsForSettings,
   runLabComputation,
   simulatePolicy,
   shouldApplyJobResult,
@@ -349,6 +352,122 @@ test("precomputed lookup uses model and precision key exactly", () => {
     precomputedResultFor(precomputed, preset, tinyModel, { precision: "bf16_fp16", indexerPrecision: "fp4_int4", includeDraftKvCache: false }),
     null,
   );
+});
+
+test("DeepSeek legacy indexer choices remain available only for exact historical precomputed keys", () => {
+  const data = loadModelsData("./data/kv_cache_calculator/models.yaml");
+  const model = data.models.find((entry) => entry.id === "deepseek-v4-pro");
+  const precomputed = JSON.parse(fs.readFileSync("./data/kv_cache_lab/precomputed.json", "utf8"));
+  const legacyKey = "deepseek-v4-pro|precision=fp8_int8|indexer=fp4_int4|draft=0";
+  const traceEntries = Object.entries(precomputed.traces).filter(
+    ([, trace]) => trace.settings && Object.prototype.hasOwnProperty.call(trace.settings, legacyKey),
+  );
+  assert.equal(traceEntries.length, 7);
+
+  const firstTrace = traceEntries[0][1];
+  const artifactSettings = Object.keys(firstTrace.settings)
+    .filter((key) => key.startsWith("deepseek-v4-pro|"))
+    .map((key) => {
+      const setting = {};
+      for (const part of key.split("|").slice(1)) {
+        const [name, value] = part.split("=");
+        if (name === "precision") setting.precision = value;
+        if (name === "indexer") setting.indexerPrecision = value;
+        if (name === "draft") setting.includeDraftKvCache = value === "1";
+      }
+      return setting;
+    });
+  const historicalOptions = precisionOptionsForSettings(
+    model,
+    data.indexer_precision_options,
+    artifactSettings,
+    "indexer",
+  );
+  const historicalKvOptions = precisionOptionsForSettings(
+    model,
+    data.precision_options,
+    artifactSettings,
+    "kv",
+  );
+  const legacyFp4 = historicalOptions.find((option) => option.id === "fp4_int4");
+  const legacyFp8 = historicalOptions.find((option) => option.id === "fp8_int8");
+  assert.equal(historicalOptions[0].id, "fp4_int4");
+  assert.equal(historicalKvOptions[0].id, "fp8_int8");
+  assert.match(legacyFp4.label, /legacy precompute.*scales excluded/i);
+  assert.match(legacyFp8.label, /legacy precompute.*scales excluded/i);
+  assert.equal(historicalOptions.some((option) => option.id === "fp4_int4_g32_s1"), false);
+  assert.equal(historicalOptions.some((option) => option.id === "fp8_int8_g128_s4"), false);
+  assert.equal(
+    precisionOptionsForSettings(model, data.indexer_precision_options, [], "indexer")
+      .some((option) => ["fp4_int4", "fp8_int8"].includes(option.id)),
+    false,
+  );
+
+  for (const [traceId, trace] of traceEntries) {
+    const preset = { id: traceId, label: trace.label || traceId };
+    const setting = { precision: "fp8_int8", indexerPrecision: "fp4_int4", includeDraftKvCache: false };
+    const result = precomputedResultFor(precomputed, preset, model, setting);
+    assert.ok(result && result.sweep.precomputed, traceId);
+    assert.equal(result.sweep.bytesPerToken, trace.settings[legacyKey][0], traceId);
+  }
+  assert.equal(traceEntries[0][0], "mooncake_fast25");
+  const mooncakeResult = precomputedResultFor(
+    precomputed,
+    { id: "mooncake_fast25", label: "Mooncake FAST25 Tool&Agent" },
+    model,
+    { precision: "fp8_int8", indexerPrecision: "fp4_int4", includeDraftKvCache: false },
+  );
+  assert.equal(mooncakeResult.sweep.points.find((point) => point.gib === 1).cacheBlocks, 427);
+  assert.notEqual(
+    mooncakeResult.sweep.bytesPerToken,
+    estimateBytesPerToken(model, {
+      precision: "fp8_int8",
+      indexerPrecision: "fp4_int4",
+      precisionOptions: data.precision_options,
+      indexerPrecisionOptions: data.indexer_precision_options,
+    }),
+  );
+});
+
+test("filtered precomputed options choose one complete artifact tuple as the default", () => {
+  const data = loadModelsData("./data/kv_cache_calculator/models.yaml");
+  const model = data.models.find((entry) => entry.id === "deepseek-v4-pro");
+  const artifactSettings = [
+    { precision: "fp8_sglang_packed", indexerPrecision: "bf16_fp16", includeDraftKvCache: false },
+    { precision: "bf16_fp16", indexerPrecision: "fp4_int4", includeDraftKvCache: false },
+  ];
+  const precisionOptions = precisionOptionsForSettings(
+    model,
+    [{ id: "bf16_fp16", label: "BF16 / FP16", bytes_per_element: 2 }],
+    artifactSettings,
+    "kv",
+  );
+  const indexerOptions = precisionOptionsForSettings(
+    model,
+    data.indexer_precision_options,
+    artifactSettings,
+    "indexer",
+  );
+  const independentDefault = {
+    precision: precisionOptions[0].id,
+    indexerPrecision: indexerOptions[0].id,
+  };
+  const completeDefault = defaultPrecomputedSetting(
+    artifactSettings,
+    new Set(precisionOptions.map((option) => option.id)),
+    new Set(indexerOptions.map((option) => option.id)),
+    true,
+  );
+
+  assert.deepEqual(independentDefault, { precision: "bf16_fp16", indexerPrecision: "bf16_fp16" });
+  assert.equal(
+    artifactSettings.some((setting) =>
+      setting.precision === independentDefault.precision &&
+      setting.indexerPrecision === independentDefault.indexerPrecision,
+    ),
+    false,
+  );
+  assert.deepEqual(completeDefault, artifactSettings[1]);
 });
 
 test("compact precomputed lookup rebuilds exact hit rates from shared capacity results", () => {

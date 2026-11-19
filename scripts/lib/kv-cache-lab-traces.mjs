@@ -168,7 +168,7 @@ export const SOURCE_LINKS = {
 };
 
 export const FEATURED_MODEL_SETTINGS = [
-  { modelId: "deepseek-v4-pro", precision: "fp8_int8", indexerPrecision: "fp4_int4", includeDraftKvCache: false },
+  { modelId: "deepseek-v4-pro", precision: "fp8_int8", indexerPrecision: "fp4_int4_g32_s1", includeDraftKvCache: false },
   { modelId: "kimi-k3", precision: "fp8_int8", includeDraftKvCache: false },
   { modelId: "qwen3-32b", precision: "bf16_fp16", includeDraftKvCache: false },
   { modelId: "llama-3.1-8b", precision: "bf16_fp16", includeDraftKvCache: false },
@@ -207,11 +207,6 @@ function hasDraftKvCache(model) {
   return draftLayerCount(model) > 0;
 }
 
-function optionIds(options, fallback) {
-  const ids = (options || []).map((option) => option.id || option).filter(Boolean);
-  return ids.length ? ids : fallback;
-}
-
 function defaultPrecisionId(model, precisionIds) {
   const modelDefault = model && model.fields && model.fields.default_precision_id;
   if (modelDefault && precisionIds.includes(modelDefault)) return modelDefault;
@@ -221,6 +216,9 @@ function defaultPrecisionId(model, precisionIds) {
 }
 
 function defaultIndexerPrecisionId(model, indexerPrecisionIds, fallbackPrecisionId) {
+  const modelDefault = model && model.fields && model.fields.default_indexer_precision_id;
+  if (modelDefault && indexerPrecisionIds.includes(modelDefault)) return modelDefault;
+  if (isDeepSeekV4(model) && indexerPrecisionIds.includes("fp4_int4_g32_s1")) return "fp4_int4_g32_s1";
   if (isDeepSeekV4(model) && indexerPrecisionIds.includes("fp4_int4")) return "fp4_int4";
   if (fallbackPrecisionId && indexerPrecisionIds.includes(fallbackPrecisionId)) return fallbackPrecisionId;
   if (indexerPrecisionIds.includes("bf16_fp16")) return "bf16_fp16";
@@ -246,7 +244,9 @@ export function defaultModelSetting(model) {
     includeDraftKvCache: false,
   };
   if (hasIndexerCache(model)) {
-    setting.indexerPrecision = isDeepSeekV4(model) ? "fp4_int4" : precision;
+    setting.indexerPrecision =
+      (model && model.fields && model.fields.default_indexer_precision_id) ||
+      (isDeepSeekV4(model) ? "fp4_int4_g32_s1" : precision);
   }
   return setting;
 }
@@ -256,11 +256,13 @@ export function allDefaultModelSettings(models) {
 }
 
 export function allModelSettings(models, options = {}) {
-  const precisionIds = optionIds(options.precisionOptions, ["bf16_fp16", "fp8_int8", "fp4_int4"]);
-  const indexerPrecisionIds = optionIds(options.indexerPrecisionOptions, precisionIds);
+  const precisionOptions = options.precisionOptions;
+  const indexerOptions = options.indexerPrecisionOptions ?? precisionOptions;
   const includeDraft = options.includeDraftKvCache !== false && options.noDraft !== true;
   const settings = [];
   (models || []).forEach((model) => {
+    const precisionIds = calculator.precisionOptionIdsForModel(model, precisionOptions, "kv");
+    const indexerPrecisionIds = calculator.precisionOptionIdsForModel(model, indexerOptions, "indexer");
     const preferredPrecision = defaultPrecisionId(model, precisionIds);
     const precisions = orderedValues(precisionIds, preferredPrecision);
     const includeDraftValues = includeDraft && hasDraftKvCache(model) ? [false, true] : [false];
