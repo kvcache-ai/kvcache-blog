@@ -89,7 +89,7 @@
     minimax_msa: "MiniMax MSA sparse attention",
     deepseek_v4_hybrid: "DeepSeek V4 hybrid sparse attention",
     deepseek_v41_shared: "DeepSeek V4.1 CED/CSA2 shared cache",
-    kimi_kda_dsa_mla_hybrid: "Kimi KDA/DSA/MLA with indexer hybrid",
+    kimi_kda_dsa_mla_hybrid: "KDA/DSA/MLA with indexer hybrid",
   };
 
   function toPositiveNumber(value, fallback) {
@@ -874,6 +874,11 @@
               `${recurrentPrecisionLabel} KDA recurrent matrices stored in every retained checkpoint.`,
           },
           {
+            name: "kda_checkpoint_state_bytes",
+            expression: "kda_conv_state_bytes + kda_recurrent_state_bytes",
+            description: "KDA checkpoint state size shown in the summary above.",
+          },
+          {
             name: "total_bytes",
             expression:
               "mla_kv_bytes + kda_conv_state_bytes + kda_recurrent_state_bytes",
@@ -1162,10 +1167,10 @@
         {
           name: "indexer_scale_bytes",
           expression: indexerQuantBlockSize > 0 && indexerScaleBytesPerElement > 0
-            ? `indexer_pools x sequences x active_indexer_layers x ceil(index_head_dim / ${indexerQuantBlockSize}) x ${indexerScaleBytesPerElement}`
+            ? `indexer_pools x sequences x active_indexer_layers x ${indexerPrecisionProfile.groupSize > 0 ? "ceil" : "floor"}(index_head_dim / indexer_quant_block_size) x indexer_scale_bytes_per_element`
             : "0",
           description:
-            "Quantization scales are counted per vector with ceil(index_head_dim / group_size); a partial final group still needs a scale.",
+            "Quantization scales are counted per vector using the selected precision's grouping rule.",
         },
         {
           name: "index_tail_bytes",
@@ -1204,6 +1209,11 @@
               "sequences x kda_checkpoint_count x kda_layers x value_heads x value_head_dim x key_head_dim x kda_recurrent_state_bytes_per_element",
             description:
               `KDA recurrent matrices stored in every retained checkpoint at ${recurrentBytesPerElement} bytes per element.`,
+          },
+          {
+            name: "kda_checkpoint_state_bytes",
+            expression: "kda_conv_state_bytes + kda_recurrent_state_bytes",
+            description: "KDA checkpoint state size shown in the summary above.",
           },
           {
             name: "total_bytes",
@@ -1258,14 +1268,14 @@
             : `The ${kdaLayers} KDA layers' sequence-level state is excluded. `),
         byteGroups,
         components: [
-          ["Main layers", layers, "Main transformer layers, including DSA/MLA full-attention and KDA linear-attention layers."],
+          ["Main layers", layers, "Main transformer layers, including DSA/MLA sparse-attention and KDA linear-attention layers."],
           [
             "DSA/MLA full-attention layers",
             fullLayers,
             "Layers that allocate token-addressable compressed DSA/MLA latent KV plus RoPE key cache.",
           ],
           ["Draft layers included", draftLayers, "Extra MTP/draft layers after the main transformer layers."],
-          ["Active full-attention layers", activeFullLayers, "Main DSA/MLA full-attention layers plus the draft layers included in KV capacity."],
+          ["Active full-attention layers", activeFullLayers, "Main DSA/MLA sparse-attention layers plus the draft layers included in KV capacity."],
           ["Main indexer layers", indexerPlan.mainIndexerLayers, "Full indexer layers that allocate independent indexer key cache."],
           ["Shared indexer layers", indexerPlan.sharedIndexerLayers, "DSA layers that reuse the previous full indexer layer's top-k selection."],
           ["Draft indexer layers included", indexerPlan.draftIndexerLayers, "Draft/MTP indexer layers counted when Include draft KV cache is enabled."],
@@ -1297,7 +1307,7 @@
           [
             "DSA/MLA elements per token",
             mlaElementsPerToken,
-            "active_full_attention_layers x (kv_lora_rank + qk_rope_head_dim). Latent KV scalar elements per token before applying KV precision.",
+            "active_dsa_mla_layers x (kv_lora_rank + qk_rope_head_dim). Latent KV scalar elements per token before applying KV precision.",
           ],
           ["Indexer elements per token", indexerElementsPerToken, "Indexer elements per token before applying indexer precision."],
           ["Indexer scales per block", indexerScalesPerBlock, "Scales per quantized indexer block"],
@@ -2607,24 +2617,20 @@
     return item;
   }
 
-  function renderMetrics(root, result) {
-    const list = root.querySelector("[data-kv-metrics]");
-    if (!list) return;
-    list.innerHTML = "";
-
+  function metricsForResult(result) {
     const metrics = [];
     if (result.elementPlan.showCacheGroups) {
       result.cacheGroups.forEach((group) => {
-        metrics.push([`${group.label} size`, formatBytes(group.bytes)]);
+        metrics.push([`${group.label} size`, group.bytes]);
       });
     } else if (result.indexerPrecisionLabel) {
       metrics.push([
         "KV cache size",
-        formatBytes(result.kvBytes),
+        result.kvBytes,
       ]);
       metrics.push([
         "Indexer cache size",
-        formatBytes(result.indexerBytes),
+        result.indexerBytes,
       ]);
       result.cacheGroups
         .filter((group) =>
@@ -2634,14 +2640,14 @@
         .forEach((group) => {
           metrics.push([
             `${group.label} size`,
-            formatBytes(group.bytes),
+            group.bytes,
           ]);
         });
     } else if (result.cacheGroups.length > 1) {
       result.cacheGroups.forEach((group) => {
         metrics.push([
           `${group.label} size`,
-          formatBytes(group.bytes),
+          group.bytes,
         ]);
       });
     }
@@ -2652,17 +2658,24 @@
     );
     metrics.push([
       includesFixedState ? "Amortized size per token" : "Per token size",
-      formatBytes(result.bytesPerToken),
+      result.bytesPerToken,
     ]);
     if (Number.isFinite(result.hitRateBytesPerToken)) {
       metrics.push([
         "Reusable MLA per token",
-        formatBytes(result.hitRateBytesPerToken),
+        result.hitRateBytesPerToken,
       ]);
     }
 
-    metrics.forEach(([label, value]) => {
-      list.appendChild(renderMetricCard(label, value));
+    return metrics;
+  }
+
+  function renderMetrics(root, result) {
+    const list = root.querySelector("[data-kv-metrics]");
+    if (!list) return;
+    list.innerHTML = "";
+    metricsForResult(result).forEach(([label, value]) => {
+      list.appendChild(renderMetricCard(label, formatBytes(value)));
     });
   }
 
@@ -2670,25 +2683,477 @@
     const list = root.querySelector("[data-kv-components]");
     if (!list) return;
     list.innerHTML = "";
+    const formulas = (result.elementPlan.formulaRows || []).map((row) => `${row.name} ${row.expression}`).join(" ");
+    const represented = {
+      "Main layers": "main_layers", "Draft layers included": "draft_layers_if_enabled",
+      "Main indexer layers": "main_indexer_layers", "Draft indexer layers included": "draft_indexer_layers_if_enabled",
+      "Active full-attention layers": "active_full_attention_layers", "Indexer pools": "indexer_pools",
+      "KV precision bytes": "kv_precision_bytes", "Indexer precision bytes": "indexer_precision_bytes",
+    };
     result.components.forEach(([label, value, description]) => {
-      const item = document.createElement("div");
-      item.className = "kv-breakdown-row";
-      const key = document.createElement("span");
-      key.textContent = label;
+      if (represented[label] && formulas.includes(represented[label])) return;
+      const item = document.createElement("tr");
+      const key = document.createElement("th");
+      key.scope = "row";
+      const sparseLabels = {
+        "DSA/MLA full-attention layers": "DSA/MLA sparse-attention layers",
+        "Active full-attention layers": "Active DSA/MLA sparse-attention layers",
+      };
+      key.textContent = result.elementPlan.formulaLabel === FORMULA_LABELS.kimi_kda_dsa_mla_hybrid
+        ? sparseLabels[label] || label : label;
       appendHelp(key, description);
-      const val = document.createElement("strong");
-      val.textContent = typeof value === "number" ? formatNumber(value, Number.isInteger(value) ? 0 : 2) : value;
+      const val = document.createElement("td");
+      if (label === "Model fields" && value) {
+        const table = document.createElement("table");
+        table.className = "kv-model-fields";
+        table.setAttribute("aria-label", "Model fields");
+        const head = document.createElement("thead");
+        const header = document.createElement("tr");
+        ["Field", "Value"].forEach((label) => {
+          const cell = document.createElement("th");
+          cell.scope = "col";
+          cell.textContent = label;
+          header.appendChild(cell);
+        });
+        head.appendChild(header);
+        const body = document.createElement("tbody");
+        value.split(/,\s*(?=[a-zA-Z_][a-zA-Z_0-9]*=)/).forEach((field) => {
+          const separator = field.indexOf("=");
+          const row = document.createElement("tr");
+          const name = document.createElement("th");
+          name.scope = "row";
+          name.textContent = field.slice(0, separator);
+          const fieldValue = document.createElement("td");
+          fieldValue.textContent = field.slice(separator + 1);
+          row.append(name, fieldValue);
+          body.appendChild(row);
+        });
+        table.append(head, body);
+        val.appendChild(table);
+      } else {
+        val.textContent = typeof value === "number" ? formatNumber(value, Number.isInteger(value) ? 0 : 2) : value;
+      }
       item.append(key, val);
       list.appendChild(item);
     });
   }
 
-  function renderFormulaRows(root, elementPlan) {
+  // Formula strings are presentation data. Evaluate only their arithmetic subset;
+  // descriptive expressions remain visible without inventing a numeric result.
+  function formulaArithmetic(expression) {
+    const tokens = expression.match(/\d+(?:\.\d+)?|[()+\-*/%,]|\b(?:floor|ceil|min|max)\b/g) || [];
+    if (tokens.join("") !== expression.replace(/\s+/g, "")) return undefined;
+    let pos = 0;
+    function factor() {
+      const token = tokens[pos++];
+      if (token === "-") return -factor();
+      if (token === "(") {
+        const value = sum();
+        if (tokens[pos++] !== ")") return NaN;
+        return value;
+      }
+      if (["floor", "ceil", "min", "max"].includes(token)) {
+        if (tokens[pos++] !== "(") return NaN;
+        const args = [sum()];
+        while (tokens[pos] === ",") { pos++; args.push(sum()); }
+        if (tokens[pos++] !== ")") return NaN;
+        return Math[token](...args);
+      }
+      return token === undefined ? NaN : Number(token);
+    }
+    function product() {
+      let value = factor();
+      while (["*", "/", "%"].includes(tokens[pos])) {
+        const op = tokens[pos++];
+        const right = factor();
+        value = op === "*" ? value * right : op === "/" ? value / right : value % right;
+      }
+      return value;
+    }
+    function sum() {
+      let value = product();
+      while (["+", "-"].includes(tokens[pos])) {
+        const op = tokens[pos++];
+        const right = product();
+        value = op === "+" ? value + right : value - right;
+      }
+      return value;
+    }
+    const value = sum();
+    return pos === tokens.length && Number.isFinite(value) ? value : undefined;
+  }
+
+  function appendMetricFormulas(model, result, trace, variable, symbol) {
+    const byName = Object.fromEntries(trace.map((row) => [row.name, row]));
+    const formula = model.formula;
+    const kvSources = {
+      dsa_mla: ["kv_bytes"], dots3_note_hybrid: ["full_mla_bytes", "swa_mla_bytes"],
+      kimi_kda_dsa_mla_hybrid: ["mla_kv_bytes"], qwen4_exp_hybrid: ["full_kv_bytes"],
+      minimax_msa: ["kv_bytes", "kv_scale_bytes"], deepseek_v4_hybrid: ["kv_bytes"],
+    };
+    const indexSources = {
+      dsa_mla: ["indexer_bytes"], dots3_note_hybrid: ["indexer_vector_bytes", "indexer_scale_bytes"],
+      kimi_kda_dsa_mla_hybrid: ["indexer_bytes", "indexer_scale_bytes"], qwen4_exp_hybrid: ["qsa_indexer_bytes"],
+      minimax_msa: ["indexer_bytes", "indexer_scale_bytes"], deepseek_v4_hybrid: ["indexer_bytes", "indexer_scale_bytes"],
+      deepseek_v41_shared: ["indexer_bytes"],
+    };
+    const groupSources = {
+      "Global KV cache size": ["global_kv_bytes"], "SWA cache size": ["swa_bytes"],
+      "MLA latent KV cache size": ["mla_kv_bytes"], "KDA checkpoint state size": ["kda_checkpoint_state_bytes"],
+      "Index tail cache size": ["index_tail_bytes"], "SConv checkpoint state size": ["sconv_checkpoint_bytes"],
+      "Full-attention KV cache size": [formula === "inkling_hybrid" ? "global_kv_bytes" : "full_kv_bytes"],
+      "Sliding-window KV cache size": [formula === "inkling_hybrid" ? "swa_kv_bytes" : "sliding_kv_bytes"],
+      "Linear-attention checkpoint state size": ["linear_conv_state_bytes", "linear_recurrent_state_bytes"],
+      "GDN recurrent/conv checkpoint size": ["gdn_checkpoint_bytes"],
+      "QSA pending index state size": ["qsa_pending_state_bytes"], "PLE continuation state size": ["ple_continuation_bytes"],
+    };
+    const append = (label, terms, value, unit = "bytes") => trace.push({
+      name: `summary:${label}`, displayName: label, metricLabel: label,
+      description: "Calculation for the matching summary metric above.", terms, value, unit,
+    });
+    const total = variable("total_bytes", result.totalBytes);
+    append("Total cache size (GiB)", [total, symbol("/"), variable("bytes_per_GiB", BYTES_PER_GIB)], result.totalBytes / BYTES_PER_GIB, "GiB");
+    append("Total cache size (GB)", [total, symbol("/"), variable("bytes_per_GB", BYTES_PER_GB)], result.totalBytes / BYTES_PER_GB, "GB");
+    for (const [label] of metricsForResult(result)) {
+      if (label === "Per token size" || label === "Amortized size per token") {
+        append(label, [total, symbol("/"), symbol("("), variable("tokens", result.tokens), symbol("x"), variable("sequences", result.sequences), symbol(")")], result.totalBytes / (result.tokens * result.sequences));
+        continue;
+      }
+      if (label === "Reusable MLA per token") {
+        const mla = byName.mla_kv_bytes;
+        append(label, [variable(mla.displayName || mla.name, mla.value), symbol("/"), symbol("("), variable("tokens", result.tokens), symbol("x"), variable("sequences", result.sequences), symbol(")")], mla.value / (result.tokens * result.sequences));
+        continue;
+      }
+      const names = label === "KV cache size" ? kvSources[formula]
+        : label === "Indexer cache size" ? indexSources[formula] : groupSources[label];
+      const terms = [];
+      let value = 0;
+      names.forEach((name, index) => {
+        const row = byName[name];
+        if (index) terms.push(symbol("+"));
+        terms.push(variable(row.displayName || row.name, row.value));
+        value += row.value;
+      });
+      if (isDeepSeekV4(model)) {
+        terms.unshift(symbol("("));
+        terms.push(symbol(")"), symbol("x"), variable("sequences", result.sequences));
+        value *= result.sequences;
+      }
+      append(label, terms, value);
+    }
+  }
+
+  function appendFormulaDependencies(model, input, result, trace, values, variable, symbol) {
+    const fields = model.fields || {};
+    const component = (label) => result.components.find(([name]) => name === label)?.[1];
+    const row = (name, terms, value, description) => ({ name, terms, value, description });
+    const before = (name, rows) => {
+      const position = trace.findIndex((entry) => entry.name === name);
+      if (position >= 0) trace.splice(position, 0, ...rows);
+    };
+    const enabled = hasDraftKvCache(model) && toBoolean(input.includeDraftKvCache);
+    const draftCount = isDeepSeekV4(model) ? fields.compress_ratios.length - fields.num_hidden_layers : draftLayerCount(model);
+    const draftFields = {
+      draft_layers_if_enabled: draftCount,
+      draft_indexer_layers_if_enabled: fields.draft_indexer_layers ?? draftCount,
+      draft_global_layers_if_enabled: fields.draft_full_attention_layers ?? 0,
+      draft_swa_layers_if_enabled: fields.draft_sliding_attention_layers ?? 0,
+    };
+    if (isDeepSeekV4(model)) {
+      before("sliding_kv_bytes", [
+        row("draft_layers_if_enabled", [variable("include_draft_kv_cache", enabled), symbol("?"), variable("configured_draft_layers", draftCount), symbol(":"), symbol("0")], enabled ? draftCount : 0),
+        row("active_layers", [variable("main_layers", fields.num_hidden_layers), symbol("+"), variable("draft_layers_if_enabled", enabled ? draftCount : 0)], fields.num_hidden_layers + (enabled ? draftCount : 0)),
+      ]);
+    }
+    for (const [name, count] of Object.entries(draftFields)) {
+      if (isDeepSeekV4(model) && name === "draft_layers_if_enabled") continue;
+      const position = trace.findIndex((entry) => entry.terms?.some((term) => term.label === name));
+      if (position < 0) continue;
+      const included = enabled ? count : 0;
+      trace.splice(position, 0, row(name, [variable("include_draft_kv_cache", enabled), symbol("?"), variable(`configured_${name.replace(/_if_enabled$/, "")}`, count), symbol(":"), symbol("0")], included));
+      for (const entry of trace) if (entry.terms) entry.terms = entry.terms.map((term) => term.label === name ? { ...term, value: String(included) } : term);
+    }
+    if (isDeepSeekV41(model)) {
+      const includeSwa = typeof input.includeSwaCache === "undefined" ? toBoolean(fields.default_include_swa_cache) : toBoolean(input.includeSwaCache);
+      const includedDraft = component("Draft layers included");
+      const entry = (name, dimName, dim, payloadWidth, groupName, groupSize, scaleName, scaleWidth) =>
+        row(name, [variable(dimName, dim), symbol("x"), variable("payload_bytes_per_element", payloadWidth), symbol("+"), symbol("ceil"), symbol("("), variable(dimName, dim), symbol("/"), variable(groupName, groupSize), symbol(")"), symbol("x"), variable(scaleName, scaleWidth)], dim * payloadWidth + Math.ceil(dim / groupSize) * scaleWidth);
+      before("global_kv_bytes", [
+        entry("kv_entry_bytes", "head_dim", fields.head_dim, 0.5, "kv_quant_group_size", fields.kv_quant_group_size, "kv_scale_bytes", fields.kv_scale_bytes),
+        entry("indexer_entry_bytes", "index_head_dim", fields.index_head_dim, 0.5, "indexer_quant_group_size", fields.indexer_quant_group_size, "indexer_scale_bytes", fields.indexer_scale_bytes),
+        entry("swa_entry_bytes", "head_dim", fields.head_dim, fields.swa_bytes_per_element, "swa_quant_group_size", fields.swa_quant_group_size, "swa_scale_bytes", fields.swa_scale_bytes),
+      ]);
+      const cacheEntries = trace.find((item) => item.name === "cache_entries");
+      if (cacheEntries) {
+        const ratios = fields.kv_source_layer_ids.map((id) => fields.compress_ratios[id]);
+        const counts = new Map();
+        ratios.forEach((ratio) => counts.set(ratio, (counts.get(ratio) || 0) + 1));
+        const terms = [];
+        [...counts].sort(([a], [b]) => a - b).forEach(([ratio, count], index) => {
+          if (index) terms.push(symbol("+"));
+          terms.push(variable(`ratio_${ratio}_source_layers`, count), symbol("x"), symbol("floor"), symbol("("), variable("tokens", result.tokens), symbol("/"), variable("compress_ratio", ratio), symbol(")"));
+        });
+        cacheEntries.terms = terms;
+      }
+      before("swa_bytes", [
+        row("swa_draft_layers", [variable("include_swa_cache", includeSwa), symbol("&&"), variable("include_draft_kv_cache", enabled), symbol("?"), variable("configured_draft_layers", draftCount), symbol(":"), symbol("0")], includedDraft),
+        row("swa_layers", [variable("include_swa_cache", includeSwa), symbol("?"), symbol("("), variable("main_layers", fields.num_hidden_layers), symbol("+"), variable("swa_draft_layers", includedDraft), symbol(")"), symbol(":"), symbol("0")], component("SWA layers included")),
+      ]);
+      const swa = trace.find((entry) => entry.name === "swa_bytes");
+      if (swa?.terms) swa.terms = swa.terms.map((term) => term.label === "swa_layers" ? { ...term, value: String(component("SWA layers included")) } : term);
+    }
+    if (["kimi_kda_mla_hybrid", "kimi_kda_dsa_mla_hybrid"].includes(model.formula)) {
+      const qHeads = fields.kda_num_heads, qDim = fields.kda_head_dim;
+      const kHeads = fields.kda_num_key_heads ?? qHeads, kDim = fields.kda_key_head_dim ?? qDim;
+      const vHeads = fields.kda_num_value_heads ?? qHeads, vDim = fields.kda_value_head_dim ?? qDim;
+      before("kda_conv_state_bytes", [
+        row("q_dim", [variable("kda_num_heads", qHeads), symbol("x"), variable("kda_head_dim", qDim)], qHeads * qDim),
+        row("k_dim", [variable("kda_num_key_heads", kHeads), symbol("x"), variable("kda_key_head_dim", kDim)], kHeads * kDim),
+        row("v_dim", [variable("kda_num_value_heads", vHeads), symbol("x"), variable("kda_value_head_dim", vDim)], vHeads * vDim),
+      ]);
+    }
+    if (model.formula === "kimi_kda_dsa_mla_hybrid") {
+      const tail = result.tokens % values.index_kpool;
+      const hasTail = tail > 0;
+      before("index_tail_bytes", [
+        row("index_tail_tokens", [variable("tokens", result.tokens), symbol("%"), variable("index_kpool", values.index_kpool)], tail),
+        { name: "include_index_tail", terms: [variable("index_tail_tokens", tail), symbol(">"), symbol("0")], value: Number(hasTail), textValue: String(hasTail) },
+      ]);
+      const tailRow = trace.find((entry) => entry.name === "index_tail_bytes");
+      if (tailRow) tailRow.terms = [variable("include_index_tail", hasTail), symbol("?"), symbol("("),
+        variable("sequences", result.sequences), symbol("x"), variable("active_indexer_layers", values.active_indexer_layers), symbol("x"),
+        variable("index_kpool", values.index_kpool), symbol("x"), symbol("2"), symbol("x"), variable("index_head_dim", fields.index_head_dim), symbol("x"),
+        variable("index_tail_bytes_per_element", values.index_tail_bytes_per_element), symbol(")"), symbol(":"), symbol("0")];
+    }
+    if (model.formula === "qwen4_exp_hybrid") {
+      const layerCount = Array.isArray(fields.ple_layer_ids) ? fields.ple_layer_ids.length : fields.ple_num_layers ?? 0;
+      const convTerms = [variable("linear_attention_layers", fields.linear_attention_layers), symbol("x"), symbol("("), variable("linear_conv_kernel_dim", fields.linear_conv_kernel_dim), symbol("-"), symbol("1"), symbol(")"), symbol("x"), symbol("("), symbol("2"), symbol("x"), variable("linear_num_key_heads", fields.linear_num_key_heads), symbol("x"), variable("linear_key_head_dim", fields.linear_key_head_dim), symbol("+"), variable("linear_num_value_heads", fields.linear_num_value_heads), symbol("x"), variable("linear_value_head_dim", fields.linear_value_head_dim), symbol(")"), symbol("x"), symbol("2")];
+      const recurrentTerms = [variable("linear_attention_layers", fields.linear_attention_layers), symbol("x"), variable("linear_num_value_heads", fields.linear_num_value_heads), symbol("x"), variable("linear_key_head_dim", fields.linear_key_head_dim), symbol("x"), variable("linear_value_head_dim", fields.linear_value_head_dim)];
+      before("gdn_checkpoint_bytes", [row("BF16_conv_state_bytes", convTerms, values.BF16_conv_state_bytes), row("recurrent_state_elements", recurrentTerms, values.recurrent_state_elements)]);
+      before("ple_continuation_bytes", [
+        row("ple_layers", Array.isArray(fields.ple_layer_ids) ? [symbol("count"), symbol("("), variable("ple_layer_ids", fields.ple_layer_ids.join(", ")), symbol(")")] : [variable("ple_num_layers", layerCount)], layerCount),
+        row("ple_conv_state_elements", [variable("ple_layers", layerCount), symbol("x"), variable("hidden_size", fields.hidden_size), symbol("x"), variable("hc_count", fields.hc_count), symbol("x"), symbol("("), variable("ple_conv_kernel_size", fields.ple_conv_kernel_size), symbol("-"), symbol("1"), symbol(")"), symbol("x"), variable("ngram_size", fields.ngram_size)], values.ple_conv_state_elements),
+      ]);
+      const parts = ["gdn_checkpoint_bytes", "qsa_pending_state_bytes", "ple_continuation_bytes"].map((name) => trace.find((entry) => entry.name === name));
+      if (toBoolean(input.includeLinearAttentionState)) before("total_bytes", [row("checkpoint_bytes", [variable(parts[0].name, parts[0].value), symbol("+"), variable(parts[1].name, parts[1].value), symbol("+"), variable(parts[2].name, parts[2].value)], parts.reduce((total, entry) => total + entry.value, 0))]);
+    }
+    for (const item of trace) {
+      if (!item.terms) continue;
+      if (model.formula === "inkling_hybrid" && item.name === "sconv_checkpoint_bytes") item.terms = item.terms.map((term) => term.label === "checkpoint_count" ? { ...term, label: "sconv_checkpoint_count" } : term);
+      if (model.formula === "qwen_linear_full_hybrid" && ["linear_conv_state_bytes", "linear_recurrent_state_bytes"].includes(item.name)) item.terms = item.terms.map((term) => term.label === "checkpoint_count" ? { ...term, label: "linear_state_checkpoint_count" } : term);
+      if (model.formula === "minimax_msa" && ["kv_scale_bytes", "indexer_scale_bytes"].includes(item.name)) {
+        const prefix = item.name === "kv_scale_bytes" ? "kv" : "indexer";
+        item.terms = item.terms.map((term) => ["group_size", "scale_bytes_per_group"].includes(term.label) ? { ...term, label: `${prefix}_${term.label}` } : term);
+      }
+    }
+  }
+
+  function formulaTrace(model, input, result, options) {
+    const fields = model.fields || {};
+    const component = (label) => result.components.find(([name]) => name === label)?.[1];
+    const variable = (label, value) => ({ label, value: String(value), variable: true });
+    const symbol = (label) => ({ label, value: label, variable: false });
+    const precisionId = fixedKvPrecisionId(model) || input.precision || defaultPrecisionId(model, options);
+    const kvProfile = getPrecisionProfile(precisionId, options, defaultPrecisionId(model, options), model);
+    const indexProfile = hasIndexerCache(model)
+      ? getIndexerPrecisionProfile(canonicalIndexerPrecisionId(model, input.indexerPrecision || defaultIndexerPrecisionId(model, options, precisionId)), options, model, precisionId)
+      : null;
+    const stateProfile = hasLinearAttentionState(model)
+      ? getRecurrentStatePrecisionProfile(input.recurrentStatePrecision || defaultRecurrentStatePrecisionId(model, options), options, model)
+      : null;
+    const scalePrefix = indexProfile?.id === "fp8_int8" ? "indexer_fp8" : indexProfile?.id === "fp4_int4" ? "indexer_mxfp4" : null;
+    const draftEnabled = hasDraftKvCache(model) && toBoolean(input.includeDraftKvCache);
+    const draft = draftEnabled ? (isDeepSeekV4(model) ? fields.compress_ratios.length - fields.num_hidden_layers : draftLayerCount(model)) : 0;
+    const values = { ...fields, tokens: result.tokens, sequences: result.sequences,
+      main_layers: fields.num_hidden_layers, layers: fields.num_hidden_layers,
+      full_layers: fields.full_attention_layers, sliding_layers: fields.sliding_attention_layers,
+      main_indexer_layers: component("Main indexer layers"),
+      draft_layers_if_enabled: draft,
+      draft_indexer_layers_if_enabled: component("Draft indexer layers included"),
+      active_layers: fields.num_hidden_layers + draft,
+      active_full_attention_layers: component("Active full-attention layers"),
+      active_indexer_layers: component("Main indexer layers") + (component("Draft indexer layers included") || 0),
+      precision_bytes: kvProfile.bytesPerElement, kv_precision_bytes: kvProfile.bytesPerElement,
+      indexer_precision_bytes: indexProfile?.bytesPerElement,
+      indexer_quant_block_size: indexProfile?.groupSize || (scalePrefix ? fields[`${scalePrefix}_quant_block_size`] : 0),
+      indexer_scale_bytes_per_element: indexProfile?.scaleBytesPerGroup || (scalePrefix ? fields[`${scalePrefix}_scale_bytes_per_element`] : 0),
+      fp8_sglang_packed_bytes_per_entry: kvProfile.bytesPerEntry,
+      conv_kernel: fields.kda_conv_kernel_size,
+      q_dim: fields.kda_num_heads * fields.kda_head_dim,
+      k_dim: (fields.kda_num_key_heads ?? fields.kda_num_heads) * (fields.kda_key_head_dim ?? fields.kda_head_dim),
+      v_dim: (fields.kda_num_value_heads ?? fields.kda_num_heads) * (fields.kda_value_head_dim ?? fields.kda_head_dim),
+      value_heads: fields.kda_num_value_heads ?? fields.kda_num_heads,
+      value_head_dim: fields.kda_value_head_dim ?? fields.kda_head_dim,
+      key_head_dim: fields.kda_key_head_dim ?? fields.kda_head_dim,
+      conv_state_bytes: fields.kda_conv_state_bytes_per_element,
+      recurrent_state_bytes: stateProfile?.bytesPerElement,
+      kda_recurrent_state_bytes_per_element: stateProfile?.bytesPerElement,
+      kda_checkpoint_count: component("KDA checkpoints per sequence"),
+      checkpoint_count: component("KDA checkpoints per sequence") ?? component("Checkpoints per sequence"),
+      index_kpool: fields.index_kpool ?? 1,
+      indexer_pools: component("Indexer pools"),
+      index_tail_bytes_per_element: fields.index_tail_bytes_per_element ?? 2,
+      fp32_scale_bytes: fields.indexer_scale_bytes ?? 4,
+      main_global_layers: fields.full_attention_layers,
+      main_swa_layers: fields.sliding_attention_layers,
+      draft_global_layers_if_enabled: draftEnabled ? fields.draft_full_attention_layers : 0,
+      draft_swa_layers_if_enabled: draftEnabled ? fields.draft_sliding_attention_layers : 0,
+      active_global_layers: component("Active global-attention layers"),
+      active_swa_layers: component("Active sliding-window layers"),
+      global_kv_heads: fields.num_key_value_heads,
+      swa_kv_heads: fields.swa_num_key_value_heads,
+      kernel_size: fields.sconv_kernel_size,
+      full_kv_heads: fields.num_global_key_value_heads ?? fields.num_key_value_heads,
+      full_head_dim: fields.global_head_dim ?? fields.head_dim,
+      full_v_head_dim: fields.global_v_head_dim ?? fields.v_head_dim ?? fields.global_head_dim ?? fields.head_dim,
+      sliding_kv_heads: fields.swa_num_key_value_heads ?? fields.sliding_num_key_value_heads ?? fields.num_key_value_heads,
+      sliding_head_dim: fields.swa_head_dim ?? fields.sliding_head_dim ?? fields.head_dim,
+      sliding_v_head_dim: fields.swa_v_head_dim ?? fields.sliding_v_head_dim ?? fields.v_head_dim ?? fields.swa_head_dim ?? fields.sliding_head_dim ?? fields.head_dim,
+      swa_layers: component("SWA layers included"),
+      kv_entry_bytes: component("KV entry bytes") ?? kvProfile.bytesPerEntry,
+      indexer_entry_bytes: component("Indexer entry bytes"),
+      swa_entry_bytes: component("SWA entry bytes"),
+      ratio4_layers: component("Ratio=4 layers"),
+      compress_ratio: fields.indexer_compress_ratio,
+      BF16_conv_state_bytes: fields.linear_attention_layers * (fields.linear_conv_kernel_dim - 1) * (2 * fields.linear_num_key_heads * fields.linear_key_head_dim + fields.linear_num_value_heads * fields.linear_value_head_dim) * 2,
+      recurrent_state_elements: fields.linear_attention_layers * fields.linear_num_value_heads * fields.linear_key_head_dim * fields.linear_value_head_dim,
+      ple_conv_state_elements: (Array.isArray(fields.ple_layer_ids) ? fields.ple_layer_ids.length : fields.ple_num_layers ?? 0) * fields.hidden_size * fields.hc_count * (fields.ple_conv_kernel_size - 1) * fields.ngram_size,
+      total_bytes: result.totalBytes,
+    };
+    const rows = result.elementPlan.formulaRows || [];
+    // Model fields may share a name with a computed row but mean a per-element width.
+    for (const row of rows) {
+      if (row.name.endsWith("_bytes") && row.name !== "total_bytes") delete values[row.name];
+    }
+    const trace = rows.map((row) => {
+      let expression = row.expression;
+      if (["kda_checkpoint_count", "sconv_checkpoint_count", "linear_state_checkpoint_count", "checkpoint_count"].includes(row.name)) {
+        const checkpoint = row.name === "kda_checkpoint_count" ? "kda" : row.name === "sconv_checkpoint_count" ? "sconv" : "qwen";
+        const defaultInterval = checkpoint === "kda" ? defaultKdaCheckpointInterval(model)
+          : checkpoint === "sconv" ? defaultSconvCheckpointInterval(model)
+          : defaultQwenCheckpointInterval(model);
+        const interval = input[`${checkpoint}CheckpointPolicy`] === STATE_CHECKPOINT_POLICY_FIXED_INTERVAL
+          ? parseStateCheckpointInterval(input[`${checkpoint}CheckpointInterval`], defaultInterval) : Infinity;
+        const count = checkpoint === "kda" ? component("KDA checkpoints per sequence") : checkpoint === "sconv" ? component("SConv checkpoints per sequence") : component("GDN checkpoints per sequence");
+        values[row.name] = count;
+        values.checkpoint_count = count;
+        const enabled = count > 0;
+        const terms = [variable("state_enabled", enabled), symbol("?"), symbol("("),
+          variable("interval_is_infinite", !Number.isFinite(interval)), symbol("?"), symbol("1"), symbol(":"),
+          symbol("ceil"), symbol("("), variable("tokens", result.tokens), symbol("/"),
+          variable("checkpoint_interval", Number.isFinite(interval) ? interval : "infinity"),
+          symbol(")"), symbol(")"), symbol(":"), symbol("0")];
+        return { ...row, terms, substitution: count === 0 ? "state included = false → 0" : Number.isFinite(interval) ? `state included = true; ceil(${result.tokens} / ${interval})` : "state included = true; interval = infinity → 1", value: count };
+      }
+      if (model.formula === "minimax_msa" && ["kv_scale_bytes", "indexer_scale_bytes"].includes(row.name)) {
+        const profile = row.name === "kv_scale_bytes" ? kvProfile : indexProfile;
+        if (!profile?.groupSize || !profile?.scaleBytesPerGroup) {
+          values[row.name] = 0;
+          return { ...row, terms: [variable("grouped_precision", false), symbol("?"), variable("scale_bytes_per_group", 0), symbol(":"), symbol("0")], substitution: "ungrouped precision → 0", value: 0 };
+        }
+        values.group_size = profile.groupSize;
+        values.scale_bytes_per_group = profile.scaleBytesPerGroup;
+      }
+      if (model.formula === "deepseek_v4_hybrid" && row.name === "compressed_kv_bytes") {
+        const elements = component("Compressed elements");
+        const value = Number.isFinite(kvProfile.bytesPerEntry) ? elements / fields.head_dim * kvProfile.bytesPerEntry : elements * kvProfile.bytesPerElement;
+        values[row.name] = value;
+        const terms = [{ label: "compressed_elements", value: String(elements), variable: true }];
+        if (Number.isFinite(kvProfile.bytesPerEntry)) terms.push(
+          { label: "/", value: "/", variable: false },
+          { label: "head_dim", value: String(fields.head_dim), variable: true },
+        );
+        terms.push({ label: "x", value: "x", variable: false },
+          { label: Number.isFinite(kvProfile.bytesPerEntry) ? "kv_entry_bytes" : "kv_precision_bytes", value: String(kvProfile.bytesPerEntry ?? kvProfile.bytesPerElement), variable: true });
+        return { ...row, substitution: Number.isFinite(kvProfile.bytesPerEntry) ? `${elements} / ${fields.head_dim} x ${kvProfile.bytesPerEntry}` : `${elements} x ${kvProfile.bytesPerElement}`, value, terms };
+      }
+      if (row.name === "sconv_checkpoint_bytes") expression = expression.replace(/\[/g, "(").replace(/\]/g, ")");
+      if (row.name === "total_bytes" && model.formula === "qwen4_exp_hybrid" && Number.isFinite(values.gdn_checkpoint_bytes) && Number.isFinite(values.qsa_pending_state_bytes) && Number.isFinite(values.ple_continuation_bytes)) values.checkpoint_bytes = values.gdn_checkpoint_bytes + values.qsa_pending_state_bytes + values.ple_continuation_bytes;
+      if (["kda_linear_attention_state", "linear_attention_state", "sconv_checkpoint_state"].includes(row.name)) {
+        const enabled = calculate(model, { ...input, includeLinearAttentionState: true, includeSconvState: true }, options);
+        const stateBytes = enabled.cacheGroups.filter((group) => group.role === "linear_state" || group.role === "sconv_state").reduce((total, group) => total + group.bytes, 0);
+        return { ...row, terms: [variable("state_enabled", false), symbol("?"), variable("state_bytes_if_enabled", stateBytes), symbol(":"), symbol("0")], substitution: "state included = false → 0", value: 0 };
+      }
+      if (["indexer_scale_bytes", "kv_scale_bytes"].includes(row.name) && expression === "0") {
+        values[row.name] = 0;
+        return { ...row, terms: [variable("grouped_precision", false), symbol("?"), variable("scale_bytes_per_group", 0), symbol(":"), symbol("0")], value: 0 };
+      }
+      // Some existing expressions describe a condition in prose rather than arithmetic.
+      if (expression.startsWith("0 (")) expression = "0";
+      let complete = true;
+      const bindings = {};
+      const substitute = (forDisplay) => expression.replace(/\b[a-zA-Z_][a-zA-Z_0-9]*\b/g, (name) => {
+        if (["x", "floor", "ceil", "min", "max"].includes(name)) return name;
+        if (!Number.isFinite(values[name])) { complete = false; return name; }
+        let displayed = String(values[name]);
+        if (forDisplay && name === "draft_layers_if_enabled") displayed = `(${draftEnabled} ? ${draftLayerCount(model)} : 0)`;
+        if (forDisplay && name === "draft_indexer_layers_if_enabled") displayed = `(${draftEnabled} ? ${fields.draft_indexer_layers ?? draftLayerCount(model)} : 0)`;
+        if (forDisplay && name === "draft_global_layers_if_enabled") displayed = `(${draftEnabled} ? ${fields.draft_full_attention_layers ?? 0} : 0)`;
+        if (forDisplay && name === "draft_swa_layers_if_enabled") displayed = `(${draftEnabled} ? ${fields.draft_sliding_attention_layers ?? 0} : 0)`;
+        if (forDisplay && name === "swa_layers" && isDeepSeekV41(model)) displayed = `(${typeof input.includeSwaCache === "undefined" ? toBoolean(fields.default_include_swa_cache) : toBoolean(input.includeSwaCache)} ? ${fields.num_hidden_layers} + ${component("Draft layers included")} : 0)`;
+        if (forDisplay) bindings[name] = displayed;
+        return displayed;
+      });
+      const substitution = substitute(true);
+      const numeric = substitute(false).replace(/\bx\b/g, "*");
+      let value = complete ? formulaArithmetic(numeric) : undefined;
+      if (row.name === "total_bytes" && Number.isFinite(value) && Math.abs(value - result.totalBytes) > 0.000001) {
+        return { ...row, value: result.totalBytes };
+      }
+      if (row.name === "total_bytes") value = result.totalBytes;
+      if (Number.isFinite(value)) values[row.name] = value;
+      const terms = complete && Object.keys(bindings).length
+        ? (expression.match(/[a-zA-Z_][a-zA-Z_0-9]*|\d+(?:\.\d+)?|[^\w\s]/g) || []).map((token) => ({ label: token, value: bindings[token] ?? token, variable: Object.hasOwn(bindings, token) }))
+        : undefined;
+      return { ...row, substitution: substitution !== expression ? substitution : undefined, value, terms };
+    });
+    if (isDeepSeekV4(model)) {
+      const activeRatios = fields.compress_ratios.slice(0, fields.num_hidden_layers + draft);
+      const counts = new Map();
+      activeRatios.filter((ratio) => ratio > 0).forEach((ratio) => counts.set(ratio, (counts.get(ratio) || 0) + 1));
+      const terms = [];
+      [...counts].sort(([a], [b]) => a - b).forEach(([ratio, count], index) => {
+        if (index) terms.push(symbol("+"));
+        terms.push(variable(`ratio_${ratio}_layers`, count), symbol("x"), symbol("floor"), symbol("("),
+          variable("tokens", result.tokens), symbol("/"), variable("compress_ratio", ratio), symbol(")"));
+      });
+      if (terms.length) terms.unshift(symbol("("));
+      if (terms.length) terms.push(symbol(")"), symbol("x"), variable("head_dim", fields.head_dim));
+      else terms.push(symbol("0"));
+      const elements = component("Compressed elements");
+      const position = trace.findIndex((row) => row.name === "compressed_kv_bytes");
+      trace.splice(position, 0, {
+        name: "compressed_elements",
+        description: "Compressed KV elements per sequence, grouped by compression ratio; ratio 0 layers do not contribute.",
+        terms,
+        value: elements,
+      });
+    }
+    if (Number.isFinite(fields.full_attention_layers) && Number.isFinite(fields.kda_layers) && fields.full_attention_layers + fields.kda_layers === fields.num_hidden_layers) {
+      trace.unshift({ name: "main_layers", expression: "full_attention_layers + kda_layers", substitution: `${fields.full_attention_layers} + ${fields.kda_layers}`, value: fields.num_hidden_layers, terms: [
+        { label: "full_attention_layers", value: String(fields.full_attention_layers), variable: true },
+        { label: "+", value: "+", variable: false },
+        { label: "kda_layers", value: String(fields.kda_layers), variable: true },
+      ] });
+    }
+    appendFormulaDependencies(model, input, result, trace, values, variable, symbol);
+    const aliases = isDeepSeekV4(model)
+      ? { ...Object.fromEntries(["sliding_kv_bytes", "compressed_kv_bytes", "kv_bytes", "indexer_scale_bytes"].map((name) => [name, `${name}_per_sequence`])), indexer_bytes: "indexer_payload_bytes_per_sequence", ratio4_layers: "ratio_4_layers" }
+      : model.formula === "kimi_kda_dsa_mla_hybrid"
+        ? { full_attention_layers: "dsa_mla_layers", active_full_attention_layers: "active_dsa_mla_layers", indexer_bytes: "indexer_payload_bytes" }
+        : model.formula === "minimax_msa" ? { kv_bytes: "kv_payload_bytes", indexer_bytes: "indexer_payload_bytes" } : {};
+    for (const row of trace) {
+      if (aliases[row.name]) row.displayName = aliases[row.name];
+      if (row.terms) row.terms = row.terms.map((term) => aliases[term.label] ? { ...term, label: aliases[term.label] } : term);
+    }
+    appendMetricFormulas(model, result, trace, variable, symbol);
+    return trace;
+  }
+
+  function renderFormulaRows(root, result, model, input, options) {
     const list = root.querySelector("[data-kv-formula-rows]");
     if (!list) return;
-    const rows = Array.isArray(elementPlan.formulaRows) && elementPlan.formulaRows.length
-      ? elementPlan.formulaRows
-      : [{ name: "total_bytes", expression: elementPlan.formulaText }];
+    const rows = formulaTrace(model, input, result, options);
 
     list.innerHTML = "";
     rows.forEach((row) => {
@@ -2697,18 +3162,55 @@
 
       const name = document.createElement("span");
       name.className = "kv-formula-name";
-      name.textContent = row.name;
+      name.textContent = row.displayName || row.name;
       appendHelp(name, row.description);
 
-      const equals = document.createElement("span");
-      equals.className = "kv-formula-equals";
-      equals.textContent = "=";
-
-      const expression = document.createElement("span");
-      expression.className = "kv-formula-expression";
-      expression.textContent = row.expression;
-
-      item.append(name, equals, expression);
+      item.appendChild(name);
+      if (row.showExpression) {
+        const expression = document.createElement("span");
+        expression.className = "kv-formula-expression";
+        expression.textContent = `= ${row.expression}`;
+        item.appendChild(expression);
+      }
+      if (row.terms) {
+        const equation = document.createElement("div");
+        equation.className = "kv-formula-terms";
+        row.terms.forEach((term) => {
+          const cell = document.createElement("span");
+          cell.className = term.variable ? "kv-formula-term" : "kv-formula-operator";
+          const label = document.createElement("span");
+          label.textContent = term.label;
+          const value = document.createElement("span");
+          value.textContent = term.value;
+          cell.append(label, value);
+          equation.appendChild(cell);
+        });
+        item.appendChild(equation);
+      } else {
+        const expression = document.createElement("span");
+        expression.className = "kv-formula-expression";
+        expression.textContent = `= ${row.expression}`;
+        item.appendChild(expression);
+      }
+      if (!row.terms && row.substitution) {
+        const substitution = document.createElement("span");
+        substitution.className = "kv-formula-substitution";
+        substitution.textContent = `= ${row.substitution}`;
+        item.appendChild(substitution);
+      }
+      if (row.textValue !== undefined) {
+        const value = document.createElement("strong");
+        value.className = "kv-formula-result";
+        value.textContent = `= ${row.textValue}`;
+        item.appendChild(value);
+      } else if (Number.isFinite(row.value)) {
+        const value = document.createElement("strong");
+        value.className = "kv-formula-result";
+        value.textContent = row.unit && row.unit !== "bytes"
+          ? `= ${formatNumber(row.value, RESULT_DIGITS)} ${row.unit}`
+          : `= ${formatNumber(row.value, Number.isInteger(row.value) ? 0 : (row.unit === "bytes" ? RESULT_DIGITS : 2))}${row.unit === "bytes" || row.name.endsWith("_bytes") ? ` bytes (${formatBytes(row.value)})` : ""}`;
+        item.appendChild(value);
+      }
       list.appendChild(item);
     });
   }
@@ -3137,9 +3639,7 @@
         )
           ? inputValue(inputs.stateCheckpointInterval, "")
           : Infinity;
-        const result = calculate(
-          model,
-          {
+        const calculationInput = {
             tokens: inputValue(inputs.tokens, model.default_tokens || 4096),
             sequences: inputValue(inputs.sequences, 1),
             precision: inputValue(inputs.precision, undefined),
@@ -3159,20 +3659,20 @@
             sconvCheckpointPolicy: stateCheckpointPolicy,
             sconvCheckpointInterval: stateCheckpointInterval,
             tensorParallel: 1,
-          },
-          {
+          };
+        const calculationOptions = {
             precisionOptions: data.precision_options,
             indexerPrecisionOptions: data.indexer_precision_options,
             recurrentStatePrecisionOptions:
               data.recurrent_state_precision_options,
-          },
-        );
+          };
+        const result = calculate(model, calculationInput, calculationOptions);
 
         setText(root, "[data-kv-output='totalGiB']", `${formatNumber(result.totalGiB, RESULT_DIGITS)} GiB`);
         setText(root, "[data-kv-output='totalGB']", `= ${formatNumber(result.totalGB, RESULT_DIGITS)} GB`);
         renderMetrics(root, result);
         setText(root, "[data-kv-output='formulaLabel']", result.elementPlan.formulaLabel);
-        renderFormulaRows(root, result.elementPlan);
+        renderFormulaRows(root, result, model, calculationInput, calculationOptions);
         setText(root, "[data-kv-output='cacheNote']", result.elementPlan.note);
         setText(root, "[data-kv-output='source']", model.source_url);
         const source = root.querySelector("[data-kv-source-link]");
@@ -3236,6 +3736,8 @@
     BYTES_PER_GIB,
     calculate,
     calculateElementsPerSequence,
+    formulaTrace,
+    metricsForResult,
     expandModelCatalog,
     formatBytes,
     modelFamily,
