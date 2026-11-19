@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import {
   allModelSettings,
   buildTrace,
+  defaultModelSetting,
+  filterPrecisionOptions,
   infiniteCacheReuse,
   kvArchitectureGroups,
   loadModelsData,
@@ -537,6 +539,89 @@ test("all model settings mirror calculator precision/indexer/draft controls", ()
   assert.ok(dsaSettings.some((setting) => setting.precision === "fp8_int8" && setting.indexerPrecision === "fp4_int4" && setting.includeDraftKvCache === true));
 });
 
+test("model sweeps filter special precision options by formula and model allowlists", () => {
+  const modelsData = loadModelsData(path.resolve(here, "../data/kv_cache_calculator/models.yaml"));
+  const byId = new Map(modelsData.models.map((model) => [model.id, model]));
+  const models = [
+    byId.get("deepseek-v4-pro"),
+    byId.get("kimi-k3.1-pro"),
+    byId.get("minimax-m3.1-flash"),
+    byId.get("qwen3.8-flash-next"),
+  ];
+  const settings = allModelSettings(models, {
+    precisionOptions: modelsData.precision_options,
+    indexerPrecisionOptions: modelsData.indexer_precision_options,
+    includeDraftKvCache: false,
+  });
+  const settingsFor = (id) => settings.filter((setting) => setting.modelId === id);
+  const deepseek = settingsFor("deepseek-v4-pro");
+  const kimi = settingsFor("kimi-k3.1-pro");
+  const minimax = settingsFor("minimax-m3.1-flash");
+  const qwen = settingsFor("qwen3.8-flash-next");
+
+  assert.ok(deepseek.some((setting) => setting.precision === "fp8_sglang_packed"));
+  assert.ok(deepseek.some((setting) => setting.indexerPrecision === "fp4_int4_g32_s1"));
+  assert.ok(deepseek.some((setting) => setting.indexerPrecision === "fp8_int8_g128_s4"));
+  assert.ok(deepseek.every((setting) => !["fp4_int4", "fp8_int8"].includes(setting.indexerPrecision)));
+  assert.deepEqual([...new Set(kimi.map((setting) => setting.precision))].sort(), ["bf16_fp16", "fp8_int8", "fp8_sglang_packed"].sort());
+  assert.ok(kimi.every((setting) => setting.indexerPrecision !== "nvfp4_g16_s1"));
+  assert.ok(minimax.some((setting) => setting.precision === "nvfp4_g16_s1"));
+  assert.ok(minimax.some((setting) => setting.indexerPrecision === "nvfp4_g16_s1"));
+  assert.ok(qwen.every((setting) => !setting.precision.includes("packed") && !setting.precision.startsWith("nvfp4")));
+  assert.ok(qwen.every((setting) => !setting.indexerPrecision || (!setting.indexerPrecision.includes("_g") && !setting.indexerPrecision.startsWith("nvfp4"))));
+
+  assert.equal(defaultModelSetting(byId.get("deepseek-v4-pro")).indexerPrecision, "fp4_int4_g32_s1");
+  assert.equal(defaultModelSetting(byId.get("kimi-k3.1-pro")).precision, "fp8_sglang_packed");
+  assert.equal(defaultModelSetting(byId.get("kimi-k3.1-pro")).indexerPrecision, "fp8_int8_g128_s4");
+});
+
+test("model sweeps use role-specific defaults when options are omitted", () => {
+  const modelsData = loadModelsData(path.resolve(here, "../data/kv_cache_calculator/models.yaml"));
+  const byId = new Map(modelsData.models.map((model) => [model.id, model]));
+  const kimi = allModelSettings([byId.get("kimi-k3.1-pro")], { includeDraftKvCache: false });
+  const kimiWithEmptyOptions = allModelSettings([byId.get("kimi-k3.1-pro")], {
+    precisionOptions: [],
+    indexerPrecisionOptions: [],
+    includeDraftKvCache: false,
+  });
+  const standard = allModelSettings([byId.get("qwen3-32b")], { includeDraftKvCache: false });
+
+  assert.equal(kimi[0].precision, "fp8_sglang_packed");
+  assert.equal(kimi[0].indexerPrecision, "fp8_int8_g128_s4");
+  assert.deepEqual(kimi, kimiWithEmptyOptions);
+  assert.deepEqual(
+    [...new Set(standard.map((setting) => setting.precision))].sort(),
+    ["bf16_fp16", "fp4_int4", "fp8_int8"].sort(),
+  );
+});
+
+test("legacy CLI indexer IDs canonicalize only for DeepSeek V4 and Kimi K3.1", () => {
+  const modelsData = loadModelsData(path.resolve(here, "../data/kv_cache_calculator/models.yaml"));
+  const byId = new Map(modelsData.models.map((model) => [model.id, model]));
+  const precisionOptions = [{ id: "bf16_fp16" }];
+  const fp4Only = filterPrecisionOptions(modelsData.indexer_precision_options, ["fp4_int4"]);
+  const fp8Only = filterPrecisionOptions(modelsData.indexer_precision_options, ["fp8_int8"]);
+  const deepseek = allModelSettings([byId.get("deepseek-v4-pro")], {
+    precisionOptions: [{ id: "fp8_int8" }],
+    indexerPrecisionOptions: fp4Only,
+    includeDraftKvCache: false,
+  });
+  const kimi = allModelSettings([byId.get("kimi-k3.1-pro")], {
+    precisionOptions,
+    indexerPrecisionOptions: fp8Only,
+    includeDraftKvCache: false,
+  });
+  const glm = allModelSettings([byId.get("glm-5.3-flash")], {
+    precisionOptions,
+    indexerPrecisionOptions: fp8Only,
+    includeDraftKvCache: false,
+  });
+
+  assert.deepEqual([...new Set(deepseek.map((setting) => setting.indexerPrecision))], ["fp4_int4_g32_s1"]);
+  assert.deepEqual([...new Set(kimi.map((setting) => setting.indexerPrecision))], ["fp8_int8_g128_s4"]);
+  assert.deepEqual([...new Set(glm.map((setting) => setting.indexerPrecision))], ["fp8_int8"]);
+});
+
 test("selected production families dedupe to expected KV architecture settings", () => {
   const modelsData = loadModelsData(path.resolve(here, "../data/kv_cache_calculator/models.yaml"));
   const selectedModels = selectModels(modelsData.models, {
@@ -550,9 +635,9 @@ test("selected production families dedupe to expected KV architecture settings",
   }).length, 0);
   const groupedLabels = groups.map((group) => group.models.map((model) => model.label).join(" / "));
 
-  assert.equal(selectedModels.length, 18);
-  assert.equal(groups.length, 12);
-  assert.equal(settingCount, 72);
+  assert.equal(selectedModels.length, 19);
+  assert.equal(groups.length, 13);
+  assert.equal(settingCount, 87);
   assert.ok(groupedLabels.includes("DeepSeek V3 / DeepSeek R1"));
   assert.ok(groupedLabels.includes("GLM-5 / GLM-5.1"));
   assert.ok(groupedLabels.includes("GLM-5.2"));
@@ -561,6 +646,33 @@ test("selected production families dedupe to expected KV architecture settings",
   assert.ok(groupedLabels.includes("MiniMax M2 / MiniMax M2.1 / MiniMax M2.5 / MiniMax M2.7"));
   assert.ok(groupedLabels.includes("MiniMax M3"));
   assert.ok(selectedModels.every((model) => !["Qwen", "Cohere", "Llama", "Gemma"].some((family) => model.family.startsWith(family))));
+});
+
+test("new size-only model presets are excluded from hit-rate simulation selection", () => {
+  const modelsData = loadModelsData(path.resolve(here, "../data/kv_cache_calculator/models.yaml"));
+  const sizeOnlyIds = [
+    "deepseek-v4.1-flash-1017",
+    "kimi-k3.1-pro",
+    "qwen3.8-flash-next",
+    "qwen-image-2.1-pe-decoder",
+    "cohere-north-mini-code-1.0",
+    "cohere-north-micro-vision-instruct",
+    "gemma-4-12b",
+    "inkling-2-small",
+    "mimo-v2.6-flash",
+    "mimo-v2.6-pro",
+    "mimo-v2.6-distill-qwen-9b",
+    "mimo-v2.5-asr-text-decoder",
+    "minimax-m3.1-flash",
+    "minimax-h3-image-pe",
+  ];
+  for (const id of sizeOnlyIds) {
+    const model = modelsData.models.find((entry) => entry.id === id);
+    assert.ok(model, `Missing size-only preset ${id}`);
+    assert.equal(model.hit_rate_supported, false, id);
+    assert.deepEqual(selectModels([model], { modelIds: [id] }), [], id);
+  }
+  assert.equal(selectModels(modelsData.models, { modelIds: ["deepseek-v3"] }).length, 1);
 });
 
 test("merge precomputed data preserves existing sweeps and adds inputs", () => {

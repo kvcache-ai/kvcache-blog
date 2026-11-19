@@ -12,6 +12,10 @@
   const RESULT_DIGITS = 5;
   const QWEN_LINEAR_CONV_BYTES_PER_ELEMENT = 2;
   const QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT = 4;
+  const QSA_PENDING_KEY_BYTES_PER_ELEMENT = 2;
+  const QSA_ROPE_POSITION_BYTES = 8;
+  const QSA_ROPE_POSITION_AXES = 3;
+  const PLE_CONTEXT_TOKEN_BYTES = 8;
   const KIMI_KDA_CONV_BYTES_PER_ELEMENT = 2;
   const KIMI_KDA_RECURRENT_BYTES_PER_ELEMENT = 4;
   const INKLING_SCONV_BYTES_PER_ELEMENT = 2;
@@ -24,7 +28,48 @@
     bf16_fp16: { label: "BF16 / FP16", bytesPerElement: 2 },
     fp8_int8: { label: "FP8 / INT8", bytesPerElement: 1 },
     fp4_int4: { label: "FP4 / INT4", bytesPerElement: 0.5 },
+    fp8_sglang_packed: {
+      label: "FP8 SGLang packed KV",
+      bytesPerElement: 1,
+      modelOnly: true,
+      formulas: ["deepseek_v4_hybrid"],
+      bytesPerEntry: 584,
+    },
+    fp4_int4_g32_s1: {
+      label: "MXFP4 (32D groups + 1 B scale)",
+      bytesPerElement: 0.5,
+      modelOnly: true,
+      formulas: ["deepseek_v4_hybrid"],
+      groupSize: 32,
+      scaleBytesPerGroup: 1,
+    },
+    fp8_int8_g128_s4: {
+      label: "FP8 (128D groups + 4 B scale)",
+      bytesPerElement: 1,
+      modelOnly: true,
+      formulas: ["deepseek_v4_hybrid"],
+      groupSize: 128,
+      scaleBytesPerGroup: 4,
+    },
+    nvfp4_g16_s1: {
+      label: "NVFP4 (16D groups + 1 B scale)",
+      bytesPerElement: 0.5,
+      modelOnly: true,
+      groupSize: 16,
+      scaleBytesPerGroup: 1,
+    },
   };
+  const INDEXER_ONLY_PRECISION_IDS = new Set([
+    "fp4_int4_g32_s1",
+    "fp8_int8_g128_s4",
+  ]);
+  const KV_ONLY_PRECISION_IDS = new Set(["fp8_sglang_packed"]);
+  const DEFAULT_KV_PRECISIONS = Object.fromEntries(
+    Object.entries(DEFAULT_PRECISIONS).filter(([id]) => !INDEXER_ONLY_PRECISION_IDS.has(id)),
+  );
+  const DEFAULT_INDEXER_PRECISIONS = Object.fromEntries(
+    Object.entries(DEFAULT_PRECISIONS).filter(([id]) => !KV_ONLY_PRECISION_IDS.has(id)),
+  );
 
   const DEFAULT_RECURRENT_STATE_PRECISIONS = {
     bf16_fp16: { label: "BF16 / FP16", bytesPerElement: 2 },
@@ -39,11 +84,12 @@
     kimi_kda_mla_hybrid: "Kimi KDA/MLA hybrid",
     inkling_hybrid: "Inkling global/SWA with SConv",
     qwen_linear_full_hybrid: "Qwen linear/full hybrid",
+    qwen4_exp_hybrid: "Qwen GDN/QSA hybrid with PLE",
     mixed_full_sliding_gqa: "Mixed full/sliding GQA",
     minimax_msa: "MiniMax MSA sparse attention",
     deepseek_v4_hybrid: "DeepSeek V4 hybrid sparse attention",
     deepseek_v41_shared: "DeepSeek V4.1 CED/CSA2 shared cache",
-    kimi_kda_dsa_mla_hybrid: "Kimi KDA/DSA/MLA with indexer hybrid",
+    kimi_kda_dsa_mla_hybrid: "KDA/DSA/MLA with indexer hybrid",
   };
 
   function toPositiveNumber(value, fallback) {
@@ -63,13 +109,99 @@
         {
           label: option.label,
           bytesPerElement: Number(option.bytes_per_element),
+          bytesPerEntry: Number(option.bytes_per_entry),
+          groupSize: Number(option.group_size),
+          scaleBytesPerGroup: Number(option.scale_bytes_per_group),
+          modelOnly: option.model_only === true,
+          formulas: Array.isArray(option.formulas) ? option.formulas : [],
         },
       ]),
     );
   }
 
   function precisionOptions(options) {
-    return normalizePrecisionOptions(options && options.precisionOptions, DEFAULT_PRECISIONS);
+    const all = normalizePrecisionOptions(options && options.precisionOptions, DEFAULT_KV_PRECISIONS);
+    return Object.fromEntries(
+      Object.entries(all).filter(([id]) => !INDEXER_ONLY_PRECISION_IDS.has(id)),
+    );
+  }
+
+  function optionsForRole(options, role) {
+    const isIndexer = role === "indexer";
+    const primary = options && options[isIndexer ? "indexerPrecisionOptions" : "precisionOptions"];
+    const source = Array.isArray(primary)
+      ? primary
+      : isIndexer && options && Array.isArray(options.precisionOptions)
+        ? options.precisionOptions
+        : undefined;
+    const fallback = isIndexer ? DEFAULT_INDEXER_PRECISIONS : DEFAULT_KV_PRECISIONS;
+    const all = normalizePrecisionOptions(source, fallback);
+    const excluded = isIndexer ? KV_ONLY_PRECISION_IDS : INDEXER_ONLY_PRECISION_IDS;
+    return Object.fromEntries(
+      Object.entries(all).filter(([id]) => !excluded.has(id)),
+    );
+  }
+
+  function allowedPrecisionIds(model, fieldName) {
+    const ids = model && model.fields && model.fields[fieldName];
+    return Array.isArray(ids) ? ids : null;
+  }
+
+  function precisionOptionAllowed(model, fieldName, option) {
+    const ids = allowedPrecisionIds(model, fieldName);
+    if (ids) return ids.includes(option.id);
+    if (isDeepSeekV4(model) && fieldName === "indexer_precision_ids") {
+      if (option.id === "fp4_int4" || option.id === "fp8_int8") return false;
+    }
+    if (!(option.model_only === true || option.modelOnly === true)) return true;
+    if (option.formulas && option.formulas.includes(model && model.formula)) {
+      return option.id !== "fp8_sglang_packed" ||
+        (Number(model && model.fields && model.fields.head_dim) === 512);
+    }
+    return false;
+  }
+
+  function precisionOptionsForModel(options, model) {
+    const all = precisionOptions(options || {});
+    return Object.fromEntries(
+      Object.entries(all).filter(([id, option]) =>
+        precisionOptionAllowed(model, "kv_precision_ids", { ...option, id }),
+      ),
+    );
+  }
+
+  function precisionOptionIdsForModel(model, options, role) {
+    const fieldName = role === "indexer" ? "indexer_precision_ids" : "kv_precision_ids";
+    const roleDefaults = role === "indexer" ? DEFAULT_INDEXER_PRECISIONS : DEFAULT_KV_PRECISIONS;
+    const fallbackOptions = Object.entries(roleDefaults).map(([id, option]) => ({
+      id,
+      model_only: option.modelOnly,
+      formulas: option.formulas,
+    }));
+    const ids = (Array.isArray(options) && options.length ? options : fallbackOptions)
+      .map((option) => {
+        const rawId = typeof option === "string" ? option : option && option.id;
+        const id = role === "indexer" ? canonicalIndexerPrecisionId(model, rawId) : rawId;
+        if (!id || (role === "indexer" ? KV_ONLY_PRECISION_IDS : INDEXER_ONLY_PRECISION_IDS).has(id)) {
+          return null;
+        }
+        const defaults = DEFAULT_PRECISIONS[id] || {};
+        return {
+          id,
+          modelOnly: typeof option === "string"
+            ? defaults.modelOnly
+            : option.model_only === undefined
+              ? defaults.modelOnly
+              : option.model_only === true,
+          formulas: (typeof option === "string" || !Array.isArray(option.formulas))
+            ? defaults.formulas || []
+            : option.formulas,
+        };
+      })
+      .filter(Boolean)
+      .filter((option) => precisionOptionAllowed(model, fieldName, option))
+      .map((option) => option.id);
+    return Array.from(new Set(ids));
   }
 
   function recurrentStatePrecisionOptions(options) {
@@ -92,7 +224,13 @@
   }
 
   function hasIndexerCache(model) {
-    return Boolean(model && model.fields && Number.isFinite(Number(model.fields.index_head_dim)));
+    return Boolean(
+      model &&
+        model.fields &&
+        (Number.isFinite(Number(model.fields.index_head_dim)) ||
+          (model.formula === "qwen4_exp_hybrid" &&
+            Number.isFinite(Number(model.fields.indexer_head_dim)))),
+    );
   }
 
   function safeNumber(value, fallback) {
@@ -127,6 +265,7 @@
     return Boolean(
       model &&
         (model.formula === "qwen_linear_full_hybrid" ||
+          model.formula === "qwen4_exp_hybrid" ||
           model.formula === "kimi_kda_mla_hybrid" ||
           model.formula === "kimi_kda_dsa_mla_hybrid"),
     );
@@ -141,7 +280,11 @@
   }
 
   function hasQwenCheckpointInterval(model) {
-    return Boolean(model && model.formula === "qwen_linear_full_hybrid");
+    return Boolean(
+      model &&
+        (model.formula === "qwen_linear_full_hybrid" ||
+          model.formula === "qwen4_exp_hybrid"),
+    );
   }
 
   function hasSconvState(model) {
@@ -203,7 +346,7 @@
   }
 
   function defaultPrecisionId(model, options) {
-    const optionsById = precisionOptions(options || {});
+    const optionsById = precisionOptionsForModel(options || {}, model);
     const fixedPrecisionId = fixedKvPrecisionId(model);
     if (fixedPrecisionId && optionsById[fixedPrecisionId]) return fixedPrecisionId;
     const modelDefault =
@@ -229,10 +372,19 @@
     return optionsById.fp32 ? "fp32" : Object.keys(optionsById)[0];
   }
 
-  function indexerPrecisionOptions(options) {
-    return normalizePrecisionOptions(
-      options && options.indexerPrecisionOptions,
-      precisionOptions(options || {}),
+  function indexerPrecisionOptions(options, model) {
+    const all = optionsForRole(options || {}, "indexer");
+    const allowed = allowedPrecisionIds(model, "indexer_precision_ids") || [];
+    if (isDeepSeekV4(model) || allowed.length) {
+      for (const id of ["fp4_int4_g32_s1", "fp8_int8_g128_s4"]) {
+        if (!isDeepSeekV4(model) && !allowed.includes(id)) continue;
+        if (!all[id]) all[id] = DEFAULT_PRECISIONS[id];
+      }
+    }
+    return Object.fromEntries(
+      Object.entries(all).filter(([id, option]) =>
+        precisionOptionAllowed(model, "indexer_precision_ids", { ...option, id }),
+      ),
     );
   }
 
@@ -248,12 +400,25 @@
       : undefined;
   }
 
+  function canonicalIndexerPrecisionId(model, precisionId) {
+    const allowed = allowedPrecisionIds(model, "indexer_precision_ids") || [];
+    if (!isDeepSeekV4(model) && !allowed.length) return precisionId;
+    if (precisionId === "fp4_int4" && (isDeepSeekV4(model) || allowed.includes("fp4_int4_g32_s1"))) {
+      return "fp4_int4_g32_s1";
+    }
+    if (precisionId === "fp8_int8" && (isDeepSeekV4(model) || allowed.includes("fp8_int8_g128_s4"))) {
+      return "fp8_int8_g128_s4";
+    }
+    return precisionId;
+  }
+
   function defaultIndexerPrecisionId(model, options, fallbackPrecisionId) {
-    const optionsById = indexerPrecisionOptions(options || {});
+    const optionsById = indexerPrecisionOptions(options || {}, model);
     const fixedPrecisionId = fixedIndexerPrecisionId(model);
     if (fixedPrecisionId && optionsById[fixedPrecisionId]) return fixedPrecisionId;
     const modelDefault = model && model.fields && model.fields.default_indexer_precision_id;
     if (modelDefault && optionsById[modelDefault]) return modelDefault;
+    if (isDeepSeekV4(model) && optionsById.fp4_int4_g32_s1) return "fp4_int4_g32_s1";
     if (isDeepSeekV4(model) && optionsById.fp4_int4) return "fp4_int4";
     if (fallbackPrecisionId && optionsById[fallbackPrecisionId]) return fallbackPrecisionId;
     if (optionsById.bf16_fp16) return "bf16_fp16";
@@ -261,16 +426,35 @@
   }
 
   function getPrecisionProfile(precisionId, options, fallbackId, model) {
-    const optionsById = precisionOptions(options || {});
-    const selected = optionsById[precisionId] || optionsById[fallbackId] || DEFAULT_PRECISIONS.bf16_fp16;
+    const optionsById = precisionOptionsForModel(options || {}, model);
+    const selectedId = [
+      precisionId,
+      fallbackId,
+      "bf16_fp16",
+      ...Object.keys(optionsById),
+    ].find((id) => optionsById[id]) || "bf16_fp16";
+    const selected = optionsById[selectedId] || DEFAULT_PRECISIONS.bf16_fp16;
+    const fields = (model && model.fields) || {};
+    const modelEntryBytes = Number(fields[`kv_entry_bytes_${selectedId}`]);
+    const bytesPerEntry = Number.isFinite(modelEntryBytes) && modelEntryBytes > 0
+      ? modelEntryBytes
+      : Number.isFinite(selected.bytesPerEntry) && selected.bytesPerEntry > 0
+        ? selected.bytesPerEntry
+        : isDeepSeekV4(model) && selectedId === "fp8_sglang_packed" && Number(fields.head_dim) === 512
+          ? 584
+          : undefined;
     return {
-      label: (fixedKvPrecisionId(model) && model.fields.kv_precision_label) || selected.label,
+      label: (fixedKvPrecisionId(model) && model.fields.kv_precision_label) ||
+        fields[`kv_precision_label_${selectedId}`] || selected.label,
       bytesPerElement: selected.bytesPerElement,
+      bytesPerEntry,
+      groupSize: selected.groupSize,
+      scaleBytesPerGroup: selected.scaleBytesPerGroup,
     };
   }
 
   function getIndexerPrecisionProfile(precisionId, options, model, fallbackPrecisionId) {
-    const optionsById = indexerPrecisionOptions(options || {});
+    const optionsById = indexerPrecisionOptions(options || {}, model);
     const fixedPrecisionId = fixedIndexerPrecisionId(model);
     const selectedId = [
       fixedPrecisionId,
@@ -280,8 +464,12 @@
     const selected = optionsById[selectedId] || DEFAULT_PRECISIONS.fp4_int4;
     return {
       id: selectedId,
-      label: (fixedPrecisionId && model.fields.indexer_precision_label) || selected.label,
+      label: (fixedPrecisionId && model.fields.indexer_precision_label) ||
+        (model && model.fields && model.fields[`indexer_precision_label_${selectedId}`]) ||
+        selected.label,
       bytesPerElement: selected.bytesPerElement,
+      groupSize: selected.groupSize,
+      scaleBytesPerGroup: selected.scaleBytesPerGroup,
     };
   }
 
@@ -686,6 +874,11 @@
               `${recurrentPrecisionLabel} KDA recurrent matrices stored in every retained checkpoint.`,
           },
           {
+            name: "kda_checkpoint_state_bytes",
+            expression: "kda_conv_state_bytes + kda_recurrent_state_bytes",
+            description: "KDA checkpoint state size shown in the summary above.",
+          },
+          {
             name: "total_bytes",
             expression:
               "mla_kv_bytes + kda_conv_state_bytes + kda_recurrent_state_bytes",
@@ -824,17 +1017,22 @@
       const indexerElementsPerToken = indexerElements / tokens;
       const indexerPrecisionId = (settings && settings.indexerPrecisionId) ||
         defaultIndexerPrecisionId(model);
+      const indexerPrecisionProfile = (settings && settings.indexerPrecisionProfile) || {};
       const indexerScalePrefix = indexerPrecisionId === "fp8_int8"
         ? "indexer_fp8"
         : indexerPrecisionId === "fp4_int4" ? "indexer_mxfp4" : null;
-      const indexerQuantBlockSize = indexerScalePrefix
-        ? optionalField(model, `${indexerScalePrefix}_quant_block_size`, 0)
-        : 0;
-      const indexerScaleBytesPerElement = indexerScalePrefix
-        ? optionalField(model, `${indexerScalePrefix}_scale_bytes_per_element`, 0)
-        : 0;
+      const indexerQuantBlockSize = indexerPrecisionProfile.groupSize ||
+        (indexerScalePrefix
+          ? optionalField(model, `${indexerScalePrefix}_quant_block_size`, 0)
+          : 0);
+      const indexerScaleBytesPerElement = indexerPrecisionProfile.scaleBytesPerGroup ||
+        (indexerScalePrefix
+          ? optionalField(model, `${indexerScalePrefix}_scale_bytes_per_element`, 0)
+          : 0);
       const indexerScalesPerBlock = indexerQuantBlockSize > 0
-        ? Math.floor(indexDim / indexerQuantBlockSize)
+        ? indexerPrecisionProfile.groupSize > 0
+          ? Math.ceil(indexDim / indexerQuantBlockSize)
+          : Math.floor(indexDim / indexerQuantBlockSize)
         : 0;
       const indexerScaleElements =
         indexerPools * indexerPlan.activeIndexerLayers * indexerScalesPerBlock;
@@ -902,7 +1100,13 @@
       const kdaCheckpointBytesPerSequence =
         kdaCheckpointCount * kdaStateBytes;
       const byteGroups = [
-        { role: "kv", label: "MLA latent KV cache", elements: mlaElements },
+        {
+          role: "kv",
+          label: "MLA latent KV cache",
+          elements: mlaElements,
+          entries: activeFullLayers * tokens,
+          entryElements: kvRank + ropeDim,
+        },
         { role: "indexer", label: "Indexer cache", elements: indexerElements },
       ];
       if (indexerScaleBytesPerSequence > 0) {
@@ -937,9 +1141,15 @@
         {
           name: "mla_kv_bytes",
           expression:
-            "tokens x sequences x active_full_attention_layers x (kv_lora_rank + qk_rope_head_dim) x kv_precision_bytes",
+            (settings && settings.kvPrecisionProfile &&
+              Number.isFinite(settings.kvPrecisionProfile.bytesPerEntry))
+              ? "tokens x sequences x active_full_attention_layers x fp8_sglang_packed_bytes_per_entry"
+              : "tokens x sequences x active_full_attention_layers x (kv_lora_rank + qk_rope_head_dim) x kv_precision_bytes",
           description:
-            "Latent KV payload stored by the production MLA/DSA path.",
+            (settings && settings.kvPrecisionProfile &&
+              Number.isFinite(settings.kvPrecisionProfile.bytesPerEntry))
+              ? `Packed SGLang MLA KV uses ${settings.kvPrecisionProfile.bytesPerEntry} logical payload bytes per row; allocator page padding is excluded.`
+              : "Latent KV payload stored by the production MLA/DSA path.",
         },
         {
           name: "indexer_pools",
@@ -957,10 +1167,10 @@
         {
           name: "indexer_scale_bytes",
           expression: indexerQuantBlockSize > 0 && indexerScaleBytesPerElement > 0
-            ? `indexer_pools x sequences x active_indexer_layers x floor(index_head_dim / ${indexerScalePrefix}_quant_block_size) x ${indexerScalePrefix}_scale_bytes_per_element`
+            ? `indexer_pools x sequences x active_indexer_layers x ${indexerPrecisionProfile.groupSize > 0 ? "ceil" : "floor"}(index_head_dim / indexer_quant_block_size) x indexer_scale_bytes_per_element`
             : "0",
           description:
-            "Scales apply to quantized indexer.",
+            "Quantization scales are counted per vector using the selected precision's grouping rule.",
         },
         {
           name: "index_tail_bytes",
@@ -1001,6 +1211,11 @@
               `KDA recurrent matrices stored in every retained checkpoint at ${recurrentBytesPerElement} bytes per element.`,
           },
           {
+            name: "kda_checkpoint_state_bytes",
+            expression: "kda_conv_state_bytes + kda_recurrent_state_bytes",
+            description: "KDA checkpoint state size shown in the summary above.",
+          },
+          {
             name: "total_bytes",
             expression:
               "mla_kv_bytes + indexer_bytes + indexer_scale_bytes + index_tail_bytes + kda_conv_state_bytes + kda_recurrent_state_bytes",
@@ -1031,11 +1246,17 @@
           kdaCheckpointCount * (kdaConvElements + kdaRecurrentElements),
         elementsPerToken: mlaElementsPerToken + indexerElementsPerToken + indexerScaleElements / tokens,
         hitRateElementsPerToken: mlaElementsPerToken,
+        hitRateEntriesPerToken: activeFullLayers,
+        hitRateEntryElements: kvRank + ropeDim,
         formulaLabel: FORMULA_LABELS[formula],
         formulaText: formulaRows.map((row) => `${row.name} = ${row.expression}`).join("\n"),
         formulaRows,
         note:
           `Production estimate uses latent KV plus indexer state, with one index state per ${indexKpool} tokens in each complete pool. ` +
+          (settings && settings.kvPrecisionProfile &&
+            Number.isFinite(settings.kvPrecisionProfile.bytesPerEntry)
+            ? `SGLang packed MLA stores ${settings.kvPrecisionProfile.bytesPerEntry} logical payload bytes per row; allocator page padding is excluded. `
+            : "") +
           (indexerScaleElements > 0
             ? `Includes ${indexerScaleBytesPerElement}-byte quantization scales for the indexer. `
             : "") +
@@ -1047,14 +1268,14 @@
             : `The ${kdaLayers} KDA layers' sequence-level state is excluded. `),
         byteGroups,
         components: [
-          ["Main layers", layers, "Main transformer layers, including DSA/MLA full-attention and KDA linear-attention layers."],
+          ["Main layers", layers, "Main transformer layers, including DSA/MLA sparse-attention and KDA linear-attention layers."],
           [
             "DSA/MLA full-attention layers",
             fullLayers,
             "Layers that allocate token-addressable compressed DSA/MLA latent KV plus RoPE key cache.",
           ],
           ["Draft layers included", draftLayers, "Extra MTP/draft layers after the main transformer layers."],
-          ["Active full-attention layers", activeFullLayers, "Main DSA/MLA full-attention layers plus the draft layers included in KV capacity."],
+          ["Active full-attention layers", activeFullLayers, "Main DSA/MLA sparse-attention layers plus the draft layers included in KV capacity."],
           ["Main indexer layers", indexerPlan.mainIndexerLayers, "Full indexer layers that allocate independent indexer key cache."],
           ["Shared indexer layers", indexerPlan.sharedIndexerLayers, "DSA layers that reuse the previous full indexer layer's top-k selection."],
           ["Draft indexer layers included", indexerPlan.draftIndexerLayers, "Draft/MTP indexer layers counted when Include draft KV cache is enabled."],
@@ -1086,7 +1307,7 @@
           [
             "DSA/MLA elements per token",
             mlaElementsPerToken,
-            "active_full_attention_layers x (kv_lora_rank + qk_rope_head_dim). Latent KV scalar elements per token before applying KV precision.",
+            "active_dsa_mla_layers x (kv_lora_rank + qk_rope_head_dim). Latent KV scalar elements per token before applying KV precision.",
           ],
           ["Indexer elements per token", indexerElementsPerToken, "Indexer elements per token before applying indexer precision."],
           ["Indexer scales per block", indexerScalesPerBlock, "Scales per quantized indexer block"],
@@ -1181,6 +1402,7 @@
         "sconv_state_bytes_per_element",
         INKLING_SCONV_BYTES_PER_ELEMENT,
       );
+      const sconvPrecisionName = sconvBytesPerElement === 4 ? "FP32" : "BF16";
       const sconvCheckpointInterval = parseStateCheckpointInterval(
         settings && settings.sconvCheckpointInterval,
         defaultSconvCheckpointInterval(model),
@@ -1266,9 +1488,9 @@
           {
             name: "sconv_checkpoint_bytes",
             expression:
-              "sequences x checkpoint_count x (kernel_size - 1) x 2 x [active_global_layers x (2 x global_kv_heads x head_dim + 2 x hidden_size) + active_swa_layers x (2 x swa_kv_heads x swa_head_dim + 2 x hidden_size)]",
+              "sequences x checkpoint_count x (kernel_size - 1) x sconv_state_bytes_per_element x [active_global_layers x (2 x global_kv_heads x head_dim + 2 x hidden_size) + active_swa_layers x (2 x swa_kv_heads x swa_head_dim + 2 x hidden_size)]",
             description:
-              "Logical BF16 K, V, attention-output, and MLP-output convolution history stored at each retained prefix boundary.",
+              `Logical ${sconvPrecisionName} K, V, attention-output, and MLP-output convolution history stored at each retained prefix boundary.`,
           },
           {
             name: "total_bytes",
@@ -1305,7 +1527,7 @@
           "global_kv_bytes = tokens * sequences * active_global_layers * global_kv_heads * 2 * head_dim * kv_precision_bytes\nswa_kv_bytes = min(tokens, sliding_window) * sequences * active_swa_layers * swa_kv_heads * 2 * swa_head_dim * kv_precision_bytes\ntotal_bytes = global_kv_bytes + swa_kv_bytes + optional_sconv_checkpoint_bytes",
         formulaRows,
         note: includeSconvState
-          ? "Includes reusable text-generation KV and logical BF16 SConv checkpoints. vLLM page padding, active/ping-pong/speculative buffers, and vision/audio encoder activations are excluded."
+          ? `Includes reusable text-generation KV and logical ${sconvPrecisionName} SConv checkpoints. vLLM page padding, active/ping-pong/speculative buffers, and vision/audio encoder activations are excluded.`
           : "Includes reusable text-generation KV only. SConv state required for exact prefix continuation is excluded.",
         byteGroups,
         components: [
@@ -1349,14 +1571,14 @@
           [
             "SConv bytes per checkpoint",
             sconvBytesPerCheckpoint,
-            "One logical BF16 short-convolution checkpoint.",
+            `One logical ${sconvPrecisionName} short-convolution checkpoint.`,
           ],
           [
             "SConv checkpoint bytes per sequence",
             sconvCheckpointBytesPerSequence,
             "Retained checkpoint count multiplied by bytes per checkpoint.",
           ],
-          ["SConv state bytes", sconvBytesPerElement, "Current production serving implementations retain this state in BF16."],
+          ["SConv state bytes", sconvBytesPerElement, `Current production serving implementations retain this state in ${sconvPrecisionName}.`],
           [
             "Model fields",
             fieldList(model, [
@@ -1376,6 +1598,155 @@
               "default_sconv_checkpoint_interval",
             ]),
           ],
+        ],
+      };
+    }
+
+    if (formula === "qwen4_exp_hybrid") {
+      const layers = getField(model, "num_hidden_layers");
+      const fullLayers = getField(model, "full_attention_layers");
+      const linearLayers = getField(model, "linear_attention_layers");
+      const kvHeads = getField(model, "num_key_value_heads");
+      const headDim = getField(model, "head_dim");
+      const linearKeyHeads = getField(model, "linear_num_key_heads");
+      const linearKeyDim = getField(model, "linear_key_head_dim");
+      const linearValueHeads = getField(model, "linear_num_value_heads");
+      const linearValueDim = getField(model, "linear_value_head_dim");
+      const linearConvKernel = getField(model, "linear_conv_kernel_dim");
+      const qsaCompressRatio = getField(model, "indexer_compress_ratio");
+      const qsaKvHeads = getField(model, "indexer_kv_heads");
+      const qsaHeadDim = getField(model, "indexer_head_dim");
+      const qsaCompressedTokens = Math.floor(tokens / qsaCompressRatio);
+      const qsaIndexElements = qsaCompressedTokens * fullLayers * qsaKvHeads * qsaHeadDim;
+      const qsaPendingKeyElements = fullLayers * qsaCompressRatio * qsaKvHeads * qsaHeadDim;
+      const qsaPendingBytes =
+        qsaPendingKeyElements * QSA_PENDING_KEY_BYTES_PER_ELEMENT +
+        qsaCompressRatio * QSA_ROPE_POSITION_AXES * QSA_ROPE_POSITION_BYTES;
+      const pleLayerIds = model.fields.ple_layer_ids;
+      const pleLayers = Array.isArray(pleLayerIds)
+        ? pleLayerIds.length
+        : optionalField(model, "ple_num_layers", 0);
+      const pleConvElements =
+        pleLayers *
+        getField(model, "hidden_size") *
+        getField(model, "hc_count") *
+        (getField(model, "ple_conv_kernel_size") - 1) *
+        getField(model, "ngram_size");
+      const pleContextTokens = Math.max(0, getField(model, "ngram_size") - 1);
+      const pleStateBytes =
+        pleConvElements * QWEN_LINEAR_CONV_BYTES_PER_ELEMENT +
+        pleContextTokens * PLE_CONTEXT_TOKEN_BYTES;
+      const recurrentBytesPerElement = toPositiveNumber(
+        settings && settings.qwenRecurrentStateBytesPerElement,
+        QWEN_LINEAR_RECURRENT_BYTES_PER_ELEMENT,
+      );
+      const recurrentPrecisionLabel =
+        (settings && settings.qwenRecurrentStatePrecisionLabel) || "FP32";
+      const checkpointInterval = parseStateCheckpointInterval(
+        settings && settings.qwenCheckpointInterval,
+        defaultQwenCheckpointInterval(model),
+      );
+      const checkpointCount = includeLinearAttentionState
+        ? Number.isFinite(checkpointInterval)
+          ? Math.ceil(tokens / checkpointInterval)
+          : 1
+        : 0;
+      const elementsPerToken = fullLayers * 2 * kvHeads * headDim;
+      const fullElements = elementsPerToken * tokens;
+      const qsaElements = qsaIndexElements;
+      const gdnConvElements =
+        linearLayers *
+        (linearConvKernel - 1) *
+        (2 * linearKeyHeads * linearKeyDim + linearValueHeads * linearValueDim);
+      const gdnRecurrentElements =
+        linearLayers * linearValueHeads * linearKeyDim * linearValueDim;
+      const gdnBytes =
+        gdnConvElements * QWEN_LINEAR_CONV_BYTES_PER_ELEMENT +
+        gdnRecurrentElements * recurrentBytesPerElement;
+      const gdnCheckpointBytes = checkpointCount * gdnBytes;
+      const qsaCheckpointBytes = checkpointCount * qsaPendingBytes;
+      const pleCheckpointBytes = checkpointCount * pleStateBytes;
+      const byteGroups = [
+        { role: "kv", label: "Full-attention KV cache", elements: fullElements },
+        { role: "indexer", label: "QSA compressed indexer cache", elements: qsaElements },
+      ];
+      if (includeLinearAttentionState) {
+        byteGroups.push(
+          { role: "linear_state", label: "GDN recurrent/conv checkpoint", bytesPerSequence: gdnCheckpointBytes },
+          { role: "linear_state", label: "QSA pending index state", bytesPerSequence: qsaCheckpointBytes },
+          { role: "linear_state", label: "PLE continuation state", bytesPerSequence: pleCheckpointBytes },
+        );
+      }
+      const formulaRows = [
+        {
+          name: "full_kv_bytes",
+          expression: "tokens x sequences x full_attention_layers x 2 x num_key_value_heads x head_dim x kv_precision_bytes",
+          description: "Only the 12 QSA full-attention layers keep ordinary token-linear K/V cache.",
+        },
+        {
+          name: "qsa_indexer_bytes",
+          expression: "floor(tokens / indexer_compress_ratio) x sequences x full_attention_layers x indexer_kv_heads x indexer_head_dim x indexer_precision_bytes",
+          description: "One compressed key is stored per complete four-token group; query heads affect scoring, not stored key width.",
+        },
+        {
+          name: "checkpoint_count",
+          expression: includeLinearAttentionState
+            ? "interval is infinity ? 1 : ceil(tokens / interval)"
+            : "0 (Include prefix continuation snapshot is off)",
+          description: "Each retained logical snapshot includes GDN, the full four-slot QSA ring, and PLE continuation state.",
+        },
+        {
+          name: "gdn_checkpoint_bytes",
+          expression: "sequences x checkpoint_count x (BF16_conv_state_bytes + recurrent_state_elements x recurrent_state_bytes)",
+          description: "GDN stores BF16/FP16 convolution history and recurrent matrices at the selected recurrent-state precision.",
+        },
+        {
+          name: "qsa_pending_state_bytes",
+          expression: "sequences x checkpoint_count x (full_attention_layers x compress_ratio x indexer_kv_heads x indexer_head_dim x 2 + compress_ratio x 3 x 8)",
+          description: "Counts the full four-slot BF16 key ring per QSA layer, even if some slots are empty, plus shared three-axis int64 RoPE positions.",
+        },
+        {
+          name: "ple_continuation_bytes",
+          expression: "sequences x checkpoint_count x (ple_conv_state_elements x 2 + (ngram_size - 1) x 8)",
+          description: "PLE short-convolution state plus preceding token IDs; the PLE embedding table is model weights and is excluded.",
+        },
+        {
+          name: "total_bytes",
+          expression: includeLinearAttentionState ? "full_kv_bytes + qsa_indexer_bytes + checkpoint_bytes" : "full_kv_bytes + qsa_indexer_bytes",
+          description: "Logical cache payload; retained state is an explicit complete-prefix snapshot assumption.",
+        },
+      ];
+      const checkpointElements =
+        gdnConvElements +
+        gdnRecurrentElements +
+        qsaPendingKeyElements +
+        qsaCompressRatio * QSA_ROPE_POSITION_AXES +
+        pleConvElements +
+        pleContextTokens;
+
+      return {
+        elementsPerSequence:
+          fullElements + qsaElements + checkpointCount * checkpointElements,
+        elementsPerToken: (fullElements + qsaElements) / tokens,
+        formulaLabel: FORMULA_LABELS[formula],
+        formulaText:
+          "full_kv_bytes = tokens * sequences * full_attention_layers * 2 * num_key_value_heads * head_dim * kv_precision_bytes\nqsa_indexer_bytes = floor(tokens / indexer_compress_ratio) * sequences * full_attention_layers * indexer_kv_heads * indexer_head_dim * indexer_precision_bytes\noptional_checkpoint_bytes = checkpoint_count * (gdn_state_bytes + qsa_pending_state_bytes + ple_continuation_bytes)\ntotal_bytes = full_kv_bytes + qsa_indexer_bytes + optional_checkpoint_bytes",
+        formulaRows,
+        note: "Logical payload only. The state option adds one complete prefix snapshot containing GDN state, the full four-slot QSA ring per indexer layer, and PLE history. SGLang preallocates runtime pools and replicates QSA indexer state across TP ranks; runtime slots, page padding, TP placement, PLE embedding weights, MTP cache, and workspaces are excluded.",
+        byteGroups,
+        components: [
+          ["Main layers", layers],
+          ["Full-attention layers", fullLayers],
+          ["Linear-attention layers", linearLayers],
+          ["QSA compression ratio", qsaCompressRatio],
+          ["QSA compressed tokens", qsaCompressedTokens, "floor(tokens / indexer_compress_ratio); incomplete groups are in the optional pending snapshot."],
+          ["QSA pending bytes per checkpoint", qsaPendingBytes, "Counts all four BF16 key slots per QSA layer plus shared MRoPE positions, including empty slots."],
+          ["GDN checkpoints per sequence", checkpointCount],
+          ["GDN state bytes per checkpoint", gdnBytes],
+          ["PLE continuation bytes per checkpoint", pleStateBytes],
+          ["Linear recurrent-state precision", recurrentPrecisionLabel],
+          ["MTP layers not included", optionalField(model, "mtp_num_hidden_layers", 0), "Speculative MTP cache is excluded."],
+          ["Model fields", fieldList(model, ["architectures", "model_type", "num_hidden_layers", "full_attention_interval", "full_attention_layers", "linear_attention_layers", "num_key_value_heads", "head_dim", "indexer_budget", "indexer_compress_ratio", "indexer_n_heads", "indexer_kv_heads", "indexer_head_dim", "linear_num_key_heads", "linear_key_head_dim", "linear_num_value_heads", "linear_value_head_dim", "linear_conv_kernel_dim", "mamba_ssm_dtype", "hc_count", "ple_layer_ids", "ple_conv_kernel_size", "ngram_size"])],
         ],
       };
     }
@@ -1606,13 +1977,29 @@
       const elementsPerToken = kvElementsPerToken + indexerElementsPerToken;
       const kvElements = kvElementsPerToken * tokens;
       const indexerElements = indexerElementsPerToken * tokens;
+      const kvScaleBytes =
+        settings && settings.kvPrecisionProfile &&
+        settings.kvPrecisionProfile.groupSize > 0 &&
+        settings.kvPrecisionProfile.scaleBytesPerGroup > 0
+          ? tokens * layers * 2 * kvHeads *
+            Math.ceil(headDim / settings.kvPrecisionProfile.groupSize) *
+            settings.kvPrecisionProfile.scaleBytesPerGroup
+          : 0;
+      const indexerScaleBytes =
+        settings && settings.indexerPrecisionProfile &&
+        settings.indexerPrecisionProfile.groupSize > 0 &&
+        settings.indexerPrecisionProfile.scaleBytesPerGroup > 0
+          ? tokens * sparseLayers *
+            Math.ceil(indexDim / settings.indexerPrecisionProfile.groupSize) *
+            settings.indexerPrecisionProfile.scaleBytesPerGroup
+          : 0;
 
       return {
         elementsPerSequence: elementsPerToken * tokens,
         elementsPerToken,
         formulaLabel: FORMULA_LABELS[formula],
         formulaText:
-          "kv_bytes = tokens * sequences * layers * 2 * num_key_value_heads * head_dim * kv_precision_bytes\nindexer_bytes = tokens * sequences * sparse_attention_layers * index_head_dim * indexer_precision_bytes\ntotal_bytes = kv_bytes + indexer_bytes",
+          "kv_bytes = tokens * sequences * layers * 2 * num_key_value_heads * head_dim * kv_precision_bytes\nkv_scale_bytes = tokens * sequences * layers * 2 * num_key_value_heads * ceil(head_dim / group_size) * scale_bytes_per_group\nindexer_bytes = tokens * sequences * sparse_attention_layers * index_head_dim * indexer_precision_bytes\nindexer_scale_bytes = tokens * sequences * sparse_attention_layers * ceil(index_head_dim / group_size) * scale_bytes_per_group\ntotal_bytes = kv_bytes + kv_scale_bytes + indexer_bytes + indexer_scale_bytes",
         formulaRows: [
           {
             name: "kv_bytes",
@@ -1620,27 +2007,51 @@
             description: "MiniMax M3 stores ordinary main K/V cache for both full-attention and sparse-attention layers.",
           },
           {
+            name: "kv_scale_bytes",
+            expression: "tokens x sequences x layers x 2 x num_key_value_heads x ceil(head_dim / group_size) x scale_bytes_per_group",
+            description: "Grouped KV formats count scale bytes independently for each K or V head; ceil preserves a partial final group.",
+          },
+          {
             name: "indexer_bytes",
             expression: "tokens x sequences x sparse_attention_layers x index_head_dim x indexer_precision_bytes",
             description: "MSA sparse layers keep a key-only side cache for the lightning indexer; index_n_heads affects scoring, not the stored index-key cache width.",
           },
           {
+            name: "indexer_scale_bytes",
+            expression: "tokens x sequences x sparse_attention_layers x ceil(index_head_dim / group_size) x scale_bytes_per_group",
+            description: "Grouped indexer formats count scale bytes per key vector; ceil preserves a partial final group.",
+          },
+          {
             name: "total_bytes",
-            expression: "kv_bytes + indexer_bytes",
+            expression: "kv_bytes + kv_scale_bytes + indexer_bytes + indexer_scale_bytes",
             description: "Combined main KV cache and MSA index-key side cache.",
           },
         ],
-        note: "MiniMax Sparse Attention (MSA) uses a lightweight indexer to pick the most relevant KV blocks for each query, so long-context attention can read a sparse subset of the cached tokens while keeping a separate indexer cache for block selection.",
+        note: "MiniMax Sparse Attention (MSA) uses a lightweight indexer to pick the most relevant KV blocks for each query, so long-context attention can read a sparse subset of the cached tokens while keeping a separate indexer cache for block selection. NVFP4 uses 16-dimension groups with one scale byte each (64 data + 8 scale bytes per 128-dimension head); allocator page padding is excluded.",
         byteGroups: [
-          { role: "kv", label: "KV cache", elements: kvElements },
-          { role: "indexer", label: "Indexer cache", elements: indexerElements },
+          {
+            role: "kv",
+            label: "KV cache",
+            elements: kvElements,
+            vectorCount: tokens * layers * 2 * kvHeads,
+            vectorDim: headDim,
+          },
+          {
+            role: "indexer",
+            label: "Indexer cache",
+            elements: indexerElements,
+            vectorCount: tokens * sparseLayers,
+            vectorDim: indexDim,
+          },
         ],
         components: [
           ["Main layers", layers],
           ["Full-attention layers", fullLayers, "Dense/full-attention layers without the MSA indexer branch."],
           ["Sparse-attention layers", sparseLayers, "MSA layers that add a key-only indexer side cache."],
           ["KV elements per token", kvElementsPerToken, "Main K/V elements per token before applying KV precision."],
+          ["KV scale bytes per sequence", kvScaleBytes, "Grouped KV formats count one scale byte for each 16-dimension group in every separate K/V head."],
           ["Indexer elements per token", indexerElementsPerToken, "MSA index-key elements per token before applying indexer precision."],
+          ["Indexer scale bytes per sequence", indexerScaleBytes, "Grouped indexer formats count one scale byte for each 16-dimension group per key vector."],
           ["Index heads", indexHeads, "Indexer query heads used for scoring selected KV blocks; the stored index-key cache is key-only."],
           ["Index block size", blockSize, "Number of tokens per sparse-selection block. This is not a sliding-window cache cap."],
           ["Top-k blocks", topkBlocks, "Sparse blocks selected by the indexer for each query."],
@@ -1793,44 +2204,78 @@
 
       const attentionElements = windowElements + compressedElements;
       const elementsPerSequence = attentionElements + indexerElements;
+      const kvPrecisionProfile = (settings && settings.kvPrecisionProfile) || {};
+      const indexerPrecisionProfile = (settings && settings.indexerPrecisionProfile) || {};
+      const kvEntryBytes = kvPrecisionProfile.bytesPerEntry;
+      const indexerEntries = ratioFourLayers * Math.floor(tokens / 4);
+      const indexerScaleBytesPerEntry = indexerPrecisionProfile.groupSize > 0 &&
+        indexerPrecisionProfile.scaleBytesPerGroup > 0
+        ? Math.ceil(indexDim / indexerPrecisionProfile.groupSize) *
+          indexerPrecisionProfile.scaleBytesPerGroup
+        : 0;
+      const indexerScaleBytes = indexerEntries * indexerScaleBytesPerEntry;
+      const formulaRows = [
+        {
+          name: "sliding_kv_bytes",
+          expression: Number.isFinite(kvEntryBytes)
+            ? "active_layers x sliding_window x kv_entry_bytes"
+            : "active_layers x sliding_window x head_dim x kv_precision_bytes",
+          description: Number.isFinite(kvEntryBytes)
+            ? `Each logical SGLang packed row uses ${kvEntryBytes} bytes, including BF16 RoPE and scale/padding payload.`
+            : "Includes ratio=0 layers. Ratio=0 layers only contribute this fixed sliding-window KV and do not add compressed KV slots.",
+        },
+        {
+          name: "compressed_kv_bytes",
+          expression: Number.isFinite(kvEntryBytes)
+            ? "sum_ratio>0(floor(tokens / compress_ratio)) x kv_entry_bytes"
+            : "sum_ratio>0(floor(tokens / compress_ratio) x head_dim) x kv_precision_bytes",
+          description: "Compressed KV cache from layers whose compress_ratio is greater than zero; each layer keeps floor(tokens / compress_ratio) compressed slots.",
+        },
+        {
+          name: "kv_bytes",
+          expression: "sliding_kv_bytes + compressed_kv_bytes",
+          description: "Main DeepSeek V4 KV cache before adding the separate indexer cache.",
+        },
+        {
+          name: "indexer_bytes",
+          expression: "ratio4_layers x floor(tokens / 4) x index_head_dim x indexer_precision_bytes",
+          description: "Ratio=4 layers keep an extra compressed indexer cache at its selected payload precision.",
+        },
+        {
+          name: "indexer_scale_bytes",
+          expression: indexerScaleBytesPerEntry > 0
+            ? `ratio4_layers x floor(tokens / 4) x ceil(index_head_dim / ${indexerPrecisionProfile.groupSize}) x ${indexerPrecisionProfile.scaleBytesPerGroup}`
+            : "0",
+          description: "Quantized indexer scale payload uses ceil(index_head_dim / group_size) per stored vector; unquantized BF16 has no scale bytes.",
+        },
+        {
+          name: "total_bytes",
+          expression: "sequences x (kv_bytes + indexer_bytes + indexer_scale_bytes)",
+          description: "Combined logical cache payload; allocator page padding is excluded.",
+        },
+      ];
       return {
         elementsPerSequence,
         elementsPerToken: elementsPerSequence / tokens,
         formulaLabel: FORMULA_LABELS[formula],
-        formulaText:
-          "sliding_kv_bytes = active_layers * sliding_window * head_dim * kv_precision_bytes\ncompressed_kv_bytes = sum_ratio>0(floor(tokens / compress_ratio) * head_dim) * kv_precision_bytes\nkv_bytes = sliding_kv_bytes + compressed_kv_bytes\nindexer_bytes = ratio4_layers * floor(tokens / 4) * index_head_dim * indexer_precision_bytes\ntotal_bytes = sequences * (kv_bytes + indexer_bytes)",
-        formulaRows: [
-          {
-            name: "sliding_kv_bytes",
-            expression: "active_layers x sliding_window x head_dim x kv_precision_bytes",
-            description: "Includes ratio=0 layers. Ratio=0 layers only contribute this fixed sliding-window KV and do not add compressed KV slots.",
-          },
-          {
-            name: "compressed_kv_bytes",
-            expression: "sum over ratio>0 layers: floor(tokens / compress_ratio) x head_dim x kv_precision_bytes",
-            description: "Compressed KV cache from layers whose compress_ratio is greater than zero; each layer keeps floor(tokens / compress_ratio) compressed slots.",
-          },
-          {
-            name: "kv_bytes",
-            expression: "sliding_kv_bytes + compressed_kv_bytes",
-            description: "Main DeepSeek V4 KV cache before adding the separate indexer cache.",
-          },
-          {
-            name: "indexer_bytes",
-            expression:
-              "ratio4_layers x floor(tokens / 4) x index_head_dim x indexer_precision_bytes",
-            description: "Ratio=4 layers keep an extra compressed indexer cache that can use a separate precision.",
-          },
-          {
-            name: "total_bytes",
-            expression: "sequences x (kv_bytes + indexer_bytes)",
-            description: "Combined DeepSeek V4 cache payload for all concurrent sequences.",
-          },
-        ],
-        note: "Production estimate uses the official sliding-window/compressed-cache layout. The default DeepSeek V4 setting uses FP8 attention cache and FP4 indexer cache.",
+        formulaText: formulaRows.map((row) => `${row.name} = ${row.expression}`).join("\n"),
+        formulaRows,
+        note: "Production estimate uses the official sliding-window/compressed-cache layout. FP4 indexer vectors count one 1-byte scale per 32 dimensions; FP8 indexer vectors count one 4-byte scale per 128 dimensions; BF16 has no scale. SGLang packed FP8 KV rows use 584 logical payload bytes (448 FP8 + 128 BF16 RoPE + 8 scale/pad); allocator page padding is excluded.",
         byteGroups: [
-          { role: "kv", label: "KV cache", elements: attentionElements },
-          { role: "indexer", label: "Indexer cache", elements: indexerElements },
+          {
+            role: "kv",
+            label: "KV cache",
+            elements: attentionElements,
+            entries: attentionElements / headDim,
+            entryElements: headDim,
+          },
+          {
+            role: "indexer",
+            label: "Indexer cache",
+            elements: indexerElements,
+            vectorCount: indexerEntries,
+            vectorDim: indexDim,
+          },
         ],
         components: [
           ["Main layers", mainRatios.length],
@@ -1861,16 +2306,49 @@
     throw new Error(`Precision ${precision.label} does not define bytes for ${role} cache`);
   }
 
+  function precisionForCacheRole(precision, role) {
+    if ((role === "kv" || role === "attention") && precision.kvPrecisionProfile) {
+      return precision.kvPrecisionProfile;
+    }
+    if (role === "indexer" && precision.indexerPrecisionProfile) {
+      return precision.indexerPrecisionProfile;
+    }
+    return precision;
+  }
+
   function calculateCacheGroups(elementPlan, precision) {
     const groups = elementPlan.byteGroups || [{ role: "cache", elements: elementPlan.elementsPerSequence }];
-    return groups.map((group) => ({
-      role: group.role,
-      label: group.label || "KV cache",
-      elements: group.elements,
-      bytesPerSequence: Number.isFinite(group.bytesPerSequence)
-        ? group.bytesPerSequence
-        : group.elements * bytesPerElementForGroup(precision, group.role),
-    }));
+    return groups.map((group) => {
+      const rolePrecision = precisionForCacheRole(precision, group.role);
+      let bytesPerSequence = group.bytesPerSequence;
+      if (!Number.isFinite(bytesPerSequence)) {
+        if (
+          Number.isFinite(group.entries) &&
+          Number.isFinite(rolePrecision.bytesPerEntry)
+        ) {
+          bytesPerSequence = group.entries * rolePrecision.bytesPerEntry;
+        } else {
+          bytesPerSequence = group.elements * bytesPerElementForGroup(precision, group.role);
+          if (
+            Number.isFinite(group.vectorCount) &&
+            Number.isFinite(group.vectorDim) &&
+            rolePrecision.groupSize > 0 &&
+            rolePrecision.scaleBytesPerGroup > 0
+          ) {
+            bytesPerSequence +=
+              group.vectorCount *
+              Math.ceil(group.vectorDim / rolePrecision.groupSize) *
+              rolePrecision.scaleBytesPerGroup;
+          }
+        }
+      }
+      return {
+        role: group.role,
+        label: group.label || "KV cache",
+        elements: group.elements,
+        bytesPerSequence,
+      };
+    });
   }
 
   function precisionComponents(precision) {
@@ -1897,9 +2375,11 @@
       defaultPrecisionId(model, options),
       model,
     );
+    const requestedIndexerPrecisionId =
+      input.indexerPrecision || defaultIndexerPrecisionId(model, options, precisionId);
     const indexerPrecision = hasIndexerCache(model)
       ? getIndexerPrecisionProfile(
-          input.indexerPrecision || defaultIndexerPrecisionId(model, options, precisionId),
+          canonicalIndexerPrecisionId(model, requestedIndexerPrecisionId),
           options,
           model,
           precisionId,
@@ -1919,10 +2399,14 @@
           bytesPerElement: precision.bytesPerElement,
           kvBytesPerElement: precision.bytesPerElement,
           indexerBytesPerElement: indexerPrecision.bytesPerElement,
+          kvPrecisionProfile: precision,
+          indexerPrecisionProfile: indexerPrecision,
         }
-      : precision;
+      : { ...precision, kvPrecisionProfile: precision };
     const elementPlan = calculateElementsPerSequence(model, tokens, {
       indexerPrecisionId: indexerPrecision ? indexerPrecision.id : undefined,
+      indexerPrecisionProfile: indexerPrecision || undefined,
+      kvPrecisionProfile: precision,
       includeDraftKvCache: hasDraftKvCache(model) && toBoolean(input.includeDraftKvCache),
       includeSwaCache: isDeepSeekV41(model) && (
         typeof input.includeSwaCache === "undefined"
@@ -1972,6 +2456,9 @@
           : Infinity
         : undefined,
     });
+    if (model.cache_note) {
+      elementPlan.note = [elementPlan.note, model.cache_note].filter(Boolean).join(" ");
+    }
     const cacheGroupsPerSequence = calculateCacheGroups(elementPlan, cachePrecision);
     const bytesPerSequence = cacheGroupsPerSequence.reduce((total, group) => total + group.bytesPerSequence, 0);
     const totalBytes = bytesPerSequence * sequences;
@@ -1987,12 +2474,12 @@
     const indexerBytes = cacheGroups
       .filter((group) => group.role === "indexer")
       .reduce((total, group) => total + group.bytes, 0);
-    const hitRateBytesPerToken = Number.isFinite(
-      elementPlan.hitRateElementsPerToken,
-    )
-      ? elementPlan.hitRateElementsPerToken *
-        bytesPerElementForGroup(cachePrecision, "kv")
-      : undefined;
+    const hitRateBytesPerToken = Number.isFinite(elementPlan.hitRateEntriesPerToken) &&
+      Number.isFinite(precision.bytesPerEntry)
+      ? elementPlan.hitRateEntriesPerToken * precision.bytesPerEntry
+      : Number.isFinite(elementPlan.hitRateElementsPerToken)
+        ? elementPlan.hitRateElementsPerToken * bytesPerElementForGroup(cachePrecision, "kv")
+        : undefined;
 
     return {
       modelId: model.id,
@@ -2053,6 +2540,28 @@
     }, {});
   }
 
+  function expandModelCatalog(models, catalog) {
+    const expanded = models.slice();
+    const presets = new Map(expanded.map((model) => [model.id, model]));
+    const seenIds = new Set(presets.keys());
+    (catalog || []).forEach((entry) => {
+      const preset = presets.get(entry.preset_id);
+      if (!preset || !entry.official_model_id || seenIds.has(entry.official_model_id)) return;
+      const cacheNote = [...new Set([preset.cache_note, entry.cache_note].filter(Boolean))].join(" ");
+      expanded.push({
+        ...preset,
+        id: entry.official_model_id,
+        label: entry.official_model_id,
+        source_url: entry.source_url,
+        max_position_embeddings: entry.max_position_embeddings ?? preset.max_position_embeddings,
+        fields: entry.fields ? { ...preset.fields, ...entry.fields } : preset.fields,
+        cache_note: cacheNote || undefined,
+      });
+      seenIds.add(entry.official_model_id);
+    });
+    return expanded;
+  }
+
   function modelById(models, id) {
     return models.find((model) => model.id === id) || models[0];
   }
@@ -2108,24 +2617,20 @@
     return item;
   }
 
-  function renderMetrics(root, result) {
-    const list = root.querySelector("[data-kv-metrics]");
-    if (!list) return;
-    list.innerHTML = "";
-
+  function metricsForResult(result) {
     const metrics = [];
     if (result.elementPlan.showCacheGroups) {
       result.cacheGroups.forEach((group) => {
-        metrics.push([`${group.label} size`, formatBytes(group.bytes)]);
+        metrics.push([`${group.label} size`, group.bytes]);
       });
     } else if (result.indexerPrecisionLabel) {
       metrics.push([
         "KV cache size",
-        formatBytes(result.kvBytes),
+        result.kvBytes,
       ]);
       metrics.push([
         "Indexer cache size",
-        formatBytes(result.indexerBytes),
+        result.indexerBytes,
       ]);
       result.cacheGroups
         .filter((group) =>
@@ -2135,14 +2640,14 @@
         .forEach((group) => {
           metrics.push([
             `${group.label} size`,
-            formatBytes(group.bytes),
+            group.bytes,
           ]);
         });
     } else if (result.cacheGroups.length > 1) {
       result.cacheGroups.forEach((group) => {
         metrics.push([
           `${group.label} size`,
-          formatBytes(group.bytes),
+          group.bytes,
         ]);
       });
     }
@@ -2153,17 +2658,24 @@
     );
     metrics.push([
       includesFixedState ? "Amortized size per token" : "Per token size",
-      formatBytes(result.bytesPerToken),
+      result.bytesPerToken,
     ]);
     if (Number.isFinite(result.hitRateBytesPerToken)) {
       metrics.push([
         "Reusable MLA per token",
-        formatBytes(result.hitRateBytesPerToken),
+        result.hitRateBytesPerToken,
       ]);
     }
 
-    metrics.forEach(([label, value]) => {
-      list.appendChild(renderMetricCard(label, value));
+    return metrics;
+  }
+
+  function renderMetrics(root, result) {
+    const list = root.querySelector("[data-kv-metrics]");
+    if (!list) return;
+    list.innerHTML = "";
+    metricsForResult(result).forEach(([label, value]) => {
+      list.appendChild(renderMetricCard(label, formatBytes(value)));
     });
   }
 
@@ -2171,25 +2683,477 @@
     const list = root.querySelector("[data-kv-components]");
     if (!list) return;
     list.innerHTML = "";
+    const formulas = (result.elementPlan.formulaRows || []).map((row) => `${row.name} ${row.expression}`).join(" ");
+    const represented = {
+      "Main layers": "main_layers", "Draft layers included": "draft_layers_if_enabled",
+      "Main indexer layers": "main_indexer_layers", "Draft indexer layers included": "draft_indexer_layers_if_enabled",
+      "Active full-attention layers": "active_full_attention_layers", "Indexer pools": "indexer_pools",
+      "KV precision bytes": "kv_precision_bytes", "Indexer precision bytes": "indexer_precision_bytes",
+    };
     result.components.forEach(([label, value, description]) => {
-      const item = document.createElement("div");
-      item.className = "kv-breakdown-row";
-      const key = document.createElement("span");
-      key.textContent = label;
+      if (represented[label] && formulas.includes(represented[label])) return;
+      const item = document.createElement("tr");
+      const key = document.createElement("th");
+      key.scope = "row";
+      const sparseLabels = {
+        "DSA/MLA full-attention layers": "DSA/MLA sparse-attention layers",
+        "Active full-attention layers": "Active DSA/MLA sparse-attention layers",
+      };
+      key.textContent = result.elementPlan.formulaLabel === FORMULA_LABELS.kimi_kda_dsa_mla_hybrid
+        ? sparseLabels[label] || label : label;
       appendHelp(key, description);
-      const val = document.createElement("strong");
-      val.textContent = typeof value === "number" ? formatNumber(value, Number.isInteger(value) ? 0 : 2) : value;
+      const val = document.createElement("td");
+      if (label === "Model fields" && value) {
+        const table = document.createElement("table");
+        table.className = "kv-model-fields";
+        table.setAttribute("aria-label", "Model fields");
+        const head = document.createElement("thead");
+        const header = document.createElement("tr");
+        ["Field", "Value"].forEach((label) => {
+          const cell = document.createElement("th");
+          cell.scope = "col";
+          cell.textContent = label;
+          header.appendChild(cell);
+        });
+        head.appendChild(header);
+        const body = document.createElement("tbody");
+        value.split(/,\s*(?=[a-zA-Z_][a-zA-Z_0-9]*=)/).forEach((field) => {
+          const separator = field.indexOf("=");
+          const row = document.createElement("tr");
+          const name = document.createElement("th");
+          name.scope = "row";
+          name.textContent = field.slice(0, separator);
+          const fieldValue = document.createElement("td");
+          fieldValue.textContent = field.slice(separator + 1);
+          row.append(name, fieldValue);
+          body.appendChild(row);
+        });
+        table.append(head, body);
+        val.appendChild(table);
+      } else {
+        val.textContent = typeof value === "number" ? formatNumber(value, Number.isInteger(value) ? 0 : 2) : value;
+      }
       item.append(key, val);
       list.appendChild(item);
     });
   }
 
-  function renderFormulaRows(root, elementPlan) {
+  // Formula strings are presentation data. Evaluate only their arithmetic subset;
+  // descriptive expressions remain visible without inventing a numeric result.
+  function formulaArithmetic(expression) {
+    const tokens = expression.match(/\d+(?:\.\d+)?|[()+\-*/%,]|\b(?:floor|ceil|min|max)\b/g) || [];
+    if (tokens.join("") !== expression.replace(/\s+/g, "")) return undefined;
+    let pos = 0;
+    function factor() {
+      const token = tokens[pos++];
+      if (token === "-") return -factor();
+      if (token === "(") {
+        const value = sum();
+        if (tokens[pos++] !== ")") return NaN;
+        return value;
+      }
+      if (["floor", "ceil", "min", "max"].includes(token)) {
+        if (tokens[pos++] !== "(") return NaN;
+        const args = [sum()];
+        while (tokens[pos] === ",") { pos++; args.push(sum()); }
+        if (tokens[pos++] !== ")") return NaN;
+        return Math[token](...args);
+      }
+      return token === undefined ? NaN : Number(token);
+    }
+    function product() {
+      let value = factor();
+      while (["*", "/", "%"].includes(tokens[pos])) {
+        const op = tokens[pos++];
+        const right = factor();
+        value = op === "*" ? value * right : op === "/" ? value / right : value % right;
+      }
+      return value;
+    }
+    function sum() {
+      let value = product();
+      while (["+", "-"].includes(tokens[pos])) {
+        const op = tokens[pos++];
+        const right = product();
+        value = op === "+" ? value + right : value - right;
+      }
+      return value;
+    }
+    const value = sum();
+    return pos === tokens.length && Number.isFinite(value) ? value : undefined;
+  }
+
+  function appendMetricFormulas(model, result, trace, variable, symbol) {
+    const byName = Object.fromEntries(trace.map((row) => [row.name, row]));
+    const formula = model.formula;
+    const kvSources = {
+      dsa_mla: ["kv_bytes"], dots3_note_hybrid: ["full_mla_bytes", "swa_mla_bytes"],
+      kimi_kda_dsa_mla_hybrid: ["mla_kv_bytes"], qwen4_exp_hybrid: ["full_kv_bytes"],
+      minimax_msa: ["kv_bytes", "kv_scale_bytes"], deepseek_v4_hybrid: ["kv_bytes"],
+    };
+    const indexSources = {
+      dsa_mla: ["indexer_bytes"], dots3_note_hybrid: ["indexer_vector_bytes", "indexer_scale_bytes"],
+      kimi_kda_dsa_mla_hybrid: ["indexer_bytes", "indexer_scale_bytes"], qwen4_exp_hybrid: ["qsa_indexer_bytes"],
+      minimax_msa: ["indexer_bytes", "indexer_scale_bytes"], deepseek_v4_hybrid: ["indexer_bytes", "indexer_scale_bytes"],
+      deepseek_v41_shared: ["indexer_bytes"],
+    };
+    const groupSources = {
+      "Global KV cache size": ["global_kv_bytes"], "SWA cache size": ["swa_bytes"],
+      "MLA latent KV cache size": ["mla_kv_bytes"], "KDA checkpoint state size": ["kda_checkpoint_state_bytes"],
+      "Index tail cache size": ["index_tail_bytes"], "SConv checkpoint state size": ["sconv_checkpoint_bytes"],
+      "Full-attention KV cache size": [formula === "inkling_hybrid" ? "global_kv_bytes" : "full_kv_bytes"],
+      "Sliding-window KV cache size": [formula === "inkling_hybrid" ? "swa_kv_bytes" : "sliding_kv_bytes"],
+      "Linear-attention checkpoint state size": ["linear_conv_state_bytes", "linear_recurrent_state_bytes"],
+      "GDN recurrent/conv checkpoint size": ["gdn_checkpoint_bytes"],
+      "QSA pending index state size": ["qsa_pending_state_bytes"], "PLE continuation state size": ["ple_continuation_bytes"],
+    };
+    const append = (label, terms, value, unit = "bytes") => trace.push({
+      name: `summary:${label}`, displayName: label, metricLabel: label,
+      description: "Calculation for the matching summary metric above.", terms, value, unit,
+    });
+    const total = variable("total_bytes", result.totalBytes);
+    append("Total cache size (GiB)", [total, symbol("/"), variable("bytes_per_GiB", BYTES_PER_GIB)], result.totalBytes / BYTES_PER_GIB, "GiB");
+    append("Total cache size (GB)", [total, symbol("/"), variable("bytes_per_GB", BYTES_PER_GB)], result.totalBytes / BYTES_PER_GB, "GB");
+    for (const [label] of metricsForResult(result)) {
+      if (label === "Per token size" || label === "Amortized size per token") {
+        append(label, [total, symbol("/"), symbol("("), variable("tokens", result.tokens), symbol("x"), variable("sequences", result.sequences), symbol(")")], result.totalBytes / (result.tokens * result.sequences));
+        continue;
+      }
+      if (label === "Reusable MLA per token") {
+        const mla = byName.mla_kv_bytes;
+        append(label, [variable(mla.displayName || mla.name, mla.value), symbol("/"), symbol("("), variable("tokens", result.tokens), symbol("x"), variable("sequences", result.sequences), symbol(")")], mla.value / (result.tokens * result.sequences));
+        continue;
+      }
+      const names = label === "KV cache size" ? kvSources[formula]
+        : label === "Indexer cache size" ? indexSources[formula] : groupSources[label];
+      const terms = [];
+      let value = 0;
+      names.forEach((name, index) => {
+        const row = byName[name];
+        if (index) terms.push(symbol("+"));
+        terms.push(variable(row.displayName || row.name, row.value));
+        value += row.value;
+      });
+      if (isDeepSeekV4(model)) {
+        terms.unshift(symbol("("));
+        terms.push(symbol(")"), symbol("x"), variable("sequences", result.sequences));
+        value *= result.sequences;
+      }
+      append(label, terms, value);
+    }
+  }
+
+  function appendFormulaDependencies(model, input, result, trace, values, variable, symbol) {
+    const fields = model.fields || {};
+    const component = (label) => result.components.find(([name]) => name === label)?.[1];
+    const row = (name, terms, value, description) => ({ name, terms, value, description });
+    const before = (name, rows) => {
+      const position = trace.findIndex((entry) => entry.name === name);
+      if (position >= 0) trace.splice(position, 0, ...rows);
+    };
+    const enabled = hasDraftKvCache(model) && toBoolean(input.includeDraftKvCache);
+    const draftCount = isDeepSeekV4(model) ? fields.compress_ratios.length - fields.num_hidden_layers : draftLayerCount(model);
+    const draftFields = {
+      draft_layers_if_enabled: draftCount,
+      draft_indexer_layers_if_enabled: fields.draft_indexer_layers ?? draftCount,
+      draft_global_layers_if_enabled: fields.draft_full_attention_layers ?? 0,
+      draft_swa_layers_if_enabled: fields.draft_sliding_attention_layers ?? 0,
+    };
+    if (isDeepSeekV4(model)) {
+      before("sliding_kv_bytes", [
+        row("draft_layers_if_enabled", [variable("include_draft_kv_cache", enabled), symbol("?"), variable("configured_draft_layers", draftCount), symbol(":"), symbol("0")], enabled ? draftCount : 0),
+        row("active_layers", [variable("main_layers", fields.num_hidden_layers), symbol("+"), variable("draft_layers_if_enabled", enabled ? draftCount : 0)], fields.num_hidden_layers + (enabled ? draftCount : 0)),
+      ]);
+    }
+    for (const [name, count] of Object.entries(draftFields)) {
+      if (isDeepSeekV4(model) && name === "draft_layers_if_enabled") continue;
+      const position = trace.findIndex((entry) => entry.terms?.some((term) => term.label === name));
+      if (position < 0) continue;
+      const included = enabled ? count : 0;
+      trace.splice(position, 0, row(name, [variable("include_draft_kv_cache", enabled), symbol("?"), variable(`configured_${name.replace(/_if_enabled$/, "")}`, count), symbol(":"), symbol("0")], included));
+      for (const entry of trace) if (entry.terms) entry.terms = entry.terms.map((term) => term.label === name ? { ...term, value: String(included) } : term);
+    }
+    if (isDeepSeekV41(model)) {
+      const includeSwa = typeof input.includeSwaCache === "undefined" ? toBoolean(fields.default_include_swa_cache) : toBoolean(input.includeSwaCache);
+      const includedDraft = component("Draft layers included");
+      const entry = (name, dimName, dim, payloadWidth, groupName, groupSize, scaleName, scaleWidth) =>
+        row(name, [variable(dimName, dim), symbol("x"), variable("payload_bytes_per_element", payloadWidth), symbol("+"), symbol("ceil"), symbol("("), variable(dimName, dim), symbol("/"), variable(groupName, groupSize), symbol(")"), symbol("x"), variable(scaleName, scaleWidth)], dim * payloadWidth + Math.ceil(dim / groupSize) * scaleWidth);
+      before("global_kv_bytes", [
+        entry("kv_entry_bytes", "head_dim", fields.head_dim, 0.5, "kv_quant_group_size", fields.kv_quant_group_size, "kv_scale_bytes", fields.kv_scale_bytes),
+        entry("indexer_entry_bytes", "index_head_dim", fields.index_head_dim, 0.5, "indexer_quant_group_size", fields.indexer_quant_group_size, "indexer_scale_bytes", fields.indexer_scale_bytes),
+        entry("swa_entry_bytes", "head_dim", fields.head_dim, fields.swa_bytes_per_element, "swa_quant_group_size", fields.swa_quant_group_size, "swa_scale_bytes", fields.swa_scale_bytes),
+      ]);
+      const cacheEntries = trace.find((item) => item.name === "cache_entries");
+      if (cacheEntries) {
+        const ratios = fields.kv_source_layer_ids.map((id) => fields.compress_ratios[id]);
+        const counts = new Map();
+        ratios.forEach((ratio) => counts.set(ratio, (counts.get(ratio) || 0) + 1));
+        const terms = [];
+        [...counts].sort(([a], [b]) => a - b).forEach(([ratio, count], index) => {
+          if (index) terms.push(symbol("+"));
+          terms.push(variable(`ratio_${ratio}_source_layers`, count), symbol("x"), symbol("floor"), symbol("("), variable("tokens", result.tokens), symbol("/"), variable("compress_ratio", ratio), symbol(")"));
+        });
+        cacheEntries.terms = terms;
+      }
+      before("swa_bytes", [
+        row("swa_draft_layers", [variable("include_swa_cache", includeSwa), symbol("&&"), variable("include_draft_kv_cache", enabled), symbol("?"), variable("configured_draft_layers", draftCount), symbol(":"), symbol("0")], includedDraft),
+        row("swa_layers", [variable("include_swa_cache", includeSwa), symbol("?"), symbol("("), variable("main_layers", fields.num_hidden_layers), symbol("+"), variable("swa_draft_layers", includedDraft), symbol(")"), symbol(":"), symbol("0")], component("SWA layers included")),
+      ]);
+      const swa = trace.find((entry) => entry.name === "swa_bytes");
+      if (swa?.terms) swa.terms = swa.terms.map((term) => term.label === "swa_layers" ? { ...term, value: String(component("SWA layers included")) } : term);
+    }
+    if (["kimi_kda_mla_hybrid", "kimi_kda_dsa_mla_hybrid"].includes(model.formula)) {
+      const qHeads = fields.kda_num_heads, qDim = fields.kda_head_dim;
+      const kHeads = fields.kda_num_key_heads ?? qHeads, kDim = fields.kda_key_head_dim ?? qDim;
+      const vHeads = fields.kda_num_value_heads ?? qHeads, vDim = fields.kda_value_head_dim ?? qDim;
+      before("kda_conv_state_bytes", [
+        row("q_dim", [variable("kda_num_heads", qHeads), symbol("x"), variable("kda_head_dim", qDim)], qHeads * qDim),
+        row("k_dim", [variable("kda_num_key_heads", kHeads), symbol("x"), variable("kda_key_head_dim", kDim)], kHeads * kDim),
+        row("v_dim", [variable("kda_num_value_heads", vHeads), symbol("x"), variable("kda_value_head_dim", vDim)], vHeads * vDim),
+      ]);
+    }
+    if (model.formula === "kimi_kda_dsa_mla_hybrid") {
+      const tail = result.tokens % values.index_kpool;
+      const hasTail = tail > 0;
+      before("index_tail_bytes", [
+        row("index_tail_tokens", [variable("tokens", result.tokens), symbol("%"), variable("index_kpool", values.index_kpool)], tail),
+        { name: "include_index_tail", terms: [variable("index_tail_tokens", tail), symbol(">"), symbol("0")], value: Number(hasTail), textValue: String(hasTail) },
+      ]);
+      const tailRow = trace.find((entry) => entry.name === "index_tail_bytes");
+      if (tailRow) tailRow.terms = [variable("include_index_tail", hasTail), symbol("?"), symbol("("),
+        variable("sequences", result.sequences), symbol("x"), variable("active_indexer_layers", values.active_indexer_layers), symbol("x"),
+        variable("index_kpool", values.index_kpool), symbol("x"), symbol("2"), symbol("x"), variable("index_head_dim", fields.index_head_dim), symbol("x"),
+        variable("index_tail_bytes_per_element", values.index_tail_bytes_per_element), symbol(")"), symbol(":"), symbol("0")];
+    }
+    if (model.formula === "qwen4_exp_hybrid") {
+      const layerCount = Array.isArray(fields.ple_layer_ids) ? fields.ple_layer_ids.length : fields.ple_num_layers ?? 0;
+      const convTerms = [variable("linear_attention_layers", fields.linear_attention_layers), symbol("x"), symbol("("), variable("linear_conv_kernel_dim", fields.linear_conv_kernel_dim), symbol("-"), symbol("1"), symbol(")"), symbol("x"), symbol("("), symbol("2"), symbol("x"), variable("linear_num_key_heads", fields.linear_num_key_heads), symbol("x"), variable("linear_key_head_dim", fields.linear_key_head_dim), symbol("+"), variable("linear_num_value_heads", fields.linear_num_value_heads), symbol("x"), variable("linear_value_head_dim", fields.linear_value_head_dim), symbol(")"), symbol("x"), symbol("2")];
+      const recurrentTerms = [variable("linear_attention_layers", fields.linear_attention_layers), symbol("x"), variable("linear_num_value_heads", fields.linear_num_value_heads), symbol("x"), variable("linear_key_head_dim", fields.linear_key_head_dim), symbol("x"), variable("linear_value_head_dim", fields.linear_value_head_dim)];
+      before("gdn_checkpoint_bytes", [row("BF16_conv_state_bytes", convTerms, values.BF16_conv_state_bytes), row("recurrent_state_elements", recurrentTerms, values.recurrent_state_elements)]);
+      before("ple_continuation_bytes", [
+        row("ple_layers", Array.isArray(fields.ple_layer_ids) ? [symbol("count"), symbol("("), variable("ple_layer_ids", fields.ple_layer_ids.join(", ")), symbol(")")] : [variable("ple_num_layers", layerCount)], layerCount),
+        row("ple_conv_state_elements", [variable("ple_layers", layerCount), symbol("x"), variable("hidden_size", fields.hidden_size), symbol("x"), variable("hc_count", fields.hc_count), symbol("x"), symbol("("), variable("ple_conv_kernel_size", fields.ple_conv_kernel_size), symbol("-"), symbol("1"), symbol(")"), symbol("x"), variable("ngram_size", fields.ngram_size)], values.ple_conv_state_elements),
+      ]);
+      const parts = ["gdn_checkpoint_bytes", "qsa_pending_state_bytes", "ple_continuation_bytes"].map((name) => trace.find((entry) => entry.name === name));
+      if (toBoolean(input.includeLinearAttentionState)) before("total_bytes", [row("checkpoint_bytes", [variable(parts[0].name, parts[0].value), symbol("+"), variable(parts[1].name, parts[1].value), symbol("+"), variable(parts[2].name, parts[2].value)], parts.reduce((total, entry) => total + entry.value, 0))]);
+    }
+    for (const item of trace) {
+      if (!item.terms) continue;
+      if (model.formula === "inkling_hybrid" && item.name === "sconv_checkpoint_bytes") item.terms = item.terms.map((term) => term.label === "checkpoint_count" ? { ...term, label: "sconv_checkpoint_count" } : term);
+      if (model.formula === "qwen_linear_full_hybrid" && ["linear_conv_state_bytes", "linear_recurrent_state_bytes"].includes(item.name)) item.terms = item.terms.map((term) => term.label === "checkpoint_count" ? { ...term, label: "linear_state_checkpoint_count" } : term);
+      if (model.formula === "minimax_msa" && ["kv_scale_bytes", "indexer_scale_bytes"].includes(item.name)) {
+        const prefix = item.name === "kv_scale_bytes" ? "kv" : "indexer";
+        item.terms = item.terms.map((term) => ["group_size", "scale_bytes_per_group"].includes(term.label) ? { ...term, label: `${prefix}_${term.label}` } : term);
+      }
+    }
+  }
+
+  function formulaTrace(model, input, result, options) {
+    const fields = model.fields || {};
+    const component = (label) => result.components.find(([name]) => name === label)?.[1];
+    const variable = (label, value) => ({ label, value: String(value), variable: true });
+    const symbol = (label) => ({ label, value: label, variable: false });
+    const precisionId = fixedKvPrecisionId(model) || input.precision || defaultPrecisionId(model, options);
+    const kvProfile = getPrecisionProfile(precisionId, options, defaultPrecisionId(model, options), model);
+    const indexProfile = hasIndexerCache(model)
+      ? getIndexerPrecisionProfile(canonicalIndexerPrecisionId(model, input.indexerPrecision || defaultIndexerPrecisionId(model, options, precisionId)), options, model, precisionId)
+      : null;
+    const stateProfile = hasLinearAttentionState(model)
+      ? getRecurrentStatePrecisionProfile(input.recurrentStatePrecision || defaultRecurrentStatePrecisionId(model, options), options, model)
+      : null;
+    const scalePrefix = indexProfile?.id === "fp8_int8" ? "indexer_fp8" : indexProfile?.id === "fp4_int4" ? "indexer_mxfp4" : null;
+    const draftEnabled = hasDraftKvCache(model) && toBoolean(input.includeDraftKvCache);
+    const draft = draftEnabled ? (isDeepSeekV4(model) ? fields.compress_ratios.length - fields.num_hidden_layers : draftLayerCount(model)) : 0;
+    const values = { ...fields, tokens: result.tokens, sequences: result.sequences,
+      main_layers: fields.num_hidden_layers, layers: fields.num_hidden_layers,
+      full_layers: fields.full_attention_layers, sliding_layers: fields.sliding_attention_layers,
+      main_indexer_layers: component("Main indexer layers"),
+      draft_layers_if_enabled: draft,
+      draft_indexer_layers_if_enabled: component("Draft indexer layers included"),
+      active_layers: fields.num_hidden_layers + draft,
+      active_full_attention_layers: component("Active full-attention layers"),
+      active_indexer_layers: component("Main indexer layers") + (component("Draft indexer layers included") || 0),
+      precision_bytes: kvProfile.bytesPerElement, kv_precision_bytes: kvProfile.bytesPerElement,
+      indexer_precision_bytes: indexProfile?.bytesPerElement,
+      indexer_quant_block_size: indexProfile?.groupSize || (scalePrefix ? fields[`${scalePrefix}_quant_block_size`] : 0),
+      indexer_scale_bytes_per_element: indexProfile?.scaleBytesPerGroup || (scalePrefix ? fields[`${scalePrefix}_scale_bytes_per_element`] : 0),
+      fp8_sglang_packed_bytes_per_entry: kvProfile.bytesPerEntry,
+      conv_kernel: fields.kda_conv_kernel_size,
+      q_dim: fields.kda_num_heads * fields.kda_head_dim,
+      k_dim: (fields.kda_num_key_heads ?? fields.kda_num_heads) * (fields.kda_key_head_dim ?? fields.kda_head_dim),
+      v_dim: (fields.kda_num_value_heads ?? fields.kda_num_heads) * (fields.kda_value_head_dim ?? fields.kda_head_dim),
+      value_heads: fields.kda_num_value_heads ?? fields.kda_num_heads,
+      value_head_dim: fields.kda_value_head_dim ?? fields.kda_head_dim,
+      key_head_dim: fields.kda_key_head_dim ?? fields.kda_head_dim,
+      conv_state_bytes: fields.kda_conv_state_bytes_per_element,
+      recurrent_state_bytes: stateProfile?.bytesPerElement,
+      kda_recurrent_state_bytes_per_element: stateProfile?.bytesPerElement,
+      kda_checkpoint_count: component("KDA checkpoints per sequence"),
+      checkpoint_count: component("KDA checkpoints per sequence") ?? component("Checkpoints per sequence"),
+      index_kpool: fields.index_kpool ?? 1,
+      indexer_pools: component("Indexer pools"),
+      index_tail_bytes_per_element: fields.index_tail_bytes_per_element ?? 2,
+      fp32_scale_bytes: fields.indexer_scale_bytes ?? 4,
+      main_global_layers: fields.full_attention_layers,
+      main_swa_layers: fields.sliding_attention_layers,
+      draft_global_layers_if_enabled: draftEnabled ? fields.draft_full_attention_layers : 0,
+      draft_swa_layers_if_enabled: draftEnabled ? fields.draft_sliding_attention_layers : 0,
+      active_global_layers: component("Active global-attention layers"),
+      active_swa_layers: component("Active sliding-window layers"),
+      global_kv_heads: fields.num_key_value_heads,
+      swa_kv_heads: fields.swa_num_key_value_heads,
+      kernel_size: fields.sconv_kernel_size,
+      full_kv_heads: fields.num_global_key_value_heads ?? fields.num_key_value_heads,
+      full_head_dim: fields.global_head_dim ?? fields.head_dim,
+      full_v_head_dim: fields.global_v_head_dim ?? fields.v_head_dim ?? fields.global_head_dim ?? fields.head_dim,
+      sliding_kv_heads: fields.swa_num_key_value_heads ?? fields.sliding_num_key_value_heads ?? fields.num_key_value_heads,
+      sliding_head_dim: fields.swa_head_dim ?? fields.sliding_head_dim ?? fields.head_dim,
+      sliding_v_head_dim: fields.swa_v_head_dim ?? fields.sliding_v_head_dim ?? fields.v_head_dim ?? fields.swa_head_dim ?? fields.sliding_head_dim ?? fields.head_dim,
+      swa_layers: component("SWA layers included"),
+      kv_entry_bytes: component("KV entry bytes") ?? kvProfile.bytesPerEntry,
+      indexer_entry_bytes: component("Indexer entry bytes"),
+      swa_entry_bytes: component("SWA entry bytes"),
+      ratio4_layers: component("Ratio=4 layers"),
+      compress_ratio: fields.indexer_compress_ratio,
+      BF16_conv_state_bytes: fields.linear_attention_layers * (fields.linear_conv_kernel_dim - 1) * (2 * fields.linear_num_key_heads * fields.linear_key_head_dim + fields.linear_num_value_heads * fields.linear_value_head_dim) * 2,
+      recurrent_state_elements: fields.linear_attention_layers * fields.linear_num_value_heads * fields.linear_key_head_dim * fields.linear_value_head_dim,
+      ple_conv_state_elements: (Array.isArray(fields.ple_layer_ids) ? fields.ple_layer_ids.length : fields.ple_num_layers ?? 0) * fields.hidden_size * fields.hc_count * (fields.ple_conv_kernel_size - 1) * fields.ngram_size,
+      total_bytes: result.totalBytes,
+    };
+    const rows = result.elementPlan.formulaRows || [];
+    // Model fields may share a name with a computed row but mean a per-element width.
+    for (const row of rows) {
+      if (row.name.endsWith("_bytes") && row.name !== "total_bytes") delete values[row.name];
+    }
+    const trace = rows.map((row) => {
+      let expression = row.expression;
+      if (["kda_checkpoint_count", "sconv_checkpoint_count", "linear_state_checkpoint_count", "checkpoint_count"].includes(row.name)) {
+        const checkpoint = row.name === "kda_checkpoint_count" ? "kda" : row.name === "sconv_checkpoint_count" ? "sconv" : "qwen";
+        const defaultInterval = checkpoint === "kda" ? defaultKdaCheckpointInterval(model)
+          : checkpoint === "sconv" ? defaultSconvCheckpointInterval(model)
+          : defaultQwenCheckpointInterval(model);
+        const interval = input[`${checkpoint}CheckpointPolicy`] === STATE_CHECKPOINT_POLICY_FIXED_INTERVAL
+          ? parseStateCheckpointInterval(input[`${checkpoint}CheckpointInterval`], defaultInterval) : Infinity;
+        const count = checkpoint === "kda" ? component("KDA checkpoints per sequence") : checkpoint === "sconv" ? component("SConv checkpoints per sequence") : component("GDN checkpoints per sequence");
+        values[row.name] = count;
+        values.checkpoint_count = count;
+        const enabled = count > 0;
+        const terms = [variable("state_enabled", enabled), symbol("?"), symbol("("),
+          variable("interval_is_infinite", !Number.isFinite(interval)), symbol("?"), symbol("1"), symbol(":"),
+          symbol("ceil"), symbol("("), variable("tokens", result.tokens), symbol("/"),
+          variable("checkpoint_interval", Number.isFinite(interval) ? interval : "infinity"),
+          symbol(")"), symbol(")"), symbol(":"), symbol("0")];
+        return { ...row, terms, substitution: count === 0 ? "state included = false → 0" : Number.isFinite(interval) ? `state included = true; ceil(${result.tokens} / ${interval})` : "state included = true; interval = infinity → 1", value: count };
+      }
+      if (model.formula === "minimax_msa" && ["kv_scale_bytes", "indexer_scale_bytes"].includes(row.name)) {
+        const profile = row.name === "kv_scale_bytes" ? kvProfile : indexProfile;
+        if (!profile?.groupSize || !profile?.scaleBytesPerGroup) {
+          values[row.name] = 0;
+          return { ...row, terms: [variable("grouped_precision", false), symbol("?"), variable("scale_bytes_per_group", 0), symbol(":"), symbol("0")], substitution: "ungrouped precision → 0", value: 0 };
+        }
+        values.group_size = profile.groupSize;
+        values.scale_bytes_per_group = profile.scaleBytesPerGroup;
+      }
+      if (model.formula === "deepseek_v4_hybrid" && row.name === "compressed_kv_bytes") {
+        const elements = component("Compressed elements");
+        const value = Number.isFinite(kvProfile.bytesPerEntry) ? elements / fields.head_dim * kvProfile.bytesPerEntry : elements * kvProfile.bytesPerElement;
+        values[row.name] = value;
+        const terms = [{ label: "compressed_elements", value: String(elements), variable: true }];
+        if (Number.isFinite(kvProfile.bytesPerEntry)) terms.push(
+          { label: "/", value: "/", variable: false },
+          { label: "head_dim", value: String(fields.head_dim), variable: true },
+        );
+        terms.push({ label: "x", value: "x", variable: false },
+          { label: Number.isFinite(kvProfile.bytesPerEntry) ? "kv_entry_bytes" : "kv_precision_bytes", value: String(kvProfile.bytesPerEntry ?? kvProfile.bytesPerElement), variable: true });
+        return { ...row, substitution: Number.isFinite(kvProfile.bytesPerEntry) ? `${elements} / ${fields.head_dim} x ${kvProfile.bytesPerEntry}` : `${elements} x ${kvProfile.bytesPerElement}`, value, terms };
+      }
+      if (row.name === "sconv_checkpoint_bytes") expression = expression.replace(/\[/g, "(").replace(/\]/g, ")");
+      if (row.name === "total_bytes" && model.formula === "qwen4_exp_hybrid" && Number.isFinite(values.gdn_checkpoint_bytes) && Number.isFinite(values.qsa_pending_state_bytes) && Number.isFinite(values.ple_continuation_bytes)) values.checkpoint_bytes = values.gdn_checkpoint_bytes + values.qsa_pending_state_bytes + values.ple_continuation_bytes;
+      if (["kda_linear_attention_state", "linear_attention_state", "sconv_checkpoint_state"].includes(row.name)) {
+        const enabled = calculate(model, { ...input, includeLinearAttentionState: true, includeSconvState: true }, options);
+        const stateBytes = enabled.cacheGroups.filter((group) => group.role === "linear_state" || group.role === "sconv_state").reduce((total, group) => total + group.bytes, 0);
+        return { ...row, terms: [variable("state_enabled", false), symbol("?"), variable("state_bytes_if_enabled", stateBytes), symbol(":"), symbol("0")], substitution: "state included = false → 0", value: 0 };
+      }
+      if (["indexer_scale_bytes", "kv_scale_bytes"].includes(row.name) && expression === "0") {
+        values[row.name] = 0;
+        return { ...row, terms: [variable("grouped_precision", false), symbol("?"), variable("scale_bytes_per_group", 0), symbol(":"), symbol("0")], value: 0 };
+      }
+      // Some existing expressions describe a condition in prose rather than arithmetic.
+      if (expression.startsWith("0 (")) expression = "0";
+      let complete = true;
+      const bindings = {};
+      const substitute = (forDisplay) => expression.replace(/\b[a-zA-Z_][a-zA-Z_0-9]*\b/g, (name) => {
+        if (["x", "floor", "ceil", "min", "max"].includes(name)) return name;
+        if (!Number.isFinite(values[name])) { complete = false; return name; }
+        let displayed = String(values[name]);
+        if (forDisplay && name === "draft_layers_if_enabled") displayed = `(${draftEnabled} ? ${draftLayerCount(model)} : 0)`;
+        if (forDisplay && name === "draft_indexer_layers_if_enabled") displayed = `(${draftEnabled} ? ${fields.draft_indexer_layers ?? draftLayerCount(model)} : 0)`;
+        if (forDisplay && name === "draft_global_layers_if_enabled") displayed = `(${draftEnabled} ? ${fields.draft_full_attention_layers ?? 0} : 0)`;
+        if (forDisplay && name === "draft_swa_layers_if_enabled") displayed = `(${draftEnabled} ? ${fields.draft_sliding_attention_layers ?? 0} : 0)`;
+        if (forDisplay && name === "swa_layers" && isDeepSeekV41(model)) displayed = `(${typeof input.includeSwaCache === "undefined" ? toBoolean(fields.default_include_swa_cache) : toBoolean(input.includeSwaCache)} ? ${fields.num_hidden_layers} + ${component("Draft layers included")} : 0)`;
+        if (forDisplay) bindings[name] = displayed;
+        return displayed;
+      });
+      const substitution = substitute(true);
+      const numeric = substitute(false).replace(/\bx\b/g, "*");
+      let value = complete ? formulaArithmetic(numeric) : undefined;
+      if (row.name === "total_bytes" && Number.isFinite(value) && Math.abs(value - result.totalBytes) > 0.000001) {
+        return { ...row, value: result.totalBytes };
+      }
+      if (row.name === "total_bytes") value = result.totalBytes;
+      if (Number.isFinite(value)) values[row.name] = value;
+      const terms = complete && Object.keys(bindings).length
+        ? (expression.match(/[a-zA-Z_][a-zA-Z_0-9]*|\d+(?:\.\d+)?|[^\w\s]/g) || []).map((token) => ({ label: token, value: bindings[token] ?? token, variable: Object.hasOwn(bindings, token) }))
+        : undefined;
+      return { ...row, substitution: substitution !== expression ? substitution : undefined, value, terms };
+    });
+    if (isDeepSeekV4(model)) {
+      const activeRatios = fields.compress_ratios.slice(0, fields.num_hidden_layers + draft);
+      const counts = new Map();
+      activeRatios.filter((ratio) => ratio > 0).forEach((ratio) => counts.set(ratio, (counts.get(ratio) || 0) + 1));
+      const terms = [];
+      [...counts].sort(([a], [b]) => a - b).forEach(([ratio, count], index) => {
+        if (index) terms.push(symbol("+"));
+        terms.push(variable(`ratio_${ratio}_layers`, count), symbol("x"), symbol("floor"), symbol("("),
+          variable("tokens", result.tokens), symbol("/"), variable("compress_ratio", ratio), symbol(")"));
+      });
+      if (terms.length) terms.unshift(symbol("("));
+      if (terms.length) terms.push(symbol(")"), symbol("x"), variable("head_dim", fields.head_dim));
+      else terms.push(symbol("0"));
+      const elements = component("Compressed elements");
+      const position = trace.findIndex((row) => row.name === "compressed_kv_bytes");
+      trace.splice(position, 0, {
+        name: "compressed_elements",
+        description: "Compressed KV elements per sequence, grouped by compression ratio; ratio 0 layers do not contribute.",
+        terms,
+        value: elements,
+      });
+    }
+    if (Number.isFinite(fields.full_attention_layers) && Number.isFinite(fields.kda_layers) && fields.full_attention_layers + fields.kda_layers === fields.num_hidden_layers) {
+      trace.unshift({ name: "main_layers", expression: "full_attention_layers + kda_layers", substitution: `${fields.full_attention_layers} + ${fields.kda_layers}`, value: fields.num_hidden_layers, terms: [
+        { label: "full_attention_layers", value: String(fields.full_attention_layers), variable: true },
+        { label: "+", value: "+", variable: false },
+        { label: "kda_layers", value: String(fields.kda_layers), variable: true },
+      ] });
+    }
+    appendFormulaDependencies(model, input, result, trace, values, variable, symbol);
+    const aliases = isDeepSeekV4(model)
+      ? { ...Object.fromEntries(["sliding_kv_bytes", "compressed_kv_bytes", "kv_bytes", "indexer_scale_bytes"].map((name) => [name, `${name}_per_sequence`])), indexer_bytes: "indexer_payload_bytes_per_sequence", ratio4_layers: "ratio_4_layers" }
+      : model.formula === "kimi_kda_dsa_mla_hybrid"
+        ? { full_attention_layers: "dsa_mla_layers", active_full_attention_layers: "active_dsa_mla_layers", indexer_bytes: "indexer_payload_bytes" }
+        : model.formula === "minimax_msa" ? { kv_bytes: "kv_payload_bytes", indexer_bytes: "indexer_payload_bytes" } : {};
+    for (const row of trace) {
+      if (aliases[row.name]) row.displayName = aliases[row.name];
+      if (row.terms) row.terms = row.terms.map((term) => aliases[term.label] ? { ...term, label: aliases[term.label] } : term);
+    }
+    appendMetricFormulas(model, result, trace, variable, symbol);
+    return trace;
+  }
+
+  function renderFormulaRows(root, result, model, input, options) {
     const list = root.querySelector("[data-kv-formula-rows]");
     if (!list) return;
-    const rows = Array.isArray(elementPlan.formulaRows) && elementPlan.formulaRows.length
-      ? elementPlan.formulaRows
-      : [{ name: "total_bytes", expression: elementPlan.formulaText }];
+    const rows = formulaTrace(model, input, result, options);
 
     list.innerHTML = "";
     rows.forEach((row) => {
@@ -2198,18 +3162,55 @@
 
       const name = document.createElement("span");
       name.className = "kv-formula-name";
-      name.textContent = row.name;
+      name.textContent = row.displayName || row.name;
       appendHelp(name, row.description);
 
-      const equals = document.createElement("span");
-      equals.className = "kv-formula-equals";
-      equals.textContent = "=";
-
-      const expression = document.createElement("span");
-      expression.className = "kv-formula-expression";
-      expression.textContent = row.expression;
-
-      item.append(name, equals, expression);
+      item.appendChild(name);
+      if (row.showExpression) {
+        const expression = document.createElement("span");
+        expression.className = "kv-formula-expression";
+        expression.textContent = `= ${row.expression}`;
+        item.appendChild(expression);
+      }
+      if (row.terms) {
+        const equation = document.createElement("div");
+        equation.className = "kv-formula-terms";
+        row.terms.forEach((term) => {
+          const cell = document.createElement("span");
+          cell.className = term.variable ? "kv-formula-term" : "kv-formula-operator";
+          const label = document.createElement("span");
+          label.textContent = term.label;
+          const value = document.createElement("span");
+          value.textContent = term.value;
+          cell.append(label, value);
+          equation.appendChild(cell);
+        });
+        item.appendChild(equation);
+      } else {
+        const expression = document.createElement("span");
+        expression.className = "kv-formula-expression";
+        expression.textContent = `= ${row.expression}`;
+        item.appendChild(expression);
+      }
+      if (!row.terms && row.substitution) {
+        const substitution = document.createElement("span");
+        substitution.className = "kv-formula-substitution";
+        substitution.textContent = `= ${row.substitution}`;
+        item.appendChild(substitution);
+      }
+      if (row.textValue !== undefined) {
+        const value = document.createElement("strong");
+        value.className = "kv-formula-result";
+        value.textContent = `= ${row.textValue}`;
+        item.appendChild(value);
+      } else if (Number.isFinite(row.value)) {
+        const value = document.createElement("strong");
+        value.className = "kv-formula-result";
+        value.textContent = row.unit && row.unit !== "bytes"
+          ? `= ${formatNumber(row.value, RESULT_DIGITS)} ${row.unit}`
+          : `= ${formatNumber(row.value, Number.isInteger(row.value) ? 0 : (row.unit === "bytes" ? RESULT_DIGITS : 2))}${row.unit === "bytes" || row.name.endsWith("_bytes") ? ` bytes (${formatBytes(row.value)})` : ""}`;
+        item.appendChild(value);
+      }
       list.appendChild(item);
     });
   }
@@ -2284,11 +3285,20 @@
     const preferredValue = defaultPrecisionId(model, {
       precisionOptions: data.precision_options,
     });
+    const available = rawPrecisionOptions(data).filter((option) =>
+      precisionOptionAllowed(model, "kv_precision_ids", {
+        ...option,
+        modelOnly: option.model_only === true,
+      }),
+    );
     const options = fixedPrecisionId
-      ? rawPrecisionOptions(data)
+      ? available
         .filter((option) => option.id === fixedPrecisionId)
         .map((option) => ({ ...option, label: model.fields.kv_precision_label || option.label }))
-      : rawPrecisionOptions(data);
+      : available.map((option) => ({
+          ...option,
+          label: model.fields[`kv_precision_label_${option.id}`] || option.label,
+        }));
     populateSelect(select, options, preferredValue);
     if (select) select.disabled = Boolean(fixedPrecisionId);
   }
@@ -2302,11 +3312,20 @@
     if (select) select.disabled = false;
     if (showIndexerPrecision) {
       const fixedPrecisionId = fixedIndexerPrecisionId(model);
+      const available = rawIndexerPrecisionOptions(data).filter((option) =>
+        precisionOptionAllowed(model, "indexer_precision_ids", {
+          ...option,
+          modelOnly: option.model_only === true,
+        }),
+      );
       const options = fixedPrecisionId
-        ? rawIndexerPrecisionOptions(data)
+        ? available
           .filter((option) => option.id === fixedPrecisionId)
           .map((option) => ({ ...option, label: model.fields.indexer_precision_label || option.label }))
-        : rawIndexerPrecisionOptions(data);
+        : available.map((option) => ({
+            ...option,
+            label: model.fields[`indexer_precision_label_${option.id}`] || option.label,
+          }));
       const preferredValue = defaultIndexerPrecisionId(
         model,
         { indexerPrecisionOptions: data.indexer_precision_options, precisionOptions: data.precision_options },
@@ -2368,7 +3387,22 @@
     const control = root.querySelector("[data-kv-linear-state-control]");
     const checkbox = root.querySelector("[data-kv-input='includeLinearAttentionState']");
     const showLinearStateControl = hasLinearAttentionState(model);
+    const isQwenFlashNext = model && model.formula === "qwen4_exp_hybrid";
     if (control) control.hidden = !showLinearStateControl;
+    const label = control && control.querySelector("[data-kv-linear-state-label]");
+    if (label) {
+      label.textContent = isQwenFlashNext
+        ? "Include prefix continuation snapshot"
+        : "Include linear-attention state";
+    }
+    const help = control && control.querySelector("[data-kv-inline-help]");
+    if (help) {
+      const description = isQwenFlashNext
+        ? "Adds one logical prefix snapshot containing GDN recurrent/conv state, all four pending-key slots per QSA layer, and PLE convolution plus prior-token history. Empty QSA ring slots are counted. The PLE embedding table is model weights and is excluded; this snapshot layout is not SGLang's preallocated runtime-pool size."
+        : "Adds model-specific linear-attention recurrent and convolution state. The checkpoint policy controls how many retained states are counted.";
+      help.setAttribute("data-kv-inline-help", description);
+      updateInlineHelp(help, description);
+    }
     if (checkbox) {
       checkbox.checked = Boolean(
         showLinearStateControl &&
@@ -2407,6 +3441,18 @@
   }
 
   function stateCheckpointProfile(root, model) {
+    if (model && model.formula === "qwen4_exp_hybrid") {
+      return {
+        label: "GDN + QSA + PLE",
+        enabled: checkboxValue(
+          root.querySelector("[data-kv-input='includeLinearAttentionState']"),
+        ),
+        promptHelp:
+          "Assumes one logical prefix snapshot containing GDN state, all four QSA pending-key slots per layer, and PLE history, even if ring slots are empty.",
+        intervalHelp:
+          "Stores that complete logical continuation snapshot every N tokens. The final partial interval counts as one checkpoint.",
+      };
+    }
     if (hasKdaCheckpointInterval(model)) {
       return {
         label: "KDA",
@@ -2528,7 +3574,7 @@
   }
 
   function initialize(root, data) {
-    const models = data.models || [];
+    const models = expandModelCatalog(data.models || [], data.model_catalog || []);
     if (!root || !models.length) return;
     setCheckboxHelp(root);
 
@@ -2593,9 +3639,7 @@
         )
           ? inputValue(inputs.stateCheckpointInterval, "")
           : Infinity;
-        const result = calculate(
-          model,
-          {
+        const calculationInput = {
             tokens: inputValue(inputs.tokens, model.default_tokens || 4096),
             sequences: inputValue(inputs.sequences, 1),
             precision: inputValue(inputs.precision, undefined),
@@ -2615,20 +3659,20 @@
             sconvCheckpointPolicy: stateCheckpointPolicy,
             sconvCheckpointInterval: stateCheckpointInterval,
             tensorParallel: 1,
-          },
-          {
+          };
+        const calculationOptions = {
             precisionOptions: data.precision_options,
             indexerPrecisionOptions: data.indexer_precision_options,
             recurrentStatePrecisionOptions:
               data.recurrent_state_precision_options,
-          },
-        );
+          };
+        const result = calculate(model, calculationInput, calculationOptions);
 
         setText(root, "[data-kv-output='totalGiB']", `${formatNumber(result.totalGiB, RESULT_DIGITS)} GiB`);
         setText(root, "[data-kv-output='totalGB']", `= ${formatNumber(result.totalGB, RESULT_DIGITS)} GB`);
         renderMetrics(root, result);
         setText(root, "[data-kv-output='formulaLabel']", result.elementPlan.formulaLabel);
-        renderFormulaRows(root, result.elementPlan);
+        renderFormulaRows(root, result, model, calculationInput, calculationOptions);
         setText(root, "[data-kv-output='cacheNote']", result.elementPlan.note);
         setText(root, "[data-kv-output='source']", model.source_url);
         const source = root.querySelector("[data-kv-source-link]");
@@ -2692,9 +3736,13 @@
     BYTES_PER_GIB,
     calculate,
     calculateElementsPerSequence,
+    formulaTrace,
+    metricsForResult,
+    expandModelCatalog,
     formatBytes,
     modelFamily,
     modelsForFamily,
+    precisionOptionIdsForModel,
     mount,
   };
 });

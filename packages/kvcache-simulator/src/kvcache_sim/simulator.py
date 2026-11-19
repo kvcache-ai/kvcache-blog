@@ -118,7 +118,10 @@ def run_sweep(
         include_linear_attention_state=False,
         models_data=data,
     )
-    bytes_per_block = float(cache_size.bytes_per_block or cache_size.bytes_per_token * trace.block_size)
+    capacity_bytes_per_token = cache_size.hit_rate_bytes_per_token
+    if capacity_bytes_per_token is None:
+        capacity_bytes_per_token = cache_size.bytes_per_token
+    bytes_per_block = float(capacity_bytes_per_token * trace.block_size)
     selected_budgets = sorted(set(budgets_gib or DEFAULT_BUDGETS_GIB))
     selected_policies = policies or DEFAULT_POLICIES
     for policy in selected_policies:
@@ -201,8 +204,13 @@ def run_sweep(
             "indexerPrecisionLabel": cache_size.indexer_precision_label,
             "includeDraftKvCache": include_draft_kv_cache,
             "blockSize": trace.block_size,
-            "bytesPerToken": cache_size.bytes_per_token,
+            "bytesPerToken": capacity_bytes_per_token,
             "bytesPerBlock": bytes_per_block,
+            "bytesPerTokenBasis": (
+                "reusable MLA prefix cache; excludes indexer cache and KDA state"
+                if cache_size.hit_rate_bytes_per_token is not None
+                else "total cache payload"
+            ),
             "estimateTokens": accounting_tokens,
             "requestCount": trace.request_count,
             "eventCount": len(trace.ids),

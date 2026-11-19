@@ -1,0 +1,34 @@
+[
+  {
+    "official_model_id": "Qwen/Qwen-AgentWorld-35B-A3B",
+    "preset_id": "qwen3.5-35b-a3b",
+    "source_url": "https://huggingface.co/Qwen/Qwen-AgentWorld-35B-A3B/raw/60d2b0434a53d2e62a7c00a489586815d94ebffb/config.json",
+    "cache_note": "Estimates the Qwen text-decoder cache; vision-side state is outside this profile."
+  },
+  {
+    "official_model_id": "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
+    "preset_id": "deepseek-v4-flash",
+    "source_url": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-Vision-Exp/raw/6821d6ad3681a4b137b066b76094fa82ebd0a380/config.json",
+    "cache_note": "Vision-Exp model; estimates decoder cache only. Include all decoder positions, including image positions, in tokens; vision-encoder state is excluded. The explicit SGLang packed FP8 KV option uses 584 logical payload bytes per entry (448 FP8 + 128 BF16 RoPE + 8 scale/pad); allocator page padding is excluded. Indexer FP4 uses one scale byte per 32 dimensions and FP8 uses four scale bytes per 128 dimensions.",
+    "fields": {
+      "default_precision_id": "fp8_int8",
+      "kv_precision_ids": ["bf16_fp16", "fp8_int8", "fp8_sglang_packed"],
+      "kv_entry_bytes_fp8_sglang_packed": 584,
+      "kv_precision_label_fp8_sglang_packed": "FP8 SGLang packed KV (584 B / entry)",
+      "default_indexer_precision_id": "fp4_int4_g32_s1",
+      "indexer_precision_ids": ["bf16_fp16", "fp4_int4_g32_s1", "fp8_int8_g128_s4"]
+    }
+  },
+  {
+    "official_model_id": "Qwen/Qwen-Image-2.1-PE-I2I",
+    "preset_id": "qwen-image-2.1-pe-decoder",
+    "source_url": "https://huggingface.co/Qwen/Qwen-Image-2.1-PE-I2I/raw/72927bc08afc99b7888ceb7d7d51a12db3700bbd/config.json"
+  },
+  {
+    "official_model_id": "Qwen/Qwen-Drive-1.0-4B",
+    "preset_id": "qwen3.5-4b",
+    "source_url": "https://huggingface.co/Qwen/Qwen-Drive-1.0-4B/raw/28484089a7cc8c335cf5089fb0745cf7c49b6eaa/config.json",
+    "max_position_embeddings": 32768,
+    "cache_note": "Counts only the Qwen3.5-VL text decoder with its verified 32768-token context. Excludes vision-encoder state, the separate trajectory-planning expert/cache, and perception modules."
+  }
+]

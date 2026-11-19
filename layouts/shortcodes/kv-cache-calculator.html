@@ -1,5 +1,6 @@
 {{ $data := site.Data.kv_cache_calculator.models }}
-{{ $payload := dict "models" $data.models "precision_options" $data.precision_options "indexer_precision_options" $data.indexer_precision_options "recurrent_state_precision_options" $data.recurrent_state_precision_options "metadata" $data.metadata }}
+{{ $modelCatalog := site.Data.kv_cache_calculator.model_catalog }}
+{{ $payload := dict "models" $data.models "model_catalog" $modelCatalog "precision_options" $data.precision_options "indexer_precision_options" $data.indexer_precision_options "recurrent_state_precision_options" $data.recurrent_state_precision_options "metadata" $data.metadata }}
 {{ $script := resources.Get "js/kv-cache-calculator.js" | minify | fingerprint }}
 
 <section id="kv-cache-calculator" class="kv-calculator-shell" data-state="loading">
@@ -47,7 +48,7 @@
 
       <label class="kv-checkbox-row" data-kv-linear-state-control hidden>
         <input data-kv-input="includeLinearAttentionState" type="checkbox">
-        <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. The checkpoint policy controls how many retained states are counted.">Include linear-attention state</span>
+        <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. The checkpoint policy controls how many retained states are counted."><span data-kv-linear-state-label>Include linear-attention state</span></span>
       </label>
 
       <label for="kv-recurrent-state-precision" data-kv-recurrent-state-precision-control hidden>
@@ -115,7 +116,13 @@
         <p data-kv-output="cacheNote"></p>
       </div>
 
-      <div class="kv-breakdown" data-kv-components></div>
+      <details class="kv-extra-parameters">
+        <summary>Additional model parameters</summary>
+        <table class="kv-breakdown">
+          <thead><tr><th scope="col">Parameter</th><th scope="col">Value</th></tr></thead>
+          <tbody data-kv-components></tbody>
+        </table>
+      </details>
 
       <a class="kv-source-link" data-kv-source-link href="#" rel="noopener" target="_blank">
         Source: <span data-kv-output="source">--</span>
@@ -430,8 +437,8 @@
 
   .kv-formula-row {
     display: grid;
-    grid-template-columns: minmax(7.5rem, max-content) 1rem minmax(0, 1fr);
-    gap: 0.55rem;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.25rem;
     align-items: start;
     padding: 0.7rem;
     border: 1px solid #dbeafe;
@@ -441,7 +448,9 @@
 
   .kv-formula-name,
   .kv-formula-equals,
-  .kv-formula-expression {
+  .kv-formula-expression,
+  .kv-formula-substitution,
+  .kv-formula-result {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-size: 0.82rem;
     line-height: 1.55;
@@ -465,6 +474,61 @@
     overflow-wrap: anywhere;
   }
 
+  .kv-formula-substitution {
+    color: #475569;
+    overflow-wrap: anywhere;
+  }
+
+  .kv-formula-terms {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 0.25rem;
+    margin: 0.25rem 0;
+    font: 0.8rem/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+
+  .kv-formula-term,
+  .kv-formula-operator {
+    display: grid;
+    grid-template-rows: 1fr auto;
+    gap: 0.2rem;
+    padding: 0.25rem 0.45rem;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .kv-formula-term {
+    border: 1px solid #cbdff1;
+    border-radius: 5px;
+    background: #fff;
+    color: #334155;
+  }
+
+  .kv-formula-term span:last-child {
+    border-top: 1px solid #e2e8f0;
+    padding-top: 0.2rem;
+    color: #0369a1;
+    font-weight: 700;
+  }
+
+  .kv-formula-operator {
+    color: var(--kv-muted);
+    text-align: center;
+    padding-inline: 0.05rem;
+  }
+
+  .kv-formula-result {
+    color: #0369a1;
+    overflow-wrap: anywhere;
+  }
+
+  .kv-extra-parameters summary {
+    color: var(--kv-muted);
+    cursor: pointer;
+    font-weight: 650;
+  }
+
   .kv-formula-panel p {
     margin: 0;
     color: var(--kv-muted);
@@ -473,24 +537,54 @@
   }
 
   .kv-breakdown {
-    display: grid;
-    gap: 0.45rem;
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    margin-top: 0.7rem;
+    font-size: 0.85rem;
   }
 
-  .kv-breakdown-row {
-    display: flex;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 0.62rem 0;
-    border-bottom: 1px solid #e2e8f0;
+  .kv-breakdown th,
+  .kv-breakdown td {
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--kv-line);
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+
+  .kv-breakdown thead th {
+    background: #eaf3fb;
+    color: #075985;
+    font-weight: 700;
+  }
+
+  .kv-breakdown tbody th {
+    width: 45%;
     color: var(--kv-muted);
-    font-size: 0.9rem;
+    font-weight: 600;
   }
 
-  .kv-breakdown-row strong {
+  .kv-breakdown td {
     color: var(--kv-ink);
-    text-align: right;
+    font-weight: 650;
   }
+
+  .kv-breakdown .kv-model-fields {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+  }
+
+  .kv-breakdown .kv-model-fields th,
+  .kv-breakdown .kv-model-fields td {
+    padding: 0.35rem 0.45rem;
+    overflow-wrap: anywhere;
+  }
+
+  .kv-breakdown .kv-model-fields th:first-child { width: 68%; }
+  .kv-breakdown .kv-model-fields tbody th { font-weight: 500; }
 
   .kv-source-link {
     color: var(--kv-blue);
@@ -550,17 +644,6 @@
       display: none;
     }
 
-    .kv-breakdown-row {
-      align-items: start;
-      flex-direction: column;
-      gap: 0.25rem;
-    }
-
-    .kv-breakdown-row strong {
-      overflow-wrap: anywhere;
-      text-align: left;
-    }
-
     .kv-help::after {
       top: calc(100% + 0.4rem);
       right: auto;
@@ -614,6 +697,12 @@
   :is(.dark .kv-formula-expression) {
     color: #e2e8f0;
   }
+
+  :is(.dark .kv-formula-substitution) { color: #cbd5e1; }
+  :is(.dark .kv-formula-result) { color: #67e8f9; }
+  :is(.dark .kv-formula-term) { background: #020617; border-color: #334155; color: #e2e8f0; }
+  :is(.dark .kv-formula-term span:last-child) { border-color: #334155; color: #67e8f9; }
+  :is(.dark .kv-breakdown thead th) { background: #0f172a; color: #67e8f9; }
 
   :is(.dark .kv-cta-note a) {
     color: #38bdf8;
