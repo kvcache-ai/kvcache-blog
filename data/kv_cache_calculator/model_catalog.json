@@ -10,7 +10,7 @@
   },
   {
     "official_model_id": "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
-    "label": "DeepSeek V4 Flash Vision Exp",
+    "label": "DeepSeek-V4-Flash-Vision-Exp",
     "preset_id": "deepseek-v4-flash",
     "official_release_date": "2026-08-21",
     "official_release_source_url": "https://api-docs.deepseek.com/news/news260821/",

@@ -57,7 +57,7 @@ test("catalog aliases have unique official IDs, pinned sources, and valid preset
 
 test("DeepSeek Vision-Exp alias keeps ordinary FP8 default and exposes the SGLang packed row layout", () => {
   const alias = expandedModels.find((model) => model.id === "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp");
-  assert.equal(alias.label, "DeepSeek V4 Flash Vision Exp");
+  assert.equal(alias.label, "DeepSeek-V4-Flash-Vision-Exp");
   assert.equal(alias.fields.default_precision_id, "fp8_int8");
   assert.equal(alias.fields.kv_entry_bytes_fp8_sglang_packed, 584);
   assert.match(alias.cache_note, /448 FP8 \+ 128 BF16 RoPE \+ 8 scale\/pad/);

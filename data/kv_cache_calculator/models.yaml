@@ -116,7 +116,7 @@ models:
       indexer_fixed_precision_id: "fp8_int8"
       default_precision_id: "bf16_fp16"
   - id: deepseek-v4.1-flash
-    label: "DeepSeek V4.1 Flash"
+    label: "DeepSeek-V4.1-Flash"
     family: "DeepSeek"
     formula: "deepseek_v41_shared"
     default_tokens: 1024
@@ -154,7 +154,7 @@ models:
       swa_scale_bytes: 1
       default_include_swa_cache: false
   - id: deepseek-v4-pro
-    label: "DeepSeek V4 Pro (0813)"
+    label: "DeepSeek-V4-Pro-0813"
     family: "DeepSeek"
     formula: "deepseek_v4_hybrid"
     default_tokens: 1024
@@ -173,7 +173,7 @@ models:
       num_key_value_heads: 1
       compress_ratios: [128, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 0, 0, 0]
   - id: deepseek-v4-flash
-    label: "DeepSeek V4 Flash (0731)"
+    label: "DeepSeek-V4-Flash-0731"
     family: "DeepSeek"
     formula: "deepseek_v4_hybrid"
     default_tokens: 1024
@@ -192,7 +192,7 @@ models:
       num_key_value_heads: 1
       compress_ratios: [0, 0, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 0, 0, 0]
   - id: deepseek-v3.2
-    label: "DeepSeek V3.2"
+    label: "DeepSeek-V3.2"
     family: "DeepSeek"
     formula: "dsa_mla"
     default_tokens: 1024
@@ -214,7 +214,7 @@ models:
       index_topk: 2048
       num_nextn_predict_layers: 1
   - id: deepseek-v3
-    label: "DeepSeek V3"
+    label: "DeepSeek-V3"
     family: "DeepSeek"
     formula: "mla"
     default_tokens: 1024
@@ -232,7 +232,7 @@ models:
       num_key_value_heads: 128
       num_nextn_predict_layers: 1
   - id: deepseek-r1
-    label: "DeepSeek R1"
+    label: "DeepSeek-R1"
     family: "DeepSeek"
     formula: "mla"
     default_tokens: 1024
@@ -399,7 +399,7 @@ models:
       default_include_linear_attention_state: true
       default_kda_checkpoint_interval: "infinity"
   - id: kimi-k3
-    label: "Kimi K3"
+    label: "Kimi-K3"
     family: "Kimi"
     formula: "kimi_kda_mla_hybrid"
     default_tokens: 1024
@@ -493,7 +493,7 @@ models:
       draft_full_attention_layers: 2
       draft_sliding_attention_layers: 6
   - id: kimi-k2.5
-    label: "Kimi K2.5"
+    label: "Kimi-K2.5"
     family: "Kimi"
     formula: "mla"
     default_tokens: 1024
@@ -510,7 +510,7 @@ models:
       v_head_dim: 128
       num_key_value_heads: 64
   - id: kimi-k2.6
-    label: "Kimi K2.6"
+    label: "Kimi-K2.6"
     family: "Kimi"
     formula: "mla"
     default_tokens: 1024
@@ -527,7 +527,7 @@ models:
       v_head_dim: 128
       num_key_value_heads: 64
   - id: kimi-k2.7-code
-    label: "Kimi K2.7 Code"
+    label: "Kimi-K2.7-Code"
     family: "Kimi"
     formula: "mla"
     default_tokens: 1024
@@ -1041,7 +1041,7 @@ models:
       use_sliding_window: false
       max_window_layers: 64
   - id: llama-3.1-8b
-    label: "Llama 3.1 8B"
+    label: "Llama-3.1-8B"
     family: "Llama"
     formula: "standard_gqa"
     default_tokens: 1024
@@ -1056,7 +1056,7 @@ models:
       num_key_value_heads: 8
       head_dim: 128
   - id: llama-3.1-70b
-    label: "Llama 3.1 70B"
+    label: "Llama-3.1-70B"
     family: "Llama"
     formula: "standard_gqa"
     default_tokens: 1024
@@ -1071,7 +1071,7 @@ models:
       num_key_value_heads: 8
       head_dim: 128
   - id: llama-3.3-70b
-    label: "Llama 3.3 70B"
+    label: "Llama-3.3-70B"
     family: "Llama"
     formula: "standard_gqa"
     default_tokens: 1024
@@ -1086,7 +1086,7 @@ models:
       num_key_value_heads: 8
       head_dim: 128
   - id: gemma-4-e2b
-    label: "Gemma 4 E2B"
+    label: "Gemma-4-E2B"
     family: "Gemma"
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
@@ -1107,7 +1107,7 @@ models:
       global_head_dim: 512
       sliding_window: 512
   - id: gemma-4-e4b
-    label: "Gemma 4 E4B"
+    label: "Gemma-4-E4B"
     family: "Gemma"
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
@@ -1128,7 +1128,7 @@ models:
       global_head_dim: 512
       sliding_window: 512
   - id: gemma-4-26b-a4b
-    label: "Gemma 4 26B-A4B"
+    label: "Gemma-4-26B-A4B"
     family: "Gemma"
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
@@ -1150,7 +1150,7 @@ models:
       global_head_dim: 512
       sliding_window: 1024
   - id: gemma-4-31b
-    label: "Gemma 4 31B"
+    label: "Gemma-4-31B"
     family: "Gemma"
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
@@ -1172,7 +1172,7 @@ models:
       global_head_dim: 512
       sliding_window: 1024
   - id: cohere-command-r-v01
-    label: "Cohere Command R v01"
+    label: "Command-R-v01"
     family: "Cohere"
     formula: "standard_gqa"
     default_tokens: 1024
@@ -1189,7 +1189,7 @@ models:
       model_max_length: 131072
       config_max_position_embeddings: 8192
   - id: cohere-command-r-plus
-    label: "Cohere Command R+"
+    label: "Command-R-Plus"
     family: "Cohere"
     formula: "standard_gqa"
     default_tokens: 1024
@@ -1206,7 +1206,7 @@ models:
       model_max_length: 131072
       config_max_position_embeddings: 8192
   - id: cohere-command-r7b-12-2024
-    label: "Cohere Command R7B 12-2024"
+    label: "Command-R7B-12-2024"
     family: "Cohere"
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
@@ -1225,7 +1225,7 @@ models:
       sliding_window: 4096
       sliding_window_pattern: 4
   - id: cohere-command-a-03-2025
-    label: "Cohere Command A 03-2025"
+    label: "Command-A-03-2025"
     family: "Cohere"
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
@@ -1244,7 +1244,7 @@ models:
       sliding_window: 4096
       sliding_window_pattern: 4
   - id: cohere-command-a-plus-05-2026
-    label: "Cohere Command A Plus 05-2026"
+    label: "Command-A-Plus-05-2026"
     family: "Cohere"
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
@@ -1310,7 +1310,7 @@ models:
       sliding_window: 128
       sliding_window_size: 128
   - id: minimax-m2
-    label: "MiniMax M2"
+    label: "MiniMax-M2"
     family: "MiniMax"
     formula: "standard_gqa"
     default_tokens: 1024
@@ -1329,7 +1329,7 @@ models:
       num_mtp_modules: 3
       mtp_transformer_layers: 1
   - id: minimax-m2.1
-    label: "MiniMax M2.1"
+    label: "MiniMax-M2.1"
     family: "MiniMax"
     formula: "standard_gqa"
     default_tokens: 1024
@@ -1348,7 +1348,7 @@ models:
       num_mtp_modules: 3
       mtp_transformer_layers: 1
   - id: minimax-m2.5
-    label: "MiniMax M2.5"
+    label: "MiniMax-M2.5"
     family: "MiniMax"
     formula: "standard_gqa"
     default_tokens: 1024
@@ -1367,7 +1367,7 @@ models:
       num_mtp_modules: 3
       mtp_transformer_layers: 1
   - id: minimax-m2.7
-    label: "MiniMax M2.7"
+    label: "MiniMax-M2.7"
     family: "MiniMax"
     formula: "standard_gqa"
     default_tokens: 1024
@@ -1386,7 +1386,7 @@ models:
       num_mtp_modules: 3
       mtp_transformer_layers: 1
   - id: minimax-m3
-    label: "MiniMax M3"
+    label: "MiniMax-M3"
     family: "MiniMax"
     formula: "minimax_msa"
     default_tokens: 1024
@@ -1413,7 +1413,7 @@ models:
       num_nextn_predict_layers: 1
       disable_draft_kv_cache: true
   - id: deepseek-v4.1-flash-1017
-    label: "DeepSeek V4.1 Flash (1017)"
+    label: "DeepSeek-V4.1-Flash-1017"
     family: "DeepSeek"
     formula: "deepseek_v41_shared"
     default_tokens: 1024
@@ -1451,7 +1451,7 @@ models:
       swa_scale_bytes: 1
       default_include_swa_cache: false
   - id: kimi-k3.1-pro
-    label: "Kimi K3.1 Pro"
+    label: "Kimi-K3.1-Pro"
     family: "Kimi"
     formula: "kimi_kda_dsa_mla_hybrid"
     default_tokens: 1024
@@ -1582,7 +1582,7 @@ models:
       default_recurrent_state_precision_id: "fp32"
       default_linear_state_checkpoint_interval: "infinity"
   - id: cohere-north-mini-code-1.0
-    label: "North Mini Code 1.0"
+    label: "North-Mini-Code-1.0"
     family: "Cohere"
     hit_rate_supported: false
     formula: "mixed_full_sliding_gqa"
@@ -1611,7 +1611,7 @@ models:
       num_experts: 128
       num_experts_per_tok: 8
   - id: cohere-north-micro-vision-instruct
-    label: "North Micro Vision Instruct"
+    label: "North-Micro-Vision-Instruct"
     family: "Cohere"
     hit_rate_supported: false
     formula: "mixed_full_sliding_gqa"
@@ -1637,7 +1637,7 @@ models:
       sliding_window: 4096
       hidden_size: 2048
   - id: gemma-4-12b
-    label: "Gemma 4 12B"
+    label: "Gemma-4-12B"
     family: "Gemma"
     hit_rate_supported: false
     formula: "mixed_full_sliding_gqa"
@@ -1668,7 +1668,7 @@ models:
       attention_k_eq_v: true
       hidden_size: 3840
   - id: inkling-2-small
-    label: "Inkling 2 Small"
+    label: "Inkling-2-Small"
     family: "Inkling"
     hit_rate_supported: false
     formula: "inkling_hybrid"
@@ -1706,7 +1706,7 @@ models:
       default_sconv_checkpoint_interval: "infinity"
       disable_draft_kv_cache: true
   - id: mimo-v2.6-flash
-    label: "MiMo V2.6 Flash"
+    label: "MiMo-V2.6-Flash"
     family: "MiMo"
     hit_rate_supported: false
     formula: "mixed_full_sliding_gqa"
@@ -1740,7 +1740,7 @@ models:
       default_precision_id: "bf16_fp16"
       disable_draft_kv_cache: true
   - id: mimo-v2.6-pro
-    label: "MiMo V2.6 Pro"
+    label: "MiMo-V2.6-Pro"
     family: "MiMo"
     hit_rate_supported: false
     formula: "mixed_full_sliding_gqa"
@@ -1774,7 +1774,7 @@ models:
       default_precision_id: "bf16_fp16"
       disable_draft_kv_cache: true
   - id: mimo-v2.6-distill-qwen-9b
-    label: "MiMo V2.6 Distill Qwen 9B"
+    label: "MiMo-V2.6-Distill-Qwen-9B"
     family: "MiMo"
     hit_rate_supported: false
     formula: "qwen_linear_full_hybrid"
@@ -1810,7 +1810,7 @@ models:
       default_linear_state_checkpoint_interval: "infinity"
       disable_draft_kv_cache: true
   - id: mimo-v2.5-asr-text-decoder
-    label: "MiMo V2.5 ASR (global decoder only)"
+    label: "MiMo-V2.5-ASR (Global Decoder Only)"
     family: "MiMo"
     hit_rate_supported: false
     formula: "standard_gqa"
@@ -1844,7 +1844,7 @@ models:
       default_precision_id: "bf16_fp16"
       decoder_scope: "global Qwen2 decoder only"
   - id: minimax-m3.1-flash
-    label: "MiniMax M3.1 Flash"
+    label: "MiniMax-M3.1-Flash"
     family: "MiniMax"
     hit_rate_supported: false
     formula: "minimax_msa"
@@ -1880,7 +1880,7 @@ models:
       kv_precision_ids: ["bf16_fp16", "fp8_int8", "nvfp4_g16_s1"]
       disable_draft_kv_cache: true
   - id: minimax-h3-image-pe
-    label: "MiniMax H3-Image-PE Decoder"
+    label: "MiniMax-H3-Image-PE (Decoder)"
     family: "MiniMax"
     hit_rate_supported: false
     formula: "qwen_linear_full_hybrid"
