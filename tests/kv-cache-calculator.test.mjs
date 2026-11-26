@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { loadModelsData, selectModels } from "../scripts/lib/kv-cache-lab-traces.mjs";
 
 const require = createRequire(import.meta.url);
-const { calculate, calculateElementsPerSequence, formatBytes, modelFamily, modelsForFamily, precisionOptionIdsForModel } = require("../assets/js/kv-cache-calculator.js");
+const { calculate, calculateElementsPerSequence, formatBytes, modelFamily, modelsForFamily, precisionOptionIdsForModel, validateCalculatorInputs } = require("../assets/js/kv-cache-calculator.js");
 
 const bf16 = { precision: "bf16_fp16", indexerPrecision: "bf16_fp16", sequences: 1, tensorParallel: 1 };
 
@@ -20,6 +20,29 @@ function curatedModel(id) {
   assert.ok(model, `Missing curated model: ${id}`);
   return model;
 }
+
+test("calculator form rejects invalid quantities and fixed checkpoint intervals", () => {
+  const model = curatedModel("glm-5.3-flash");
+  const baseline = { tokens: "32768", sequences: "1", fixedInterval: false, stateCheckpointInterval: "" };
+  assert.deepEqual(validateCalculatorInputs(model, baseline).errors, {});
+  for (const field of ["tokens", "sequences"]) {
+    for (const value of ["", "0", "-1", "1.5", "Infinity", "9007199254740992"]) {
+      assert.ok(validateCalculatorInputs(model, { ...baseline, [field]: value }).errors[field], `${field}=${value}`);
+    }
+  }
+  for (const value of ["", "0", "-1", "1.5", "Infinity"]) {
+    assert.ok(validateCalculatorInputs(model, { ...baseline, fixedInterval: true, stateCheckpointInterval: value }).errors.stateCheckpointInterval);
+  }
+  assert.deepEqual(validateCalculatorInputs(model, { ...baseline, fixedInterval: true, stateCheckpointInterval: "10240" }).errors, {});
+});
+
+test("calculator form warns for estimates beyond the selected model's context limit", () => {
+  const model = curatedModel("glm-5.3-flash");
+  const input = { tokens: String(model.max_position_embeddings), sequences: "1" };
+  assert.deepEqual(validateCalculatorInputs(model, input), { errors: {}, contextLimit: 1048576, contextExceeded: false });
+  assert.deepEqual(validateCalculatorInputs(model, { ...input, tokens: "1048577" }), { errors: {}, contextLimit: 1048576, contextExceeded: true });
+  assert.equal(validateCalculatorInputs(curatedModel("mimo-v2.5-asr-text-decoder"), input).contextLimit, 8192);
+});
 
 test("V4.1 official packed layout includes scales and defaults to global cache only", () => {
   const model = curatedModel("deepseek-v4.1-flash");
@@ -616,7 +639,7 @@ test("Kimi K3.1 Pro selects packed MLA rows by default and counts independent in
   assert.equal(model.fields.default_precision_id, "fp8_sglang_packed");
   assert.equal(model.fields.kv_entry_bytes_fp8_sglang_packed, 656);
   assert.equal(model.fields.default_indexer_precision_id, "fp8_int8_g128_s4");
-  assert.deepEqual(model.fields.kv_precision_ids, ["bf16_fp16", "fp8_int8", "fp8_sglang_packed"]);
+  assert.deepEqual(model.fields.kv_precision_ids, ["fp8_int8", "fp8_sglang_packed"]);
   assert.deepEqual(model.fields.indexer_precision_ids, ["bf16_fp16", "fp8_int8_g128_s4", "fp4_int4_g32_s1"]);
   assert.equal(model.fields.default_include_linear_attention_state, true);
 
@@ -630,7 +653,7 @@ test("Kimi K3.1 Pro selects packed MLA rows by default and counts independent in
   for (const [precision, indexerPrecision, kvWidth, indexerWidth] of [
     ["fp8_sglang_packed", "fp8_int8_g128_s4", 656, 132],
     ["fp8_int8", "fp4_int4_g32_s1", 576, 68],
-    ["bf16_fp16", "bf16_fp16", 1152, 256],
+    ["fp8_int8", "bf16_fp16", 576, 256],
   ]) {
     const result = calculate(model, {
       tokens: 8,
@@ -693,13 +716,14 @@ test("Kimi K3.1 Pro selects packed MLA rows by default and counts independent in
     assert.equal(legacyIndexer.indexerBytes, currentIndexer.indexerBytes);
     assert.equal(legacyIndexer.indexerPrecisionLabel, currentIndexer.indexerPrecisionLabel);
   }
-  const theoreticalBf16 = calculate(model, {
+  const unsupportedBf16 = calculate(model, {
     tokens: 1,
     precision: "bf16_fp16",
     indexerPrecision: "bf16_fp16",
     includeLinearAttentionState: false,
   });
-  assert.match(theoreticalBf16.precisionLabel, /unsupported by SGLang CUDA/);
+  assert.equal(unsupportedBf16.precisionLabel, "FP8 SGLang packed MLA (656 B / row)");
+  assert.equal(unsupportedBf16.kvBytes, 24 * 656);
   assert.match(model.cache_note, /allocator page padding is excluded/);
   const unsupportedFallback = calculate(model, {
     tokens: 1024,
@@ -724,6 +748,9 @@ test("packed and grouped formats are exposed only to models with a matching layo
   const glm = curatedModel("glm-5.3-flash");
 
   assert.ok(precisionOptionIdsForModel(deepseek, precisionOptions, "kv").includes("fp8_sglang_packed"));
+  for (const model of [deepseek, curatedModel("deepseek-v4-flash")]) {
+    assert.deepEqual(precisionOptionIdsForModel(model, precisionOptions, "kv"), ["bf16_fp16", "fp8_int8", "fp8_sglang_packed"]);
+  }
   assert.ok(precisionOptionIdsForModel(deepseek, undefined, "kv").includes("fp8_sglang_packed"));
   assert.ok(!precisionOptionIdsForModel(deepseek, precisionOptions, "indexer").includes("fp8_sglang_packed"));
   assert.ok(!precisionOptionIdsForModel(deepseek, undefined, "indexer").includes("fp8_sglang_packed"));
@@ -734,6 +761,7 @@ test("packed and grouped formats are exposed only to models with a matching layo
     ["fp4_int4_g32_s1", "fp8_int8_g128_s4"].sort(),
   );
   assert.ok(precisionOptionIdsForModel(kimi, precisionOptions, "kv").includes("fp8_sglang_packed"));
+  assert.ok(!precisionOptionIdsForModel(kimi, precisionOptions, "kv").includes("bf16_fp16"));
   assert.ok(!precisionOptionIdsForModel(kimi, precisionOptions, "kv").includes("nvfp4_g16_s1"));
   assert.ok(precisionOptionIdsForModel(minimax, precisionOptions, "kv").includes("nvfp4_g16_s1"));
   assert.ok(precisionOptionIdsForModel(minimax, indexerOptions, "indexer").includes("nvfp4_g16_s1"));

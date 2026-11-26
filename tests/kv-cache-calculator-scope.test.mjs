@@ -69,12 +69,17 @@ test("scope retains only the 14 accepted new profiles and four distinct aliases"
 
   const baseBlocks = modelBlocks(headYaml, "HEAD");
   const currentBlocks = modelBlocks(currentYamls[0], "current");
+  const expectedBaseBlocks = baseBlocks.map((block) =>
+    ["deepseek-v4-pro", "deepseek-v4-flash"].includes(block.id)
+      ? { ...block, raw: block.raw.replace('      head_dim: 512\n', '      head_dim: 512\n      kv_precision_ids: ["bf16_fp16", "fp8_int8", "fp8_sglang_packed"]\n') }
+      : block,
+  );
   assert.equal(baseBlocks.length, 62);
   assert.equal(currentBlocks.length, 76);
   assert.deepEqual(
     currentBlocks.slice(0, baseBlocks.length).map(({ id, raw }) => ({ id, raw })),
-    baseBlocks,
-    "all HEAD model blocks must remain byte-for-byte unchanged and in their original order",
+    expectedBaseBlocks,
+    "existing model blocks must remain unchanged except for the two DeepSeek V4 KV precision allowlists",
   );
 
   const actualAddedIds = currentBlocks.slice(baseBlocks.length).map(({ id }) => id).sort();

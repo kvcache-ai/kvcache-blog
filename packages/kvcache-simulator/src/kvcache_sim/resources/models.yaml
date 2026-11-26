@@ -160,6 +160,7 @@ models:
     fields:
       num_hidden_layers: 61
       head_dim: 512
+      kv_precision_ids: ["bf16_fp16", "fp8_int8", "fp8_sglang_packed"]
       sliding_window: 128
       index_head_dim: 128
       index_topk: 1024
@@ -176,6 +177,7 @@ models:
     fields:
       num_hidden_layers: 43
       head_dim: 512
+      kv_precision_ids: ["bf16_fp16", "fp8_int8", "fp8_sglang_packed"]
       sliding_window: 128
       index_head_dim: 128
       index_topk: 512
@@ -1331,15 +1333,14 @@ models:
     source_url: "https://huggingface.co/moonshotai/Kimi-K3.1-Pro/raw/d9e99b0792a5e93b78ea9bea62a68167e36ddd9e/config.json"
     source_retrieved_at: "2026-11-18"
     hit_rate_supported: false
-    cache_note: "TP=1 sizing basis. SGLang stores full-width MLA latent and DSA index caches per TP rank while KDA state follows head sharding; the generic per-device estimate divides the combined payload uniformly by TP and is approximate when TP > 1. K/V choices are independent from indexer precision: plain FP8 uses 576 logical bytes per MLA row, while SGLang packed FP8 uses 656 bytes (512 latent + 16 scale + 128 RoPE); allocator page padding is excluded. BF16 / FP16 is an ideal theoretical format and is unsupported by SGLang CUDA for this cache path."
+    cache_note: "TP=1 sizing basis. SGLang stores full-width MLA latent and DSA index caches per TP rank while KDA state follows head sharding; the generic per-device estimate divides the combined payload uniformly by TP and is approximate when TP > 1. K/V choices are independent from indexer precision: plain FP8 uses 576 logical bytes per MLA row, while SGLang packed FP8 uses 656 bytes (512 latent + 16 scale + 128 RoPE); allocator page padding is excluded."
     fields:
       num_hidden_layers: 93
       full_attention_layers: 24
       kda_layers: 69
       default_precision_id: "fp8_sglang_packed"
-      kv_precision_ids: ["bf16_fp16", "fp8_int8", "fp8_sglang_packed"]
+      kv_precision_ids: ["fp8_int8", "fp8_sglang_packed"]
       kv_entry_bytes_fp8_sglang_packed: 656
-      kv_precision_label_bf16_fp16: "BF16 / FP16 (theoretical; unsupported by SGLang CUDA)"
       kv_precision_label_fp8_sglang_packed: "FP8 SGLang packed MLA (656 B / row)"
       kv_lora_rank: 512
       qk_nope_head_dim: 128

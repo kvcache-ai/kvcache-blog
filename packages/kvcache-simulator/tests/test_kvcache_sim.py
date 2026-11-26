@@ -228,6 +228,8 @@ class CalculatorTests(unittest.TestCase):
         )
 
         self.assertEqual(packed.precision, "fp8_sglang_packed")
+        with self.assertRaisesRegex(ValueError, "KV precision bf16_fp16 is not supported for model kimi-k3.1-pro"):
+            calculate_cache_size(model, precision="bf16_fp16", **kwargs)
         self.assertEqual(packed.hit_rate_bytes_per_token, 24 * 656)
         self.assertEqual(packed.indexer_bytes, 24 * 1024 * 132)
         self.assertEqual(packed.total_bytes, 24 * 1024 * (656 + 132))

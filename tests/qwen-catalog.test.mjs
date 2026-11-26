@@ -41,7 +41,7 @@ test("catalog aliases have unique official IDs, pinned sources, and valid preset
     const alias = expandedModels.find((model) => model.id === entry.official_model_id);
     assert.ok(preset, `Missing preset: ${entry.preset_id}`);
     assert.ok(alias, `Missing alias: ${entry.official_model_id}`);
-    assert.equal(alias.label, entry.official_model_id);
+    assert.equal(alias.label, entry.label ?? entry.official_model_id.split("/").pop());
     assert.equal(alias.source_url, entry.source_url);
     assertPinnedConfigSource(entry);
     const expectedNote = [...new Set([preset.cache_note, entry.cache_note].filter(Boolean))].join(" ");
@@ -50,10 +50,12 @@ test("catalog aliases have unique official IDs, pinned sources, and valid preset
     assert.equal(alias.max_position_embeddings, entry.max_position_embeddings ?? preset.max_position_embeddings);
     assert.deepEqual(alias.fields, { ...(preset.fields || {}), ...(entry.fields || {}) });
   }
+  assert.ok(expandedModels.every((model) => !model.label.includes("/")), "Model labels should not contain Hub owner prefixes");
 });
 
 test("DeepSeek Vision-Exp alias keeps ordinary FP8 default and exposes the SGLang packed row layout", () => {
   const alias = expandedModels.find((model) => model.id === "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp");
+  assert.equal(alias.label, "DeepSeek V4 Flash Vision Exp");
   assert.equal(alias.fields.default_precision_id, "fp8_int8");
   assert.equal(alias.fields.kv_entry_bytes_fp8_sglang_packed, 584);
   assert.match(alias.cache_note, /448 FP8 \+ 128 BF16 RoPE \+ 8 scale\/pad/);

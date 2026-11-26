@@ -563,7 +563,7 @@ test("model sweeps filter special precision options by formula and model allowli
   assert.ok(deepseek.some((setting) => setting.indexerPrecision === "fp4_int4_g32_s1"));
   assert.ok(deepseek.some((setting) => setting.indexerPrecision === "fp8_int8_g128_s4"));
   assert.ok(deepseek.every((setting) => !["fp4_int4", "fp8_int8"].includes(setting.indexerPrecision)));
-  assert.deepEqual([...new Set(kimi.map((setting) => setting.precision))].sort(), ["bf16_fp16", "fp8_int8", "fp8_sglang_packed"].sort());
+  assert.deepEqual([...new Set(kimi.map((setting) => setting.precision))].sort(), ["fp8_int8", "fp8_sglang_packed"].sort());
   assert.ok(kimi.every((setting) => setting.indexerPrecision !== "nvfp4_g16_s1"));
   assert.ok(minimax.some((setting) => setting.precision === "nvfp4_g16_s1"));
   assert.ok(minimax.some((setting) => setting.indexerPrecision === "nvfp4_g16_s1"));
@@ -607,7 +607,7 @@ test("legacy CLI indexer IDs canonicalize only for DeepSeek V4 and Kimi K3.1", (
     includeDraftKvCache: false,
   });
   const kimi = allModelSettings([byId.get("kimi-k3.1-pro")], {
-    precisionOptions,
+    precisionOptions: [{ id: "fp8_int8" }],
     indexerPrecisionOptions: fp8Only,
     includeDraftKvCache: false,
   });
@@ -637,7 +637,7 @@ test("selected production families dedupe to expected KV architecture settings",
 
   assert.equal(selectedModels.length, 19);
   assert.equal(groups.length, 13);
-  assert.equal(settingCount, 87);
+  assert.equal(settingCount, 81);
   assert.ok(groupedLabels.includes("DeepSeek V3 / DeepSeek R1"));
   assert.ok(groupedLabels.includes("GLM-5 / GLM-5.1"));
   assert.ok(groupedLabels.includes("GLM-5.2"));

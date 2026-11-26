@@ -89,7 +89,7 @@
     minimax_msa: "MiniMax MSA sparse attention",
     deepseek_v4_hybrid: "DeepSeek V4 hybrid sparse attention",
     deepseek_v41_shared: "DeepSeek V4.1 CED/CSA2 shared cache",
-    kimi_kda_dsa_mla_hybrid: "Kimi KDA/DSA/MLA with indexer hybrid",
+    kimi_kda_dsa_mla_hybrid: "KDA/DSA/MLA with indexer hybrid",
   };
 
   function toPositiveNumber(value, fallback) {
@@ -99,6 +99,22 @@
 
   function toPositiveInteger(value, fallback) {
     return Math.max(1, Math.floor(toPositiveNumber(value, fallback)));
+  }
+
+  function validateCalculatorInputs(model, input) {
+    const errors = {};
+    const positiveInteger = (value) => Number.isSafeInteger(Number(value)) && Number(value) > 0;
+    if (!positiveInteger(input.tokens)) errors.tokens = "Enter a positive whole number of tokens.";
+    if (!positiveInteger(input.sequences)) errors.sequences = "Enter a positive whole number of sequences.";
+    if (input.fixedInterval && !positiveInteger(input.stateCheckpointInterval)) {
+      errors.stateCheckpointInterval = "Enter a positive whole number of tokens per checkpoint.";
+    }
+    const contextLimit = positiveInteger(model.max_position_embeddings) ? Number(model.max_position_embeddings) : null;
+    return {
+      errors,
+      contextLimit,
+      contextExceeded: !errors.tokens && contextLimit !== null && Number(input.tokens) > contextLimit,
+    };
   }
 
   function normalizePrecisionOptions(precisionOptions, fallback) {
@@ -327,12 +343,6 @@
         ? model.fields.default_linear_state_checkpoint_interval
         : undefined;
     return parseStateCheckpointInterval(value, Infinity);
-  }
-
-  function defaultStateCheckpointInterval(model) {
-    if (hasKdaCheckpointInterval(model)) return defaultKdaCheckpointInterval(model);
-    if (hasQwenCheckpointInterval(model)) return defaultQwenCheckpointInterval(model);
-    return defaultSconvCheckpointInterval(model);
   }
 
   function formatStateCheckpointInterval(value) {
@@ -2541,7 +2551,7 @@
       expanded.push({
         ...preset,
         id: entry.official_model_id,
-        label: entry.official_model_id,
+        label: entry.label ?? entry.official_model_id.split("/").pop(),
         source_url: entry.source_url,
         max_position_embeddings: entry.max_position_embeddings ?? preset.max_position_embeddings,
         fields: entry.fields ? { ...preset.fields, ...entry.fields } : preset.fields,
@@ -2559,6 +2569,38 @@
   function setText(root, selector, value) {
     const node = root.querySelector(selector);
     if (node) node.textContent = value;
+  }
+
+  function renderInputValidation(root, inputs, validation) {
+    for (const name of ["tokens", "sequences", "stateCheckpointInterval"]) {
+      const message = validation.errors[name] || "";
+      const node = root.querySelector(`[data-kv-validation='${name}']`);
+      if (node) {
+        node.textContent = message;
+        node.hidden = !message;
+      }
+      if (inputs[name]) inputs[name].setAttribute("aria-invalid", String(Boolean(message)));
+    }
+    const context = root.querySelector("[data-kv-context-limit]");
+    const limit = validation.contextLimit === null ? null : formatNumber(validation.contextLimit, 0);
+    if (context) {
+      context.textContent = limit === null ? "Model context limit not specified." : `Configured max context: ${limit} tokens.${validation.contextExceeded ? " Requested tokens exceed this limit." : ""}`;
+      context.classList.toggle("kv-field-warning", validation.contextExceeded);
+    }
+    const warning = root.querySelector("[data-kv-context-warning]");
+    if (warning) {
+      warning.textContent = validation.contextExceeded ? `Requested tokens exceed the configured ${limit}-token context limit. This is a hypothetical estimate only.` : "";
+      warning.hidden = !validation.contextExceeded;
+    }
+  }
+
+  function setResultStatus(root, state, message = "") {
+    root.dataset.state = state;
+    const status = root.querySelector("[data-kv-result-status]");
+    if (status) {
+      status.textContent = message;
+      status.hidden = !message;
+    }
   }
 
   function appendHelp(parent, description) {
@@ -2645,13 +2687,8 @@
         ]);
       });
     }
-    const includesFixedState = result.elementPlan.includesFixedState || result.cacheGroups.some(
-      (group) =>
-        (group.role === "linear_state" || group.role === "sconv_state") || 
-        group.role === "index_tail",
-    );
     metrics.push([
-      includesFixedState ? "Amortized size per token" : "Per token size",
+      "Average cache size per token",
       formatBytes(result.bytesPerToken),
     ]);
     if (Number.isFinite(result.hitRateBytesPerToken)) {
@@ -3137,11 +3174,23 @@
         )
           ? inputValue(inputs.stateCheckpointInterval, "")
           : Infinity;
+        const formInput = {
+          tokens: inputValue(inputs.tokens, ""),
+          sequences: inputValue(inputs.sequences, ""),
+          fixedInterval: stateCheckpointPolicy === STATE_CHECKPOINT_POLICY_FIXED_INTERVAL,
+          stateCheckpointInterval,
+        };
+        const validation = validateCalculatorInputs(model, formInput);
+        renderInputValidation(root, inputs, validation);
+        if (Object.keys(validation.errors).length) {
+          setResultStatus(root, "invalid", "Calculation paused. Correct the highlighted inputs to continue.");
+          return;
+        }
         const result = calculate(
           model,
           {
-            tokens: inputValue(inputs.tokens, model.default_tokens || 4096),
-            sequences: inputValue(inputs.sequences, 1),
+            tokens: formInput.tokens,
+            sequences: formInput.sequences,
             precision: inputValue(inputs.precision, undefined),
             indexerPrecision: inputValue(inputs.indexerPrecision, undefined),
             recurrentStatePrecision: inputValue(
@@ -3178,10 +3227,9 @@
         const source = root.querySelector("[data-kv-source-link]");
         if (source) source.href = model.source_url;
         renderComponents(root, result);
-        root.dataset.state = "ready";
+        setResultStatus(root, "ready");
       } catch (error) {
-        root.dataset.state = "error";
-        setText(root, "[data-kv-output='cacheNote']", error.message);
+        setResultStatus(root, "error", `Calculation failed: ${error.message}`);
       }
     }
 
@@ -3211,16 +3259,6 @@
       }
       update();
     });
-    inputs.stateCheckpointInterval.addEventListener("blur", () => {
-      const interval = parseStateCheckpointInterval(
-        inputs.stateCheckpointInterval.value,
-        defaultStateCheckpointInterval(selectedModel()),
-      );
-      inputs.stateCheckpointInterval.value = Number.isFinite(interval)
-        ? String(interval)
-        : "";
-      update();
-    });
     addInputListeners(inputs, update);
 
     syncModelDefaults();
@@ -3241,6 +3279,7 @@
     modelFamily,
     modelsForFamily,
     precisionOptionIdsForModel,
+    validateCalculatorInputs,
     mount,
   };
 });

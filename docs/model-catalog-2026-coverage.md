@@ -6,7 +6,7 @@
 
 ## 决策口径
 
-- 上游基线中已有的 canonical preset 保持原样，不作为本轮新增；相关 after-cutoff 型号单列为“upstream 已支持”。
+- 上游基线中已有的 canonical preset 不作为本轮新增；相关 after-cutoff 型号单列为“upstream 已支持”。DeepSeek V4 Pro (0813) 和 V4 Flash (0731) 仅收紧 KV precision 选项，去掉无对应普通 FP4 KV layout 的通用选项，保留 BF16、普通 FP8 和 packed FP8（[SGLang](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/arg_groups/overrides.py)、[vLLM](https://github.com/vllm-project/vllm/blob/main/vllm/models/deepseek_v4/attention.py)）。
 - canonical preset 表按项目内部 `id` 核算；exact alias 表按模型选择器的官方 Hugging Face ID 核算。alias 的 `skip` 表示不额外保留一条独立映射；若该 exact ID 同时是上方保留 canonical 的官方 ID，则以 canonical 行为准，不重复计数。
 - 2026-06-01 后新增且可算的条目共 14 个 canonical preset 和 4 个独立 official ID alias。决策输入中另有 14 个 canonical 候选因日期不合格或日期证据不足而跳过、122 个 alias 不作为独立新增；另有 9 个 after-cutoff canonical 已存在于 upstream。
 - 主表 18/18 official HF repo 元数据公开可读；14/14 新增 canonical 的固定 revision `config.json` 均经 HTTP HEAD 验证为 200。本轮未下载完整模型权重。
