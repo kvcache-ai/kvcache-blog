@@ -77,9 +77,12 @@ test("scope retains only the 14 accepted new profiles and four distinct aliases"
   assert.equal(baseBlocks.length, 62);
   assert.equal(currentBlocks.length, 76);
   assert.deepEqual(
-    currentBlocks.slice(0, baseBlocks.length).map(({ id, raw }) => ({ id, raw })),
+    currentBlocks.slice(0, baseBlocks.length).map(({ id, raw }) => ({
+      id,
+      raw: raw.replace(/^    (?:official_release_(?:date|source_url)|weights_public_date(?:_source_url)?): .*\n/gm, ""),
+    })),
     expectedBaseBlocks,
-    "existing model blocks must remain unchanged except for the two DeepSeek V4 KV precision allowlists",
+    "existing model blocks may only add release metadata and the two DeepSeek V4 KV precision allowlists",
   );
 
   const actualAddedIds = currentBlocks.slice(baseBlocks.length).map(({ id }) => id).sort();

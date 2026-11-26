@@ -95,6 +95,8 @@ models:
     formula: "dots3_note_hybrid"
     default_tokens: 1024
     max_position_embeddings: 524288
+    weights_public_date: "2026-08-14"
+    weights_public_date_source_url: "https://huggingface.co/dots-studio/dots3-note-prev/commits/main"
     source_url: "https://huggingface.co/dots-studio/dots3-note-prev/raw/main/config.json"
     source_retrieved_at: "2026-09-03"
     hit_rate_supported: false
@@ -119,6 +121,8 @@ models:
     formula: "deepseek_v41_shared"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-09-10"
+    official_release_source_url: "https://api-docs.deepseek.com/news/news260910/"
     source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/raw/dba1be0a40aa45a94ad051997016db3960a90277/config.json"
     source_retrieved_at: "2026-09-24"
     hit_rate_supported: false
@@ -155,6 +159,8 @@ models:
     formula: "deepseek_v4_hybrid"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-08-13"
+    official_release_source_url: "https://api-docs.deepseek.com/updates/#date-2026-08-13"
     source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro-0813/raw/main/config.json"
     source_retrieved_at: "2026-09-14"
     fields:
@@ -172,6 +178,8 @@ models:
     formula: "deepseek_v4_hybrid"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-07-31"
+    official_release_source_url: "https://api-docs.deepseek.com/updates/#date-2026-07-31"
     source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/raw/main/config.json"
     source_retrieved_at: "2026-09-14"
     fields:
@@ -189,6 +197,8 @@ models:
     formula: "dsa_mla"
     default_tokens: 1024
     max_position_embeddings: 163840
+    official_release_date: "2025-12-01"
+    official_release_source_url: "https://api-docs.deepseek.com/news/news251201/"
     source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V3.2/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -209,6 +219,8 @@ models:
     formula: "mla"
     default_tokens: 1024
     max_position_embeddings: 163840
+    official_release_date: "2024-12-26"
+    official_release_source_url: "https://api-docs.deepseek.com/updates/#date-2024-12-26"
     source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V3/raw/main/config.json"
     source_retrieved_at: "2026-05-22"
     fields:
@@ -225,6 +237,8 @@ models:
     formula: "mla"
     default_tokens: 1024
     max_position_embeddings: 163840
+    official_release_date: "2025-01-20"
+    official_release_source_url: "https://api-docs.deepseek.com/news/news250120/"
     source_url: "https://huggingface.co/deepseek-ai/DeepSeek-R1/raw/main/config.json"
     source_retrieved_at: "2026-05-22"
     fields:
@@ -241,6 +255,8 @@ models:
     formula: "dsa_mla"
     default_tokens: 1024
     max_position_embeddings: 202752
+    official_release_date: "2026-02-12"
+    official_release_source_url: "https://z.ai/blog/glm-5"
     source_url: "https://huggingface.co/zai-org/GLM-5/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -261,6 +277,8 @@ models:
     formula: "dsa_mla"
     default_tokens: 1024
     max_position_embeddings: 202752
+    official_release_date: "2026-04-07"
+    official_release_source_url: "https://z.ai/blog/glm-5.1"
     source_url: "https://huggingface.co/zai-org/GLM-5.1/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -281,6 +299,8 @@ models:
     formula: "dsa_mla"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-06-16"
+    official_release_source_url: "https://z.ai/blog/glm-5.2"
     source_url: "https://huggingface.co/zai-org/GLM-5.2/raw/main/config.json"
     source_retrieved_at: "2026-06-17"
     fields:
@@ -307,6 +327,8 @@ models:
     formula: "dsa_mla"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-08-14"
+    official_release_source_url: "https://z.ai/blog/glm-5.3"
     source_url: "https://huggingface.co/zai-org/GLM-5.3/raw/main/config.json"
     source_retrieved_at: "2026-09-14"
     hit_rate_supported: false
@@ -334,6 +356,8 @@ models:
     formula: "kimi_kda_dsa_mla_hybrid"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-08-26"
+    official_release_source_url: "https://x.com/Zai_org/status/2092616204787626030"
     source_url: "https://huggingface.co/zai-org/GLM-5.3-Flash/raw/main/config.json"
     source_retrieved_at: "2026-09-06"
     fields:
@@ -380,6 +404,8 @@ models:
     formula: "kimi_kda_mla_hybrid"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-07-22"
+    official_release_source_url: "https://forum.moonshot.ai/t/kimi-k3-is-here-our-most-capable-model/480"
     source_url: "https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json"
     source_retrieved_at: "2026-07-25"
     hit_rate_supported: true
@@ -410,6 +436,8 @@ models:
     formula: "inkling_hybrid"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-07-15"
+    official_release_source_url: "https://thinkingmachines.ai/model-card/inkling/"
     source_url: "https://huggingface.co/thinkingmachines/Inkling/raw/main/config.json"
     source_retrieved_at: "2026-08-04"
     fields:
@@ -439,6 +467,8 @@ models:
     formula: "inkling_hybrid"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-07-30"
+    official_release_source_url: "https://thinkingmachines.ai/news/inkling-small/"
     source_url: "https://huggingface.co/thinkingmachines/Inkling-Small/raw/main/config.json"
     source_retrieved_at: "2026-08-04"
     fields:
@@ -468,6 +498,8 @@ models:
     formula: "mla"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-01-27"
+    official_release_source_url: "https://www.kimi.com/en/blog/kimi-k2-5"
     source_url: "https://huggingface.co/moonshotai/Kimi-K2.5/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -483,6 +515,8 @@ models:
     formula: "mla"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-04-20"
+    official_release_source_url: "https://www.kimi.com/en/blog/kimi-k2-6"
     source_url: "https://huggingface.co/moonshotai/Kimi-K2.6/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -498,6 +532,8 @@ models:
     formula: "mla"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-06-16"
+    official_release_source_url: "https://forum.moonshot.ai/t/here-comes-kimi-k2-7-code-better-coding-with-more-efficiency/441"
     source_url: "https://huggingface.co/moonshotai/Kimi-K2.7-Code/raw/main/config.json"
     source_retrieved_at: "2026-09-14"
     hit_rate_supported: false
@@ -515,6 +551,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-08-12"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8#news"
     source_url: "https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B/raw/main/config.json"
     source_retrieved_at: "2026-08-21"
     fields:
@@ -540,6 +578,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-08-14"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8#news"
     source_url: "https://huggingface.co/Qwen/Qwen3.8-27B/raw/main/config.json"
     source_retrieved_at: "2026-09-14"
     hit_rate_supported: false
@@ -566,6 +606,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-04-22"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8#news"
     source_url: "https://huggingface.co/Qwen/Qwen3.6-27B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -587,6 +629,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-04-16"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8#news"
     source_url: "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -608,6 +652,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-02-16"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8#news"
     source_url: "https://huggingface.co/Qwen/Qwen3.5-397B-A17B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -629,6 +675,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-02-24"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8#news"
     source_url: "https://huggingface.co/Qwen/Qwen3.5-122B-A10B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -650,6 +698,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-02-24"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8#news"
     source_url: "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -671,6 +721,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-02-24"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8#news"
     source_url: "https://huggingface.co/Qwen/Qwen3.5-27B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -692,6 +744,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-03-02"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8#news"
     source_url: "https://huggingface.co/Qwen/Qwen3.5-9B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -713,6 +767,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-03-02"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8#news"
     source_url: "https://huggingface.co/Qwen/Qwen3.5-4B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -734,6 +790,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-03-02"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8#news"
     source_url: "https://huggingface.co/Qwen/Qwen3.5-2B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -755,6 +813,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-03-02"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8#news"
     source_url: "https://huggingface.co/Qwen/Qwen3.5-0.8B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -776,6 +836,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 40960
+    official_release_date: "2025-04-29"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen3/"
     source_url: "https://huggingface.co/Qwen/Qwen3-235B-A22B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -789,6 +851,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 40960
+    official_release_date: "2025-04-29"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen3/"
     source_url: "https://huggingface.co/Qwen/Qwen3-32B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -802,6 +866,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 40960
+    official_release_date: "2025-04-29"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen3/"
     source_url: "https://huggingface.co/Qwen/Qwen3-30B-A3B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -815,6 +881,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 40960
+    official_release_date: "2025-04-29"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen3/"
     source_url: "https://huggingface.co/Qwen/Qwen3-14B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -828,6 +896,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 40960
+    official_release_date: "2025-04-29"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen3/"
     source_url: "https://huggingface.co/Qwen/Qwen3-8B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -841,6 +911,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 40960
+    official_release_date: "2025-04-29"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen3/"
     source_url: "https://huggingface.co/Qwen/Qwen3-4B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -854,6 +926,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 40960
+    official_release_date: "2025-04-29"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen3/"
     source_url: "https://huggingface.co/Qwen/Qwen3-1.7B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -867,6 +941,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 40960
+    official_release_date: "2025-04-29"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen3/"
     source_url: "https://huggingface.co/Qwen/Qwen3-0.6B/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -880,6 +956,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 32768
+    official_release_date: "2024-09-19"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen2.5-llm/"
     source_url: "https://huggingface.co/Qwen/Qwen2.5-72B-Instruct/raw/main/config.json"
     source_retrieved_at: "2026-05-22"
     fields:
@@ -896,6 +974,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 32768
+    official_release_date: "2024-09-19"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen2.5-llm/"
     source_url: "https://huggingface.co/Qwen/Qwen2.5-32B-Instruct/raw/main/config.json"
     source_retrieved_at: "2026-05-22"
     fields:
@@ -912,6 +992,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 32768
+    official_release_date: "2024-09-19"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen2.5-llm/"
     source_url: "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct/raw/main/config.json"
     source_retrieved_at: "2026-05-22"
     fields:
@@ -928,6 +1010,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 32768
+    official_release_date: "2024-09-19"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen2.5-llm/"
     source_url: "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/raw/main/config.json"
     source_retrieved_at: "2026-05-22"
     fields:
@@ -944,6 +1028,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 32768
+    official_release_date: "2024-11-12"
+    official_release_source_url: "https://qwenlm.github.io/blog/qwen2.5-coder-family/"
     source_url: "https://huggingface.co/Qwen/Qwen2.5-Coder-32B-Instruct/raw/main/config.json"
     source_retrieved_at: "2026-05-22"
     fields:
@@ -960,6 +1046,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 131072
+    official_release_date: "2024-07-23"
+    official_release_source_url: "https://github.com/meta-llama/llama-models#models"
     source_url: "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/raw/main/config.json"
     source_retrieved_at: "2026-05-22"
     fields:
@@ -973,6 +1061,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 131072
+    official_release_date: "2024-07-23"
+    official_release_source_url: "https://github.com/meta-llama/llama-models#models"
     source_url: "https://huggingface.co/meta-llama/Llama-3.1-70B-Instruct/raw/main/config.json"
     source_retrieved_at: "2026-05-22"
     fields:
@@ -986,6 +1076,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 131072
+    official_release_date: "2024-12-04"
+    official_release_source_url: "https://github.com/meta-llama/llama-models#models"
     source_url: "https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct/raw/main/config.json"
     source_retrieved_at: "2026-05-22"
     fields:
@@ -999,6 +1091,8 @@ models:
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
     max_position_embeddings: 131072
+    official_release_date: "2026-04-02"
+    official_release_source_url: "https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/"
     source_url: "https://huggingface.co/google/gemma-4-E2B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -1018,6 +1112,8 @@ models:
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
     max_position_embeddings: 131072
+    official_release_date: "2026-04-02"
+    official_release_source_url: "https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/"
     source_url: "https://huggingface.co/google/gemma-4-E4B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -1037,6 +1133,8 @@ models:
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-04-02"
+    official_release_source_url: "https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/"
     source_url: "https://huggingface.co/google/gemma-4-26B-A4B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -1057,6 +1155,8 @@ models:
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-04-02"
+    official_release_source_url: "https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/"
     source_url: "https://huggingface.co/google/gemma-4-31B/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -1077,6 +1177,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 131072
+    official_release_date: "2024-03-11"
+    official_release_source_url: "https://cohere.com/blog/command-r"
     source_url: "https://huggingface.co/CohereLabs/c4ai-command-r-v01/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -1092,6 +1194,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 131072
+    official_release_date: "2024-04-04"
+    official_release_source_url: "https://cohere.com/blog/command-r-plus-microsoft-azure"
     source_url: "https://huggingface.co/CohereLabs/c4ai-command-r-plus/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -1107,6 +1211,8 @@ models:
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
     max_position_embeddings: 132096
+    official_release_date: "2024-12-13"
+    official_release_source_url: "https://docs.cohere.com/changelog/command-r-7b"
     source_url: "https://huggingface.co/CohereLabs/c4ai-command-r7b-12-2024/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -1124,6 +1230,8 @@ models:
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
     max_position_embeddings: 131072
+    official_release_date: "2025-03-13"
+    official_release_source_url: "https://cohere.com/blog/command-a"
     source_url: "https://huggingface.co/CohereLabs/c4ai-command-a-03-2025/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -1141,6 +1249,8 @@ models:
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
     max_position_embeddings: 200000
+    official_release_date: "2026-05-20"
+    official_release_source_url: "https://cohere.com/blog/command-a-plus"
     source_url: "https://huggingface.co/CohereLabs/command-a-plus-05-2026-bf16/raw/main/config.json"
     source_retrieved_at: "2026-05-23"
     fields:
@@ -1157,6 +1267,8 @@ models:
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-04-23"
+    official_release_source_url: "https://mimo.mi.com/docs/en-US/updates/model"
     source_url: "https://huggingface.co/XiaomiMiMo/MiMo-V2.5/raw/main/config.json"
     source_retrieved_at: "2026-05-27"
     fields:
@@ -1179,6 +1291,8 @@ models:
     formula: "mixed_full_sliding_gqa"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-04-23"
+    official_release_source_url: "https://mimo.mi.com/docs/en-US/updates/model"
     source_url: "https://huggingface.co/XiaomiMiMo/MiMo-V2.5-Pro/raw/main/config.json"
     source_retrieved_at: "2026-05-27"
     fields:
@@ -1201,6 +1315,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 196608
+    official_release_date: "2025-10-27"
+    official_release_source_url: "https://www.minimax.io/news/minimax-m2"
     source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M2/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -1218,6 +1334,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 196608
+    official_release_date: "2025-12-23"
+    official_release_source_url: "https://www.minimax.io/news/minimax-m21"
     source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M2.1/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -1235,6 +1353,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 196608
+    official_release_date: "2026-02-13"
+    official_release_source_url: "https://github.com/MiniMax-AI/MiniMax-M2.5/blob/main/LICENSE-MODEL"
     source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M2.5/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -1252,6 +1372,8 @@ models:
     formula: "standard_gqa"
     default_tokens: 1024
     max_position_embeddings: 204800
+    official_release_date: "2026-03-18"
+    official_release_source_url: "https://www.minimax.io/blog/minimax-m27"
     source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M2.7/raw/main/config.json"
     source_retrieved_at: "2026-05-20"
     fields:
@@ -1269,6 +1391,8 @@ models:
     formula: "minimax_msa"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-06-01"
+    official_release_source_url: "https://www.minimax.io/blog/minimax-m3"
     source_url: "https://huggingface.co/MiniMaxAI/MiniMax-M3/raw/main/config.json"
     source_retrieved_at: "2026-06-23"
     fields:
@@ -1294,6 +1418,8 @@ models:
     formula: "deepseek_v41_shared"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-10-17"
+    official_release_source_url: "https://api-docs.deepseek.com/news/news261017/"
     source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/raw/08c8657f02291e11b6f6b63e0e16014f8e748518/config.json"
     source_retrieved_at: "2026-11-18"
     hit_rate_supported: false
@@ -1330,6 +1456,8 @@ models:
     formula: "kimi_kda_dsa_mla_hybrid"
     default_tokens: 1024
     max_position_embeddings: 1048576
+    official_release_date: "2026-10-23"
+    official_release_source_url: "https://forum.moonshot.ai/t/kimi-k3-1-pro-has-launched-start-exploring-now/629"
     source_url: "https://huggingface.co/moonshotai/Kimi-K3.1-Pro/raw/d9e99b0792a5e93b78ea9bea62a68167e36ddd9e/config.json"
     source_retrieved_at: "2026-11-18"
     hit_rate_supported: false
@@ -1382,6 +1510,8 @@ models:
     formula: "qwen4_exp_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-08-26"
+    official_release_source_url: "https://github.com/QwenLM/Qwen3.8-Flash-Next"
     source_url: "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/raw/812d96e10a0dd82b69d749e68693698cf6c36daa/config.json"
     source_retrieved_at: "2026-11-18"
     hit_rate_supported: false
@@ -1429,6 +1559,8 @@ models:
     formula: "qwen_linear_full_hybrid"
     default_tokens: 1024
     max_position_embeddings: 262144
+    official_release_date: "2026-09-20"
+    official_release_source_url: "https://github.com/QwenLM/Qwen-Image-2.1"
     source_url: "https://huggingface.co/Qwen/Qwen-Image-2.1-PE-T2I/raw/f3ed7985c788ad75b3ab7223e0c4c51e2a43545b/config.json"
     source_retrieved_at: "2026-11-18"
     cache_note: "Counts only the Qwen3.5-VL 9B text decoder and its linear-attention state; input tokens are decoder positions, including image tokens for I2I. The official config has mtp_num_hidden_layers=null, so this profile has no MTP layer. Vision encoding and the downstream Qwen-Image diffusion model are excluded."

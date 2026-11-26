@@ -43,6 +43,8 @@ test("catalog aliases have unique official IDs, pinned sources, and valid preset
     assert.ok(alias, `Missing alias: ${entry.official_model_id}`);
     assert.equal(alias.label, entry.label ?? entry.official_model_id.split("/").pop());
     assert.equal(alias.source_url, entry.source_url);
+    assert.equal(alias.official_release_date, entry.official_release_date);
+    assert.equal(alias.weights_public_date, entry.weights_public_date);
     assertPinnedConfigSource(entry);
     const expectedNote = [...new Set([preset.cache_note, entry.cache_note].filter(Boolean))].join(" ");
     assert.equal(alias.cache_note || "", expectedNote);
@@ -88,6 +90,13 @@ test("Qwen catalog keeps canonical models and exposes every verified Qwen reposi
     const preset = canonicalModels.find((model) => model.id === entry.preset_id);
     assert.equal(modelFamily(alias), modelFamily(preset));
   }
+  assert.deepEqual(modelsForFamily(expandedModels, "Qwen").slice(0, 5).map((model) => model.id), [
+    "qwen-image-2.1-pe-decoder",
+    "Qwen/Qwen-Image-2.1-PE-I2I",
+    "Qwen/Qwen-Drive-1.0-4B",
+    "qwen3.8-flash-next",
+    "qwen3.8-27b",
+  ]);
 });
 
 test("selecting each Qwen repository uses its mapped preset cache geometry", () => {
