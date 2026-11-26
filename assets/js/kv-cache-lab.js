@@ -2422,6 +2422,48 @@
       .filter((setting) => setting.modelId === model.id);
   }
 
+  function precisionOptionsForSettings(model, options, settings, role) {
+    const optionList = Array.isArray(options) ? options : [];
+    const settingProperty = role === "indexer" ? "indexerPrecision" : "precision";
+    const supportedIds = calculator.precisionOptionIdsForModel(model, optionList, role);
+    const artifactIds = new Set(
+      (settings || []).map((setting) => setting && setting[settingProperty]).filter(Boolean),
+    );
+    const legacyIndexerIds = role === "indexer" && model && model.formula === "deepseek_v4_hybrid"
+      ? optionList
+        .map((option) => option.id)
+        .filter((id) => ["fp4_int4", "fp8_int8"].includes(id) && artifactIds.has(id))
+      : [];
+    const supported = new Set(
+      (settings && settings.length
+        ? supportedIds.filter((id) => artifactIds.has(id))
+        : supportedIds
+      ).concat(legacyIndexerIds),
+    );
+    const optionsById = new Map(optionList.map((option) => [option.id, option]));
+    const orderedIds = settings && settings.length
+      ? Array.from(new Set((settings || []).map((setting) => setting && setting[settingProperty]).filter((id) => supported.has(id))))
+      : optionList.map((option) => option.id).filter((id) => supported.has(id));
+    return orderedIds
+      .map((id) => optionsById.get(id))
+      .filter(Boolean)
+      .map((option) => legacyIndexerIds.includes(option.id)
+        ? {
+            ...option,
+            label: "Legacy precompute " + option.label + " (scales excluded)",
+            legacyPrecomputed: true,
+          }
+        : option);
+  }
+
+  function defaultPrecomputedSetting(settings, precisionIds, indexerIds, usesIndexer) {
+    const completeSettings = (settings || []).filter((setting) =>
+      precisionIds.has(setting.precision) &&
+      (!usesIndexer || indexerIds.has(setting.indexerPrecision)),
+    );
+    return completeSettings.find((setting) => !setting.includeDraftKvCache) || completeSettings[0] || null;
+  }
+
   function availableModelIdsFor(precomputed, preset) {
     const trace = precomputedTrace(precomputed, preset);
     const settings = trace && (trace.modelSweeps || trace.settings);
@@ -2584,6 +2626,9 @@
 
   function defaultIndexerPrecisionId(model, indexerOptions, fallbackPrecisionId) {
     const ids = optionIds(indexerOptions);
+    const modelDefault = model && model.fields && model.fields.default_indexer_precision_id;
+    if (modelDefault && ids.includes(modelDefault)) return modelDefault;
+    if (isDeepSeekV4(model) && ids.includes("fp4_int4_g32_s1")) return "fp4_int4_g32_s1";
     if (isDeepSeekV4(model) && ids.includes("fp4_int4")) return "fp4_int4";
     if (fallbackPrecisionId && ids.includes(fallbackPrecisionId)) return fallbackPrecisionId;
     if (ids.includes("bf16_fp16")) return "bf16_fp16";
@@ -3953,26 +3998,44 @@
 
     function syncPrecisionControls(model) {
       const availableSettings = availableSettingsFor(precomputed, selectedPreset(), model);
+      const precisionOptionMap = new Map(precisionOptionsForSettings(
+        model,
+        data.precision_options || [],
+        availableSettings,
+        "kv",
+      ).map((option) => [option.id, option]));
       const availablePrecisions = availableSettings.length
-        ? Array.from(new Set(availableSettings.map((setting) => setting.precision).filter(Boolean)))
-        : [];
-      const precisionOptions = availablePrecisions.length
-        ? (data.precision_options || []).filter((option) => availablePrecisions.includes(option.id))
-        : data.precision_options || [];
-      const precisionDefault = availablePrecisions[0] || defaultPrecisionId(model, data.precision_options || []);
+        ? Array.from(new Set(availableSettings.map((setting) => setting.precision).filter((id) => precisionOptionMap.has(id))))
+        : Array.from(precisionOptionMap.keys());
+      const precisionOptions = availablePrecisions.map((id) => precisionOptionMap.get(id));
+      const indexerOptionMap = new Map(precisionOptionsForSettings(
+        model,
+        data.indexer_precision_options || [],
+        availableSettings,
+        "indexer",
+      ).map((option) => [option.id, option]));
+      const availableIndexerPrecisions = availableSettings.length
+        ? Array.from(new Set(availableSettings.map((setting) => setting.indexerPrecision).filter((id) => indexerOptionMap.has(id))))
+        : Array.from(indexerOptionMap.keys());
+      const indexerOptions = availableIndexerPrecisions.map((id) => indexerOptionMap.get(id));
+      const defaultSetting = availableSettings.length
+        ? defaultPrecomputedSetting(
+            availableSettings,
+            new Set(availablePrecisions),
+            new Set(availableIndexerPrecisions),
+            hasIndexerCache(model),
+          )
+        : null;
+      const precisionDefault = defaultSetting && defaultSetting.precision ||
+        availablePrecisions[0] || defaultPrecisionId(model, precisionOptions);
       setSelectOptions(inputs.precision, precisionOptions, precisionDefault, (option) => option.label);
 
       const indexerControl = root.querySelector("[data-lab-indexer-control]");
-      const availableIndexerPrecisions = availableSettings.length
-        ? Array.from(new Set(availableSettings.map((setting) => setting.indexerPrecision).filter(Boolean)))
-        : [];
       const showIndexer = hasIndexerCache(model) && (!availableSettings.length || availableIndexerPrecisions.length > 0);
       if (indexerControl) indexerControl.hidden = !showIndexer;
       if (showIndexer) {
-        const indexerOptions = availableIndexerPrecisions.length
-          ? (data.indexer_precision_options || []).filter((option) => availableIndexerPrecisions.includes(option.id))
-          : data.indexer_precision_options || [];
-        const indexerDefault = availableIndexerPrecisions[0] || defaultIndexerPrecisionId(model, data.indexer_precision_options || [], inputs.precision ? inputs.precision.value : undefined);
+        const indexerDefault = defaultSetting && defaultSetting.indexerPrecision ||
+          availableIndexerPrecisions[0] || defaultIndexerPrecisionId(model, indexerOptions, inputs.precision ? inputs.precision.value : undefined);
         setSelectOptions(inputs.indexerPrecision, indexerOptions, indexerDefault, (option) => option.label);
       }
     }
@@ -3982,7 +4045,14 @@
       const availableSettings = availableSettingsFor(precomputed, selectedPreset(), model);
       const showDraft = hasDraftKvCache(model) && (!availableSettings.length || availableSettings.some((setting) => setting.includeDraftKvCache));
       if (control) control.hidden = !showDraft;
-      if (inputs.includeDraftKvCache) inputs.includeDraftKvCache.checked = false;
+      if (inputs.includeDraftKvCache) {
+        const matchingSettings = availableSettings.filter((setting) =>
+          setting.precision === (inputs.precision && inputs.precision.value) &&
+          (!hasIndexerCache(model) || setting.indexerPrecision === (inputs.indexerPrecision && inputs.indexerPrecision.value)),
+        );
+        const defaultSetting = matchingSettings.find((setting) => !setting.includeDraftKvCache) || matchingSettings[0];
+        inputs.includeDraftKvCache.checked = Boolean(defaultSetting && defaultSetting.includeDraftKvCache);
+      }
     }
 
     function syncKdaNote(model) {
@@ -4413,6 +4483,8 @@
     planFromBuffers,
     planSweepTasks,
     precomputedResultFor,
+    precisionOptionsForSettings,
+    defaultPrecomputedSetting,
     runLabComputation,
     simulatePlanPolicy,
     simulatePolicy,

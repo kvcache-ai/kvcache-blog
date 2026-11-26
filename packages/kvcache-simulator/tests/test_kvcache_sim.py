@@ -64,6 +64,38 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(result.bytes_per_token, 46272)
         self.assertAlmostEqual(result.total_gib, 5.51605224609375)
 
+    def test_glm_5_3_flash_legacy_fp8_indexer_includes_model_scale(self) -> None:
+        result = calculate_cache_size(
+            self.models["glm-5.3-flash"],
+            tokens=1024,
+            include_linear_attention_state=True,
+            models_data=self.models_data,
+        )
+
+        self.assertEqual(result.indexer_precision, "fp8_int8")
+        self.assertEqual(result.indexer_bytes, 371_712)
+        self.assertEqual(result.total_bytes, 159_525_888)
+
+    def test_glm_5_3_flash_legacy_scale_groups_use_floor_at_dimension_boundary(self) -> None:
+        source = self.models["glm-5.3-flash"]
+        model = {**source, "fields": {**source["fields"], "index_head_dim": 130}}
+
+        fp8 = calculate_cache_size(
+            model,
+            tokens=4,
+            indexer_precision="fp8_int8",
+            models_data=self.models_data,
+        )
+        fp4 = calculate_cache_size(
+            model,
+            tokens=4,
+            indexer_precision="fp4_int4",
+            models_data=self.models_data,
+        )
+
+        self.assertEqual(fp8.indexer_bytes, 11 * (130 + 4))
+        self.assertEqual(fp4.indexer_bytes, 11 * (65 + 4))
+
     def test_minimax_m3_keeps_fixed_bf16_indexer_precision(self) -> None:
         result = calculate_cache_size(
             self.models["minimax-m3"],
@@ -76,6 +108,157 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(result.indexer_precision, "bf16_fp16")
         self.assertEqual(result.indexer_precision_label, "BF16 / FP16")
         self.assertAlmostEqual(result.total_gib, 74.25)
+
+    def test_minimax_m3_1_nvfp4_scales_match_backend_payload(self) -> None:
+        model = self.models["minimax-m3.1-flash"]
+        kwargs = {"tokens": 1024, "models_data": self.models_data}
+
+        bf16 = calculate_cache_size(model, **kwargs)
+        kv_nvfp4 = calculate_cache_size(model, precision="nvfp4_g16_s1", **kwargs)
+        dual_nvfp4 = calculate_cache_size(
+            model,
+            precision="nvfp4_g16_s1",
+            indexer_precision="nvfp4_g16_s1",
+            **kwargs,
+        )
+
+        self.assertEqual(bf16.total_bytes, 141_557_760)
+        self.assertEqual(kv_nvfp4.precision, "nvfp4_g16_s1")
+        self.assertEqual(kv_nvfp4.indexer_precision, "bf16_fp16")
+        self.assertEqual(kv_nvfp4.total_bytes, 51_118_080)
+        self.assertEqual(dual_nvfp4.indexer_precision, "nvfp4_g16_s1")
+        self.assertEqual(dual_nvfp4.indexer_bytes, 4_423_680)
+        self.assertEqual(dual_nvfp4.total_bytes, 39_813_120)
+        with self.assertRaisesRegex(ValueError, "Indexer precision fp8_int8_g128_s4 is not supported for model minimax-m3.1-flash"):
+            calculate_cache_size(
+                model,
+                precision="nvfp4_g16_s1",
+                indexer_precision="fp8_int8_g128_s4",
+                **kwargs,
+            )
+
+    def test_deepseek_v4_quantized_indexer_and_packed_kv_rows(self) -> None:
+        model = self.models["deepseek-v4-pro"]
+        fields = model["fields"]
+        tokens = 1024
+        ratios = fields["compress_ratios"][: fields["num_hidden_layers"]]
+        kv_rows = len(ratios) * fields["sliding_window"] + sum(
+            tokens // ratio for ratio in ratios if ratio > 0
+        )
+        indexer_rows = sum(tokens // 4 for ratio in ratios if ratio == 4)
+
+        uniform = calculate_cache_size(
+            model,
+            tokens=tokens,
+            precision="fp8_int8",
+            indexer_precision="fp8_int8_g128_s4",
+            models_data=self.models_data,
+        )
+        packed = calculate_cache_size(
+            model,
+            tokens=tokens,
+            precision="fp8_sglang_packed",
+            indexer_precision="fp4_int4_g32_s1",
+            models_data=self.models_data,
+        )
+        legacy_fp8 = calculate_cache_size(
+            model,
+            tokens=tokens,
+            precision="fp8_int8",
+            indexer_precision="fp8_int8",
+            models_data=self.models_data,
+        )
+        legacy_fp4 = calculate_cache_size(
+            model,
+            tokens=tokens,
+            precision="fp8_sglang_packed",
+            indexer_precision="fp4_int4",
+            models_data=self.models_data,
+        )
+
+        self.assertEqual(uniform.indexer_bytes, indexer_rows * 132)
+        self.assertEqual(uniform.kv_bytes, kv_rows * 512)
+        self.assertEqual(legacy_fp8.indexer_precision, "fp8_int8_g128_s4")
+        self.assertEqual(legacy_fp8.indexer_bytes, uniform.indexer_bytes)
+        self.assertEqual(packed.indexer_precision, "fp4_int4_g32_s1")
+        self.assertEqual(packed.indexer_bytes, indexer_rows * 68)
+        self.assertEqual(packed.kv_bytes, kv_rows * 584)
+        self.assertEqual(legacy_fp4.indexer_precision, "fp4_int4_g32_s1")
+        self.assertEqual(legacy_fp4.indexer_bytes, packed.indexer_bytes)
+        self.assertEqual(
+            calculate_cache_size(
+                model,
+                tokens=tokens,
+                models_data=self.models_data,
+            ).indexer_precision,
+            "fp4_int4_g32_s1",
+        )
+
+    def test_kimi_k3_1_packed_and_plain_fp8_cache_rows(self) -> None:
+        model = self.models["kimi-k3.1-pro"]
+        kwargs = {
+            "tokens": 1024,
+            "include_linear_attention_state": False,
+            "models_data": self.models_data,
+        }
+        packed = calculate_cache_size(model, **kwargs)
+        plain = calculate_cache_size(
+            model,
+            precision="fp8_int8",
+            indexer_precision="fp8_int8_g128_s4",
+            **kwargs,
+        )
+        mxfp4_indexer = calculate_cache_size(
+            model,
+            precision="fp8_int8",
+            indexer_precision="fp4_int4_g32_s1",
+            **kwargs,
+        )
+        legacy_fp8_indexer = calculate_cache_size(
+            model,
+            precision="fp8_int8",
+            indexer_precision="fp8_int8",
+            **kwargs,
+        )
+        legacy_fp4_indexer = calculate_cache_size(
+            model,
+            precision="fp8_int8",
+            indexer_precision="fp4_int4",
+            **kwargs,
+        )
+
+        self.assertEqual(packed.precision, "fp8_sglang_packed")
+        with self.assertRaisesRegex(ValueError, "KV precision bf16_fp16 is not supported for model kimi-k3.1-pro"):
+            calculate_cache_size(model, precision="bf16_fp16", **kwargs)
+        self.assertEqual(packed.hit_rate_bytes_per_token, 24 * 656)
+        self.assertEqual(packed.indexer_bytes, 24 * 1024 * 132)
+        self.assertEqual(packed.total_bytes, 24 * 1024 * (656 + 132))
+        self.assertEqual(plain.hit_rate_bytes_per_token, 24 * 576)
+        self.assertEqual(plain.total_bytes, 24 * 1024 * (576 + 132))
+        self.assertEqual(mxfp4_indexer.indexer_bytes, 24 * 1024 * 68)
+        self.assertEqual(legacy_fp8_indexer.indexer_precision, "fp8_int8_g128_s4")
+        self.assertEqual(legacy_fp8_indexer.indexer_bytes, plain.indexer_bytes)
+        self.assertEqual(legacy_fp4_indexer.indexer_precision, "fp4_int4_g32_s1")
+        self.assertEqual(legacy_fp4_indexer.indexer_bytes, mxfp4_indexer.indexer_bytes)
+        self.assertEqual(
+            calculate_cache_size(
+                model,
+                tokens=1024,
+                precision="fp8_sglang_packed",
+                include_linear_attention_state=True,
+                models_data=self.models_data,
+            ).total_bytes - packed.total_bytes,
+            449_372_160,
+        )
+
+    def test_model_only_precisions_do_not_leak_to_qwen(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not supported for model qwen3-32b"):
+            calculate_cache_size(
+                self.models["qwen3-32b"],
+                tokens=1024,
+                precision="nvfp4_g16_s1",
+                models_data=self.models_data,
+            )
 
     def test_kimi_k3_uses_mla_and_kda_state_layout(self) -> None:
         result = calculate_cache_size(
@@ -260,6 +443,58 @@ class SweepAndCliTests(unittest.TestCase):
         self.assertEqual(result["metadata"]["totalMeasuredTokens"], 2)
         self.assertEqual([point["cacheBlocks"] for point in result["points"]], [1])
         self.assertEqual(result["points"][0]["results"]["fifo"]["totalTokens"], 2)
+
+    def test_run_sweep_uses_reusable_mla_payload_for_kimi_k3_1_and_glm_5_3_flash(self) -> None:
+        trace = make_trace(["A"], ["A"], ["A"], ["A"], block_size=64)
+        cases = [
+            ("kimi-k3.1-pro", 0.001, 15_744, 18_912),
+            ("glm-5.3-flash", 0.00068, 11_264, 11_627),
+        ]
+
+        for model_id, budget_gib, reusable_bytes, total_bytes in cases:
+            with self.subTest(model_id=model_id):
+                model = models_by_id(self.models_data)[model_id]
+                cache_size = calculate_cache_size(
+                    model,
+                    tokens=1024,
+                    models_data=self.models_data,
+                )
+                result = run_sweep(
+                    trace,
+                    model_id=model_id,
+                    budgets_gib=[budget_gib],
+                    policies=["fifo"],
+                    backend="python",
+                    estimate_tokens=1024,
+                    models_data=self.models_data,
+                )
+                metadata = result["metadata"]
+
+                self.assertEqual(cache_size.hit_rate_bytes_per_token, reusable_bytes)
+                self.assertEqual(cache_size.bytes_per_token, total_bytes)
+                self.assertEqual(metadata["bytesPerToken"], reusable_bytes)
+                self.assertEqual(metadata["bytesPerBlock"], reusable_bytes * trace.block_size)
+                self.assertEqual(
+                    metadata["bytesPerTokenBasis"],
+                    "reusable MLA prefix cache; excludes indexer cache and KDA state",
+                )
+                self.assertEqual([point["cacheBlocks"] for point in result["points"]], [1])
+
+    def test_run_sweep_keeps_total_payload_basis_for_ordinary_models(self) -> None:
+        trace = make_trace(["A"], ["A"], ["A"], ["A"], block_size=64)
+        result = run_sweep(
+            trace,
+            model_id="qwen3-32b",
+            precision="bf16_fp16",
+            budgets_gib=[0],
+            policies=["fifo"],
+            backend="python",
+            estimate_tokens=1024,
+            models_data=self.models_data,
+        )
+
+        self.assertEqual(result["metadata"]["bytesPerToken"], 262_144)
+        self.assertEqual(result["metadata"]["bytesPerTokenBasis"], "total cache payload")
 
     def test_run_sweep_sorts_budgets_before_early_breaks(self) -> None:
         trace = make_trace(["A"], ["B"], ["A"], ["B"])

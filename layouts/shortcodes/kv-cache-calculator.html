@@ -1,5 +1,6 @@
 {{ $data := site.Data.kv_cache_calculator.models }}
-{{ $payload := dict "models" $data.models "precision_options" $data.precision_options "indexer_precision_options" $data.indexer_precision_options "recurrent_state_precision_options" $data.recurrent_state_precision_options "metadata" $data.metadata }}
+{{ $modelCatalog := site.Data.kv_cache_calculator.model_catalog }}
+{{ $payload := dict "models" $data.models "model_catalog" $modelCatalog "precision_options" $data.precision_options "indexer_precision_options" $data.indexer_precision_options "recurrent_state_precision_options" $data.recurrent_state_precision_options "metadata" $data.metadata }}
 {{ $script := resources.Get "js/kv-cache-calculator.js" | minify | fingerprint }}
 
 <section id="kv-cache-calculator" class="kv-calculator-shell" data-state="loading">
@@ -15,15 +16,18 @@
         <select data-kv-input="model"></select>
       </label>
 
-      <label>
-        <span>Tokens per sequence</span>
-        <input data-kv-input="tokens" type="number" min="1" step="1" inputmode="numeric" value="1024">
-      </label>
+      <div class="kv-field">
+        <label for="kv-tokens">Tokens per sequence</label>
+        <input id="kv-tokens" data-kv-input="tokens" type="number" min="1" step="1" inputmode="numeric" value="1024" required aria-describedby="kv-context-limit kv-tokens-error">
+        <span id="kv-context-limit" class="kv-field-hint" data-kv-context-limit></span>
+        <span id="kv-tokens-error" class="kv-field-error" data-kv-validation="tokens" role="alert" hidden></span>
+      </div>
 
-      <label>
-        <span>Sequences</span>
-        <input data-kv-input="sequences" type="number" min="1" step="1" inputmode="numeric" value="1">
-      </label>
+      <div class="kv-field">
+        <label for="kv-sequences">Sequences</label>
+        <input id="kv-sequences" data-kv-input="sequences" type="number" min="1" step="1" inputmode="numeric" value="1" required aria-describedby="kv-sequences-error">
+        <span id="kv-sequences-error" class="kv-field-error" data-kv-validation="sequences" role="alert" hidden></span>
+      </div>
 
       <label>
         <span>KV precision</span>
@@ -47,7 +51,7 @@
 
       <label class="kv-checkbox-row" data-kv-linear-state-control hidden>
         <input data-kv-input="includeLinearAttentionState" type="checkbox">
-        <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. The checkpoint policy controls how many retained states are counted.">Include linear-attention state</span>
+        <span data-kv-inline-help="Adds model-specific linear-attention recurrent and convolution state. The checkpoint policy controls how many retained states are counted."><span data-kv-linear-state-label>Include linear-attention state</span></span>
       </label>
 
       <label for="kv-recurrent-state-precision" data-kv-recurrent-state-precision-control hidden>
@@ -80,7 +84,8 @@
           <label for="kv-state-checkpoint-interval" data-kv-state-interval-label>State checkpoint interval</label>
           <span class="kv-help-target" data-kv-state-interval-help></span>
         </span>
-        <input id="kv-state-checkpoint-interval" data-kv-input="stateCheckpointInterval" type="number" min="1" step="1" value="10240">
+        <input id="kv-state-checkpoint-interval" data-kv-input="stateCheckpointInterval" type="number" min="1" step="1" inputmode="numeric" value="10240" required aria-describedby="kv-interval-error">
+        <span id="kv-interval-error" class="kv-field-error" data-kv-validation="stateCheckpointInterval" role="alert" hidden></span>
       </div>
 
       <div class="kv-cta-note">
@@ -91,13 +96,16 @@
     </form>
 
     <div class="kv-results">
+      <p class="kv-result-status" data-kv-result-status role="status" hidden></p>
       <div class="kv-total-band">
         <div>
-          <span>Total cache size</span>
+          <span>Total logical cache size</span>
           <strong data-kv-output="totalGiB">--</strong>
         </div>
         <em data-kv-output="totalGB">= -- GB</em>
       </div>
+      <p class="kv-result-scope">Logical payload across all sequences (TP=1). Excludes model weights, allocator/page padding, and transient runtime buffers.</p>
+      <p class="kv-context-warning" data-kv-context-warning role="status" hidden></p>
 
       <div class="kv-metric-grid" data-kv-metrics></div>
 
@@ -254,6 +262,21 @@
     display: none !important;
   }
 
+  .kv-field-hint,
+  .kv-field-error {
+    font-size: 0.76rem;
+    font-weight: 500;
+    line-height: 1.4;
+  }
+
+  .kv-field-error {
+    color: #b91c1c;
+  }
+
+  .kv-field-warning {
+    color: #92400e;
+  }
+
   .kv-controls select,
   .kv-controls input {
     width: 100%;
@@ -280,6 +303,10 @@
     border-color: var(--kv-blue);
   }
 
+  .kv-controls input[aria-invalid="true"] {
+    border-color: #b91c1c;
+  }
+
   .kv-results {
     display: grid;
     gap: 1rem;
@@ -289,6 +316,24 @@
   .kv-results > * {
     min-width: 0;
   }
+
+  .kv-results [hidden],
+  .kv-calculator-shell[data-state="invalid"] .kv-results > :not([data-kv-result-status]),
+  .kv-calculator-shell[data-state="error"] .kv-results > :not([data-kv-result-status]) {
+    display: none !important;
+  }
+
+  .kv-result-scope,
+  .kv-result-status,
+  .kv-context-warning {
+    margin: 0;
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+
+  .kv-result-scope { color: var(--kv-muted); }
+  .kv-result-status { color: #b91c1c; }
+  .kv-context-warning { color: #92400e; }
 
   .kv-total-band {
     display: flex;

@@ -6,19 +6,43 @@ import { fileURLToPath } from "node:url";
 import { loadModelsData, selectModels } from "../scripts/lib/kv-cache-lab-traces.mjs";
 
 const require = createRequire(import.meta.url);
-const { calculate, calculateElementsPerSequence, formatBytes, modelFamily, modelsForFamily } = require("../assets/js/kv-cache-calculator.js");
+const { calculate, calculateElementsPerSequence, formatBytes, modelFamily, modelsForFamily, precisionOptionIdsForModel, validateCalculatorInputs } = require("../assets/js/kv-cache-calculator.js");
 
 const bf16 = { precision: "bf16_fp16", indexerPrecision: "bf16_fp16", sequences: 1, tensorParallel: 1 };
 
-const curatedModels = loadModelsData(
+const curatedData = loadModelsData(
   fileURLToPath(new URL("../data/kv_cache_calculator/models.yaml", import.meta.url)),
-).models;
+);
+const curatedModels = curatedData.models;
 
 function curatedModel(id) {
   const model = curatedModels.find((entry) => entry.id === id);
   assert.ok(model, `Missing curated model: ${id}`);
   return model;
 }
+
+test("calculator form rejects invalid quantities and fixed checkpoint intervals", () => {
+  const model = curatedModel("glm-5.3-flash");
+  const baseline = { tokens: "32768", sequences: "1", fixedInterval: false, stateCheckpointInterval: "" };
+  assert.deepEqual(validateCalculatorInputs(model, baseline).errors, {});
+  for (const field of ["tokens", "sequences"]) {
+    for (const value of ["", "0", "-1", "1.5", "Infinity", "9007199254740992"]) {
+      assert.ok(validateCalculatorInputs(model, { ...baseline, [field]: value }).errors[field], `${field}=${value}`);
+    }
+  }
+  for (const value of ["", "0", "-1", "1.5", "Infinity"]) {
+    assert.ok(validateCalculatorInputs(model, { ...baseline, fixedInterval: true, stateCheckpointInterval: value }).errors.stateCheckpointInterval);
+  }
+  assert.deepEqual(validateCalculatorInputs(model, { ...baseline, fixedInterval: true, stateCheckpointInterval: "10240" }).errors, {});
+});
+
+test("calculator form warns for estimates beyond the selected model's context limit", () => {
+  const model = curatedModel("glm-5.3-flash");
+  const input = { tokens: String(model.max_position_embeddings), sequences: "1" };
+  assert.deepEqual(validateCalculatorInputs(model, input), { errors: {}, contextLimit: 1048576, contextExceeded: false });
+  assert.deepEqual(validateCalculatorInputs(model, { ...input, tokens: "1048577" }), { errors: {}, contextLimit: 1048576, contextExceeded: true });
+  assert.equal(validateCalculatorInputs(curatedModel("mimo-v2.5-asr-text-decoder"), input).contextLimit, 8192);
+});
 
 test("V4.1 official packed layout includes scales and defaults to global cache only", () => {
   const model = curatedModel("deepseek-v4.1-flash");
@@ -130,8 +154,33 @@ test("V4.1 is calculator-only and the SWA input does not affect other models", (
   assert.deepEqual(selectModels([model]), []);
   assert.ok(modelsForFamily(curatedModels, "DeepSeek").includes(model));
   for (const other of curatedModels.filter((entry) => entry.id !== model.id)) {
+    if (other.formula === "deepseek_v41_shared") continue;
     const input = { tokens: 1024, sequences: 2 };
     assert.deepEqual(calculate(other, { ...input, includeSwaCache: true }), calculate(other, input));
+  }
+});
+
+test("DeepSeek V4.1 Flash (1017) preserves the earlier release's cache configuration", () => {
+  const previous = curatedModel("deepseek-v4.1-flash");
+  const model = curatedModel("deepseek-v4.1-flash-1017");
+  assert.equal(model.source_url, "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/raw/08c8657f02291e11b6f6b63e0e16014f8e748518/config.json");
+  assert.notEqual(previous.id, model.id);
+  assert.deepEqual(model.fields, previous.fields);
+
+  const withoutIdentity = ({ modelId, modelLabel, ...result }) => result;
+  for (const tokens of [1, 2, 127, 128, 129, 1024, 1025, 1048576]) {
+    for (const sequences of [1, 3]) {
+      for (const includeSwaCache of [false, true]) {
+        for (const includeDraftKvCache of [false, true]) {
+          const input = { tokens, sequences, includeSwaCache, includeDraftKvCache };
+          assert.deepEqual(
+            withoutIdentity(calculate(model, input)),
+            withoutIdentity(calculate(previous, input)),
+            `tokens=${tokens}, sequences=${sequences}, swa=${includeSwaCache}, draft=${includeDraftKvCache}`,
+          );
+        }
+      }
+    }
   }
 });
 
@@ -153,7 +202,7 @@ test("curated V4 releases preserve main cache and include three DSpark draft lay
           const expectedKv = (
             layers * 128 + ratioFour * Math.floor(tokens / 4) + ratio128 * Math.floor(tokens / 128)
           ) * 512 * width * sequences;
-          const expectedIndexer = ratioFour * Math.floor(tokens / 4) * 128 * 0.5 * sequences;
+          const expectedIndexer = ratioFour * Math.floor(tokens / 4) * 68 * sequences;
           assert.equal(main.kvBytes, expectedKv);
           assert.equal(main.indexerBytes, expectedIndexer);
           assert.equal(main.totalBytes, expectedKv + expectedIndexer);
@@ -572,6 +621,156 @@ test("Kimi K3 MLA cache scales from the exact logical token count", () => {
   assert.equal(bf16Result.hitRateBytesPerToken, 27648);
 });
 
+test("Kimi K3.1 Pro selects packed MLA rows by default and counts independent indexer precision and KDA state", () => {
+  const model = curatedModel("kimi-k3.1-pro");
+  assert.equal(model.source_url, "https://huggingface.co/moonshotai/Kimi-K3.1-Pro/raw/d9e99b0792a5e93b78ea9bea62a68167e36ddd9e/config.json");
+  assert.equal(model.formula, "kimi_kda_dsa_mla_hybrid");
+  assert.equal(model.max_position_embeddings, 1048576);
+  assert.equal(model.fields.num_hidden_layers, 93);
+  assert.equal(model.fields.full_attention_layers, 24);
+  assert.equal(model.fields.kda_layers, 69);
+  assert.equal(model.fields.kv_lora_rank, 512);
+  assert.equal(model.fields.qk_rope_head_dim, 64);
+  assert.equal(model.fields.index_topk, 2048);
+  assert.equal(model.fields.index_kpool, 1);
+  assert.equal(model.fields.indexer_full_layers, 24);
+  assert.equal(model.fields.indexer_shared_layers, 0);
+  assert.equal(model.fields.num_nextn_predict_layers, 0);
+  assert.equal(model.fields.default_precision_id, "fp8_sglang_packed");
+  assert.equal(model.fields.kv_entry_bytes_fp8_sglang_packed, 656);
+  assert.equal(model.fields.default_indexer_precision_id, "fp8_int8_g128_s4");
+  assert.deepEqual(model.fields.kv_precision_ids, ["fp8_int8", "fp8_sglang_packed"]);
+  assert.deepEqual(model.fields.indexer_precision_ids, ["bf16_fp16", "fp8_int8_g128_s4", "fp4_int4_g32_s1"]);
+  assert.equal(model.fields.default_include_linear_attention_state, true);
+
+  const defaults = calculate(model, { tokens: 1, includeLinearAttentionState: false });
+  assert.equal(defaults.precisionLabel, "FP8 SGLang packed MLA (656 B / row)");
+  assert.equal(defaults.indexerPrecisionLabel, "FP8 (128D groups + 4 B scale)");
+  assert.equal(defaults.kvBytes, 15744);
+  assert.equal(defaults.indexerBytes, 3168);
+  assert.equal(defaults.totalBytes, 18912);
+
+  for (const [precision, indexerPrecision, kvWidth, indexerWidth] of [
+    ["fp8_sglang_packed", "fp8_int8_g128_s4", 656, 132],
+    ["fp8_int8", "fp4_int4_g32_s1", 576, 68],
+    ["fp8_int8", "bf16_fp16", 576, 256],
+  ]) {
+    const result = calculate(model, {
+      tokens: 8,
+      sequences: 2,
+      precision,
+      indexerPrecision,
+      includeLinearAttentionState: false,
+    });
+    assert.equal(result.kvBytes, 8 * 2 * 24 * kvWidth);
+    assert.equal(result.indexerBytes, 8 * 2 * 24 * indexerWidth);
+    assert.equal(result.totalBytes, result.kvBytes + result.indexerBytes);
+    assert.equal(result.cacheGroups.some((group) => group.label === "Index tail cache"), false);
+  }
+
+  const withState = calculate(model, {
+    tokens: 1025,
+    sequences: 2,
+    precision: "fp8_int8",
+    indexerPrecision: "fp8_int8_g128_s4",
+    includeLinearAttentionState: true,
+  });
+  const convBytes = 69 * (4 - 1) * (3 * 96 * 128) * 2;
+  const recurrentBytes = 69 * 96 * 128 * 128 * 4;
+  assert.equal(convBytes, 15261696);
+  assert.equal(recurrentBytes, 434110464);
+  assert.equal(withState.cacheGroups.find((group) => group.label === "KDA checkpoint state").bytes, 2 * (convBytes + recurrentBytes));
+  assert.equal(withState.totalBytes, 2 * 1025 * 16992 + 2 * (convBytes + recurrentBytes));
+  const packedWithState = calculate(model, {
+    tokens: 1024,
+    precision: "fp8_sglang_packed",
+    indexerPrecision: "fp8_int8_g128_s4",
+    includeLinearAttentionState: true,
+  });
+  assert.equal(packedWithState.totalBytes, 468738048);
+  assert.equal(packedWithState.hitRateBytesPerToken, 15744);
+  const plainFp8 = calculate(model, {
+    tokens: 1024,
+    precision: "fp8_int8",
+    indexerPrecision: "fp8_int8_g128_s4",
+    includeLinearAttentionState: true,
+  });
+  assert.equal(plainFp8.kvBytes, 24 * 1024 * 576);
+  assert.equal(plainFp8.hitRateBytesPerToken, 13824);
+  for (const [legacyId, currentId] of [
+    ["fp4_int4", "fp4_int4_g32_s1"],
+    ["fp8_int8", "fp8_int8_g128_s4"],
+  ]) {
+    const legacyIndexer = calculate(model, {
+      tokens: 8,
+      precision: "fp8_int8",
+      indexerPrecision: legacyId,
+      includeLinearAttentionState: false,
+    });
+    const currentIndexer = calculate(model, {
+      tokens: 8,
+      precision: "fp8_int8",
+      indexerPrecision: currentId,
+      includeLinearAttentionState: false,
+    });
+    assert.equal(legacyIndexer.indexerBytes, currentIndexer.indexerBytes);
+    assert.equal(legacyIndexer.indexerPrecisionLabel, currentIndexer.indexerPrecisionLabel);
+  }
+  const unsupportedBf16 = calculate(model, {
+    tokens: 1,
+    precision: "bf16_fp16",
+    indexerPrecision: "bf16_fp16",
+    includeLinearAttentionState: false,
+  });
+  assert.equal(unsupportedBf16.precisionLabel, "FP8 SGLang packed MLA (656 B / row)");
+  assert.equal(unsupportedBf16.kvBytes, 24 * 656);
+  assert.match(model.cache_note, /allocator page padding is excluded/);
+  const unsupportedFallback = calculate(model, {
+    tokens: 1024,
+    precision: "fp4_int4",
+    includeLinearAttentionState: false,
+  });
+  assert.equal(unsupportedFallback.precisionLabel, "FP8 SGLang packed MLA (656 B / row)");
+  assert.equal(unsupportedFallback.kvBytes, 24 * 1024 * 656);
+  assert.deepEqual(
+    calculate(model, { tokens: 8, includeLinearAttentionState: false, includeDraftKvCache: true }),
+    calculate(model, { tokens: 8, includeLinearAttentionState: false }),
+  );
+});
+
+test("packed and grouped formats are exposed only to models with a matching layout", () => {
+  const precisionOptions = curatedData.precision_options;
+  const indexerOptions = curatedData.indexer_precision_options;
+  const deepseek = curatedModel("deepseek-v4-pro");
+  const kimi = curatedModel("kimi-k3.1-pro");
+  const minimax = curatedModel("minimax-m3.1-flash");
+  const qwen = curatedModel("qwen3.8-flash-next");
+  const glm = curatedModel("glm-5.3-flash");
+
+  assert.ok(precisionOptionIdsForModel(deepseek, precisionOptions, "kv").includes("fp8_sglang_packed"));
+  for (const model of [deepseek, curatedModel("deepseek-v4-flash")]) {
+    assert.deepEqual(precisionOptionIdsForModel(model, precisionOptions, "kv"), ["bf16_fp16", "fp8_int8", "fp8_sglang_packed"]);
+  }
+  assert.ok(precisionOptionIdsForModel(deepseek, undefined, "kv").includes("fp8_sglang_packed"));
+  assert.ok(!precisionOptionIdsForModel(deepseek, precisionOptions, "indexer").includes("fp8_sglang_packed"));
+  assert.ok(!precisionOptionIdsForModel(deepseek, undefined, "indexer").includes("fp8_sglang_packed"));
+  assert.deepEqual(
+    precisionOptionIdsForModel(deepseek, indexerOptions, "indexer")
+      .filter((id) => id.endsWith("_g32_s1") || id.endsWith("_g128_s4"))
+      .sort(),
+    ["fp4_int4_g32_s1", "fp8_int8_g128_s4"].sort(),
+  );
+  assert.ok(precisionOptionIdsForModel(kimi, precisionOptions, "kv").includes("fp8_sglang_packed"));
+  assert.ok(!precisionOptionIdsForModel(kimi, precisionOptions, "kv").includes("bf16_fp16"));
+  assert.ok(!precisionOptionIdsForModel(kimi, precisionOptions, "kv").includes("nvfp4_g16_s1"));
+  assert.ok(precisionOptionIdsForModel(minimax, precisionOptions, "kv").includes("nvfp4_g16_s1"));
+  assert.ok(precisionOptionIdsForModel(minimax, indexerOptions, "indexer").includes("nvfp4_g16_s1"));
+  for (const model of [qwen, glm]) {
+    assert.ok(!precisionOptionIdsForModel(model, precisionOptions, "kv").some((id) => id.includes("packed") || id.startsWith("nvfp4")));
+    assert.ok(!precisionOptionIdsForModel(model, indexerOptions, "indexer").some((id) => id.includes("_g") || id.startsWith("nvfp4")));
+  }
+});
+
 const glm53Flash = {
   id: "glm-5.3-flash",
   label: "GLM-5.3-Flash",
@@ -675,6 +874,9 @@ test("GLM scales follow resolved indexer precision for invalid and fixed selecti
   const input = { tokens: 8, indexerPrecision: "invalid" };
   const result = calculate(glm53Quantized, input);
   assert.equal(result.indexerBytes, 2 * 11 * (128 + 4));
+  const legacyFp8 = calculate(glm53Quantized, { tokens: 8, indexerPrecision: "fp8_int8" });
+  assert.equal(legacyFp8.indexerBytes, 2 * 11 * (128 + 4));
+  assert.equal(legacyFp8.indexerPrecisionLabel, "FP8 / INT8");
   const model = {
     ...glm53Quantized,
     fields: { ...glm53Quantized.fields, indexer_fixed_precision_id: "fp4_int4" },
@@ -1920,7 +2122,7 @@ test("DeepSeek V4 hybrid formula uses sliding window, compression ratios, and ra
   assert.ok(plan.formulaRows.some((row) => row.name === "kv_bytes"));
   assert.match(
     plan.formulaRows.find((row) => row.name === "total_bytes").expression,
-    /kv_bytes \+ indexer_bytes/,
+    /kv_bytes \+ indexer_bytes \+ indexer_scale_bytes/,
   );
   assert.equal(plan.byteGroups.find((group) => group.role === "kv").elements, 511389696);
   assert.equal(plan.byteGroups.find((group) => group.role === "indexer").elements, 122880000);
@@ -1929,7 +2131,7 @@ test("DeepSeek V4 hybrid formula uses sliding window, compression ratios, and ra
   assert.ok(Math.abs(result.totalGiB - 1.1814193725585938) < 1e-9);
 });
 
-test("DeepSeek V4 defaults to FP8 attention and FP4 indexer cache", () => {
+test("DeepSeek V4 defaults to FP8 attention and MXFP4 indexer cache with per-group scales", () => {
   const compressRatios = [
     128, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
     4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
@@ -1952,8 +2154,32 @@ test("DeepSeek V4 defaults to FP8 attention and FP4 indexer cache", () => {
   const result = calculate(model, { tokens: 128000, sequences: 1, tensorParallel: 1 });
 
   assert.equal(result.precisionLabel, "FP8 / INT8");
-  assert.equal(result.indexerPrecisionLabel, "FP4 / INT4");
-  assert.ok(Math.abs(result.totalGiB - 0.5334892272949219) < 1e-9);
+  assert.equal(result.indexerPrecisionLabel, "MXFP4 (32D groups + 1 B scale)");
+  assert.equal(result.indexerBytes, 65280000);
+  assert.ok(Math.abs(result.totalGiB - 0.5370655059814453) < 1e-9);
+});
+
+test("DeepSeek V4 legacy API precision IDs resolve to their matching scaled layouts", () => {
+  const model = curatedModel("deepseek-v4-pro");
+  for (const [legacyId, currentId, expectedBytes, expectedLabel] of [
+    ["fp4_int4", "fp4_int4_g32_s1", 522240, "MXFP4 (32D groups + 1 B scale)"],
+    ["fp8_int8", "fp8_int8_g128_s4", 1013760, "FP8 (128D groups + 4 B scale)"],
+  ]) {
+    const legacy = calculate(model, {
+      tokens: 1024,
+      precision: "fp8_int8",
+      indexerPrecision: legacyId,
+    });
+    const current = calculate(model, {
+      tokens: 1024,
+      precision: "fp8_int8",
+      indexerPrecision: currentId,
+    });
+    assert.equal(legacy.indexerBytes, expectedBytes);
+    assert.equal(legacy.indexerPrecisionLabel, expectedLabel);
+    assert.equal(legacy.totalBytes, current.totalBytes);
+    assert.equal(legacy.indexerBytes, current.indexerBytes);
+  }
 });
 
 test("DeepSeek V4 can calculate explicit FP8 attention and FP4 indexer cache", () => {
@@ -1978,7 +2204,7 @@ test("DeepSeek V4 can calculate explicit FP8 attention and FP4 indexer cache", (
 
   const result = calculate(
     model,
-    { tokens: 128000, sequences: 1, precision: "fp8_int8", indexerPrecision: "fp4_int4", tensorParallel: 1 },
+    { tokens: 128000, sequences: 1, precision: "fp8_int8", indexerPrecision: "fp4_int4_g32_s1", tensorParallel: 1 },
     {
       precisionOptions: [
         { id: "bf16_fp16", label: "BF16 / FP16", bytes_per_element: 2 },
@@ -1986,14 +2212,81 @@ test("DeepSeek V4 can calculate explicit FP8 attention and FP4 indexer cache", (
       ],
       indexerPrecisionOptions: [
         { id: "bf16_fp16", label: "BF16 / FP16", bytes_per_element: 2 },
-        { id: "fp4_int4", label: "FP4 / INT4", bytes_per_element: 0.5 },
+        { id: "fp4_int4_g32_s1", label: "MXFP4 (32D groups + 1 B scale)", bytes_per_element: 0.5, group_size: 32, scale_bytes_per_group: 1 },
       ],
     },
   );
 
-  assert.ok(Math.abs(result.totalGiB - 0.5334892272949219) < 1e-9);
+  assert.ok(Math.abs(result.totalGiB - 0.5370655059814453) < 1e-9);
   assert.equal(result.components.find(([label]) => label === "KV precision bytes")[1], 1);
   assert.equal(result.components.find(([label]) => label === "Indexer precision bytes")[1], 0.5);
+});
+
+test("DeepSeek V4 packed FP8 KV and scaled indexer use logical row payloads across batches and token boundaries", () => {
+  const model = curatedModel("deepseek-v4-flash");
+  const plain = calculate(model, {
+    tokens: 1024,
+    precision: "fp8_int8",
+    indexerPrecision: "fp4_int4_g32_s1",
+  });
+  const packed = calculate(model, {
+    tokens: 1024,
+    precision: "fp8_sglang_packed",
+    indexerPrecision: "fp4_int4_g32_s1",
+  });
+  const fp8Indexer = calculate(model, {
+    tokens: 1024,
+    precision: "fp8_int8",
+    indexerPrecision: "fp8_int8_g128_s4",
+  });
+  assert.equal(plain.kvBytes, 5652480);
+  assert.equal(plain.indexerBytes, 365568);
+  assert.equal(plain.totalBytes, 6018048);
+  assert.equal(packed.kvBytes, 6447360);
+  assert.equal(packed.totalBytes, 6812928);
+  assert.equal(fp8Indexer.indexerBytes, 709632);
+  assert.equal(fp8Indexer.totalBytes, 6362112);
+  assert.match(
+    packed.elementPlan.formulaRows.find((row) => row.name === "sliding_kv_bytes").description,
+    /584 bytes/,
+  );
+  assert.match(packed.elementPlan.note, /allocator page padding is excluded/);
+
+  for (const tokens of [1, 3, 5, 1025]) {
+    const batch = calculate(model, {
+      tokens,
+      sequences: 3,
+      tensorParallel: 2,
+      precision: "fp8_sglang_packed",
+      indexerPrecision: "fp4_int4_g32_s1",
+    });
+    const entries = 43 * 128 + 21 * Math.floor(tokens / 4) + 20 * Math.floor(tokens / 128);
+    const indexerVectors = 21 * Math.floor(tokens / 4);
+    assert.equal(batch.kvBytes, 3 * entries * 584);
+    assert.equal(batch.indexerBytes, 3 * indexerVectors * 68);
+    assert.equal(batch.perDeviceBytes, batch.totalBytes / 2);
+  }
+});
+
+test("filtered DeepSeek KV options cannot retain the packed row size from an unsupported request", () => {
+  const model = curatedModel("deepseek-v4-pro");
+  const options = {
+    precisionOptions: [
+      { id: "bf16_fp16", label: "BF16 / FP16", bytes_per_element: 2 },
+    ],
+  };
+  const filteredPackedRequest = calculate(model, {
+    tokens: 1024,
+    precision: "fp8_sglang_packed",
+  }, options);
+  const explicitBf16 = calculate(model, {
+    tokens: 1024,
+    precision: "bf16_fp16",
+  }, options);
+
+  assert.equal(filteredPackedRequest.precisionLabel, explicitBf16.precisionLabel);
+  assert.equal(filteredPackedRequest.kvBytes, explicitBf16.kvBytes);
+  assert.equal(filteredPackedRequest.totalBytes, explicitBf16.totalBytes);
 });
 
 test("DSA indexer models can use separate KV and indexer precision", () => {
