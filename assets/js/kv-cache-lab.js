@@ -2575,10 +2575,6 @@
     return Array.from(new Set(models.map(modelFamily))).sort();
   }
 
-  function modelsForFamily(models, family) {
-    return models.filter((model) => modelFamily(model) === family);
-  }
-
   function modelById(models, id) {
     return models.find((model) => model.id === id) || models[0];
   }
@@ -3992,7 +3988,8 @@
 
     function populateModels(preferredModelId) {
       const availableIds = availableModelIdsFor(precomputed, selectedPreset());
-      const familyModels = modelsForFamily(models, inputs.modelFamily.value).filter((model) => !availableIds || availableIds.has(model.id));
+      const familyModels = calculator.modelsForFamily(models, inputs.modelFamily.value)
+        .filter((model) => !availableIds || availableIds.has(model.id));
       setSelectOptions(inputs.model, familyModels, preferredModelId, (model) => model.label);
     }
 
