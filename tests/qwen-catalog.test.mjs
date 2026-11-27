@@ -43,6 +43,8 @@ test("catalog aliases have unique official IDs, pinned sources, and valid preset
     assert.ok(alias, `Missing alias: ${entry.official_model_id}`);
     assert.equal(alias.label, entry.label ?? entry.official_model_id.split("/").pop());
     assert.equal(alias.source_url, entry.source_url);
+    assert.equal(alias.official_release_date, entry.official_release_date);
+    assert.equal(alias.weights_public_date, entry.weights_public_date);
     assertPinnedConfigSource(entry);
     const expectedNote = [...new Set([preset.cache_note, entry.cache_note].filter(Boolean))].join(" ");
     assert.equal(alias.cache_note || "", expectedNote);
@@ -55,7 +57,7 @@ test("catalog aliases have unique official IDs, pinned sources, and valid preset
 
 test("DeepSeek Vision-Exp alias keeps ordinary FP8 default and exposes the SGLang packed row layout", () => {
   const alias = expandedModels.find((model) => model.id === "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp");
-  assert.equal(alias.label, "DeepSeek V4 Flash Vision Exp");
+  assert.equal(alias.label, "DeepSeek-V4-Flash-Vision-Exp");
   assert.equal(alias.fields.default_precision_id, "fp8_int8");
   assert.equal(alias.fields.kv_entry_bytes_fp8_sglang_packed, 584);
   assert.match(alias.cache_note, /448 FP8 \+ 128 BF16 RoPE \+ 8 scale\/pad/);
@@ -88,6 +90,13 @@ test("Qwen catalog keeps canonical models and exposes every verified Qwen reposi
     const preset = canonicalModels.find((model) => model.id === entry.preset_id);
     assert.equal(modelFamily(alias), modelFamily(preset));
   }
+  assert.deepEqual(modelsForFamily(expandedModels, "Qwen").slice(0, 5).map((model) => model.id), [
+    "qwen-image-2.1-pe-decoder",
+    "Qwen/Qwen-Image-2.1-PE-I2I",
+    "Qwen/Qwen-Drive-1.0-4B",
+    "qwen3.8-flash-next",
+    "qwen3.8-27b",
+  ]);
 });
 
 test("selecting each Qwen repository uses its mapped preset cache geometry", () => {

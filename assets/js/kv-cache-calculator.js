@@ -2553,6 +2553,10 @@
         id: entry.official_model_id,
         label: entry.label ?? entry.official_model_id.split("/").pop(),
         source_url: entry.source_url,
+        official_release_date: entry.official_release_date,
+        official_release_source_url: entry.official_release_source_url,
+        weights_public_date: entry.weights_public_date,
+        weights_public_date_source_url: entry.weights_public_date_source_url,
         max_position_embeddings: entry.max_position_embeddings ?? preset.max_position_embeddings,
         fields: entry.fields ? { ...preset.fields, ...entry.fields } : preset.fields,
         cache_note: cacheNote || undefined,
@@ -2755,8 +2759,10 @@
   }
 
   function modelsForFamily(models, family) {
+    const releaseDate = (model) => model.official_release_date || model.weights_public_date || "";
     return models
-      .filter((model) => modelFamily(model) === family);
+      .filter((model) => modelFamily(model) === family)
+      .sort((a, b) => releaseDate(b).localeCompare(releaseDate(a)));
   }
 
   function populateModelFamilies(select, models, preferredFamily) {

@@ -2580,20 +2580,22 @@ test("standard GQA formula ignores Qwen linear-attention state input", () => {
   assert.equal(withLinearState.cacheGroups.length, withoutLinearState.cacheGroups.length);
 });
 
-test("model family grouping keeps Qwen generations under one family", () => {
+test("model family grouping orders releases newest first, preserving ties and placing unknown dates last", () => {
   const models = [
-    { id: "qwen3.6-27b", label: "Qwen3.6-27B", family: "Qwen3.6" },
-    { id: "qwen3.5-397b-a17b", label: "Qwen3.5-397B-A17B", family: "Qwen3.5" },
-    { id: "qwen3-32b", label: "Qwen3-32B", family: "Qwen3" },
-    { id: "qwen2.5-72b", label: "Qwen2.5-72B", family: "Qwen2.5" },
-    { id: "deepseek-v3", label: "DeepSeek V3", family: "DeepSeek" },
+    { id: "qwen2.5-72b", family: "Qwen2.5" },
+    { id: "qwen3-32b", family: "Qwen3", official_release_date: "2025-04-29" },
+    { id: "qwen3.5-397b-a17b", family: "Qwen3.5", weights_public_date: "2026-02-16" },
+    { id: "qwen3-8b", family: "Qwen3", official_release_date: "2025-04-29" },
+    { id: "qwen3.6-27b", family: "Qwen3.6", official_release_date: "2026-04-22" },
+    { id: "deepseek-v4-flash", family: "DeepSeek", official_release_date: "2026-07-31" },
   ];
 
-  assert.equal(modelFamily(models[0]), "Qwen");
+  assert.equal(modelFamily(models[4]), "Qwen");
   assert.deepEqual(modelsForFamily(models, "Qwen").map((model) => model.id), [
     "qwen3.6-27b",
     "qwen3.5-397b-a17b",
     "qwen3-32b",
+    "qwen3-8b",
     "qwen2.5-72b",
   ]);
 });
